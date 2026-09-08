@@ -1,0 +1,141 @@
+{
+  "contract_version": "1.0.0",
+  "endpoint": "POST /transform",
+  "cases": [
+    {
+      "name": "rejects-empty-records",
+      "request": {
+        "method": "POST",
+        "path": "/transform",
+        "body": {
+          "records": []
+        }
+      },
+      "expected": {
+        "status": 422,
+        "body": {
+          "error": {
+            "code": "VALIDATION_ERROR",
+            "message": "request validation failed",
+            "details": [
+              {
+                "field": "records",
+                "reason": "min_items:1"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "rejects-non-integer-value-without-coercion",
+      "request": {
+        "method": "POST",
+        "path": "/transform",
+        "body": {
+          "records": [
+            {
+              "id": "item-001",
+              "name": "Example",
+              "tags": [],
+              "value": "123"
+            }
+          ]
+        }
+      },
+      "expected": {
+        "status": 422,
+        "body": {
+          "error": {
+            "code": "VALIDATION_ERROR",
+            "message": "request validation failed",
+            "details": [
+              {
+                "field": "records[0].value",
+                "reason": "type:integer"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "reports-multiple-errors-in-canonical-order",
+      "request": {
+        "method": "POST",
+        "path": "/transform",
+        "body": {
+          "records": [
+            {
+              "name": "Example",
+              "tags": [],
+              "value": "123",
+              "unexpected": true
+            }
+          ]
+        }
+      },
+      "expected": {
+        "status": 422,
+        "body": {
+          "error": {
+            "code": "VALIDATION_ERROR",
+            "message": "request validation failed",
+            "details": [
+              {
+                "field": "records[0].id",
+                "reason": "required"
+              },
+              {
+                "field": "records[0].unexpected",
+                "reason": "additional_property_not_allowed"
+              },
+              {
+                "field": "records[0].value",
+                "reason": "type:integer"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "rejects-duplicate-record-id",
+      "request": {
+        "method": "POST",
+        "path": "/transform",
+        "body": {
+          "records": [
+            {
+              "id": "item-001",
+              "name": "First",
+              "tags": [],
+              "value": 1
+            },
+            {
+              "id": "item-001",
+              "name": "Second",
+              "tags": [],
+              "value": 2
+            }
+          ]
+        }
+      },
+      "expected": {
+        "status": 422,
+        "body": {
+          "error": {
+            "code": "VALIDATION_ERROR",
+            "message": "request validation failed",
+            "details": [
+              {
+                "field": "records[1].id",
+                "reason": "duplicate"
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

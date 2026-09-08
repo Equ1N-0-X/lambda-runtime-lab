@@ -1,0 +1,13 @@
+version: 1
+updated_at: null
+region: ap-northeast-1
+source: https://aws.amazon.com/lambda/pricing/
+currency: USD
+request_price_per_million: null
+compute_price_per_gb_second:
+  arm64: null
+  x86_64: null
+notes:
+  - Prices are intentionally unset until current ap-northeast-1 values are verified against an official AWS source.
+  - Cost calculation must fail clearly or return unavailable when a required price is null; it must never treat null as zero.
+  - Values exclude the AWS Free Tier and should represent normalized on-demand pricing when populated.

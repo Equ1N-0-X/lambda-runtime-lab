@@ -1,0 +1,49 @@
+{
+  "contract_version": "1.0.0",
+  "endpoint": "POST /transform",
+  "cases": [
+    {
+      "name": "normalizes-and-orders-records",
+      "request": {
+        "method": "POST",
+        "path": "/transform",
+        "body": {
+          "records": [
+            {
+              "id": "item-002",
+              "name": "SECOND",
+              "tags": ["z", "a"],
+              "value": -7
+            },
+            {
+              "id": "item-001",
+              "name": "  Example Name  ",
+              "tags": ["b", "a", "b"],
+              "value": 123
+            }
+          ]
+        }
+      },
+      "expected": {
+        "status": 200,
+        "body": {
+          "records": [
+            {
+              "id": "item-001",
+              "name": "example name",
+              "tags": ["a", "b"],
+              "value": 123
+            },
+            {
+              "id": "item-002",
+              "name": "second",
+              "tags": ["a", "z"],
+              "value": -7
+            }
+          ],
+          "count": 2
+        }
+      }
+    }
+  ]
+}
