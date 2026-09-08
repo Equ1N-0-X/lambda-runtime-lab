@@ -1,0 +1,12 @@
+aws_region            = "ap-northeast-1"
+project_name          = "lambda-runtime-lab"
+lambda_memory_mb      = 512
+lambda_timeout_seconds = 30
+architecture          = "arm64"
+environment           = "dev"
+
+# Empty image URIs are accepted only for `terraform validate`.
+# Before a full `terraform plan` or `terraform apply`, create the ECR repositories,
+# push each image, and replace these values with the resulting tagged or digest URIs.
+python_image_uri = ""
+rust_image_uri   = ""
