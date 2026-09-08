@@ -1,0 +1,114 @@
+name: AWS Benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      workload:
+        description: Canonical workload name
+        required: true
+        default: aggregate-concurrent
+        type: choice
+        options:
+          - health
+          - transform-small
+          - transform-large
+          - compute-sequential
+          - items
+          - aggregate-sequential
+          - aggregate-concurrent
+      python_image_uri:
+        description: Immutable Python ECR image URI
+        required: true
+        type: string
+      rust_image_uri:
+        description: Immutable Rust ECR image URI
+        required: true
+        type: string
+      aws_region:
+        description: AWS region
+        required: true
+        default: ap-northeast-1
+        type: string
+      destroy_after:
+        description: Destroy benchmark infrastructure after the run
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: aws-benchmark
+  cancel-in-progress: false
+
+jobs:
+  benchmark:
+    name: Deploy and benchmark
+    runs-on: ubuntu-latest
+    environment: benchmark
+    env:
+      AWS_REGION: ${{ inputs.aws_region }}
+      PYTHON_IMAGE_URI: ${{ inputs.python_image_uri }}
+      RUST_IMAGE_URI: ${{ inputs.rust_image_uri }}
+      WORKLOAD: ${{ inputs.workload }}
+      RUN_ID: gha-${{ github.run_id }}-${{ github.run_attempt }}
+      AWS_ROLE_TO_ASSUME: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require explicit AWS configuration
+        run: |
+          if [[ -z "$AWS_ROLE_TO_ASSUME" ]]; then
+            echo "Configure AWS_ROLE_TO_ASSUME in the benchmark environment." >&2
+            exit 2
+          fi
+          if [[ "$PYTHON_IMAGE_URI" != *@sha256:* || "$RUST_IMAGE_URI" != *@sha256:* ]]; then
+            echo "Both image inputs must be immutable ECR digest URIs." >&2
+            exit 2
+          fi
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - uses: hashicorp/setup-terraform@v3
+      - name: Install benchmark dependencies
+        run: uv sync --project benchmark --frozen --extra dev
+      - name: Deploy controlled environment
+        run: make deploy TF_AUTO_APPROVE=-auto-approve
+      - name: Read Terraform outputs
+        run: |
+          {
+            echo "PYTHON_API_URL=$(terraform -chdir=infrastructure/terraform output -raw python_api_endpoint)"
+            echo "RUST_API_URL=$(terraform -chdir=infrastructure/terraform output -raw rust_api_endpoint)"
+            echo "DYNAMODB_TABLE_NAME=$(terraform -chdir=infrastructure/terraform output -raw dynamodb_table_name)"
+          } >> "$GITHUB_ENV"
+      - name: Seed deterministic data
+        run: make seed
+      - name: Run benchmark
+        run: make benchmark
+      - name: Collect CloudWatch records
+        run: |
+          sleep "${LOG_PROPAGATION_WAIT_SECONDS:-15}"
+          make collect
+      - name: Generate report
+        run: make report
+      - name: Upload raw data and reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-${{ env.RUN_ID }}
+          path: |
+            results/raw/${{ env.RUN_ID }}
+            results/reports/${{ env.RUN_ID }}.md
+            results/reports/${{ env.RUN_ID }}.csv
+          if-no-files-found: warn
+      - name: Destroy benchmark infrastructure
+        if: always() && inputs.destroy_after
+        run: make destroy TF_AUTO_APPROVE=-auto-approve
