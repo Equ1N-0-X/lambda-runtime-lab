@@ -1,0 +1,52 @@
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.tfvars
+!*.tfvars.example
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+htmlcov/
+.coverage
+build/
+dist/
+*.egg-info/
+
+# Rust
+target/
+
+# Terraform
+# .terraform.lock.hcl is intentionally tracked so provider versions and hashes
+# stay reproducible across benchmark runs.
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Benchmark output
+results/raw/*
+!results/raw/.gitkeep
+results/reports/*
+!results/reports/.gitkeep
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Local build metadata
+*.log
+*.pid
