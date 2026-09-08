@@ -1,0 +1,32 @@
+{
+  "contract_version": "1.0.0",
+  "endpoint": "GET /items/{id}",
+  "fixtures": {
+    "items": [
+      {
+        "id": "item-001",
+        "value": 123,
+        "payload": "payload-001"
+      }
+    ]
+  },
+  "cases": [
+    {
+      "name": "returns-existing-item",
+      "request": {
+        "method": "GET",
+        "path": "/items/item-001"
+      },
+      "expected": {
+        "status": 200,
+        "body": {
+          "item": {
+            "id": "item-001",
+            "value": 123,
+            "payload": "payload-001"
+          }
+        }
+      }
+    }
+  ]
+}

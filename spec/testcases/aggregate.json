@@ -1,0 +1,170 @@
+{
+  "contract_version": "1.0.0",
+  "endpoint": "POST /aggregate",
+  "fixtures": {
+    "items": [
+      {
+        "id": "item-001",
+        "value": 123,
+        "payload": "payload-001"
+      },
+      {
+        "id": "item-002",
+        "value": 123,
+        "payload": "payload-002"
+      },
+      {
+        "id": "item-003",
+        "value": 123,
+        "payload": "payload-003"
+      },
+      {
+        "id": "unicode-001",
+        "value": 10,
+        "payload": "é"
+      },
+      {
+        "id": "unicode-002",
+        "value": 20,
+        "payload": "é"
+      }
+    ]
+  },
+  "cases": [
+    {
+      "name": "sequential-canonical-aggregate",
+      "request": {
+        "method": "POST",
+        "path": "/aggregate",
+        "body": {
+          "ids": ["item-003", "item-001", "item-002"],
+          "profile": "sequential"
+        }
+      },
+      "expected": {
+        "status": 200,
+        "body": {
+          "count": 3,
+          "total_value": 369,
+          "checksum": "eed0d10cad0b91b57d98173575bde1b1106a9453fcf5c5b1347051c74e7892f3"
+        }
+      }
+    },
+    {
+      "name": "concurrent-has-identical-result",
+      "request": {
+        "method": "POST",
+        "path": "/aggregate",
+        "body": {
+          "ids": ["item-003", "item-001", "item-002"],
+          "profile": "concurrent"
+        }
+      },
+      "expected": {
+        "status": 200,
+        "body": {
+          "count": 3,
+          "total_value": 369,
+          "checksum": "eed0d10cad0b91b57d98173575bde1b1106a9453fcf5c5b1347051c74e7892f3"
+        }
+      }
+    },
+    {
+      "name": "utf8-payloads-are-not-normalized",
+      "request": {
+        "method": "POST",
+        "path": "/aggregate",
+        "body": {
+          "ids": ["unicode-002", "unicode-001"],
+          "profile": "concurrent"
+        }
+      },
+      "expected": {
+        "status": 200,
+        "body": {
+          "count": 2,
+          "total_value": 30,
+          "checksum": "0c5b21a565ec7695b30d697175518945bbf147a3ef0ec173d40d00c93103ad38"
+        }
+      }
+    },
+    {
+      "name": "rejects-duplicate-ids",
+      "request": {
+        "method": "POST",
+        "path": "/aggregate",
+        "body": {
+          "ids": ["item-001", "item-001"],
+          "profile": "sequential"
+        }
+      },
+      "expected": {
+        "status": 422,
+        "body": {
+          "error": {
+            "code": "VALIDATION_ERROR",
+            "message": "request validation failed",
+            "details": [
+              {
+                "field": "ids[1]",
+                "reason": "duplicate"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "rejects-unsupported-profile",
+      "request": {
+        "method": "POST",
+        "path": "/aggregate",
+        "body": {
+          "ids": ["item-001"],
+          "profile": "parallel"
+        }
+      },
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "UNSUPPORTED_PROFILE",
+            "message": "profile is not supported",
+            "details": [
+              {
+                "field": "profile",
+                "reason": "supported_values:sequential,concurrent"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "returns-first-canonical-missing-id",
+      "request": {
+        "method": "POST",
+        "path": "/aggregate",
+        "body": {
+          "ids": ["item-999", "item-998", "item-001"],
+          "profile": "concurrent"
+        }
+      },
+      "expected": {
+        "status": 404,
+        "body": {
+          "error": {
+            "code": "NOT_FOUND",
+            "message": "item not found",
+            "details": [
+              {
+                "field": "id",
+                "reason": "not_found:item-998"
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

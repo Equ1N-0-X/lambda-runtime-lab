@@ -1,0 +1,109 @@
+version: 1
+contract: openapi.yaml
+defaults:
+  architecture: arm64
+  memory_mb:
+    - 256
+    - 512
+    - 1024
+  headers:
+    Content-Type: application/json
+
+workloads:
+  health:
+    method: GET
+    path: /health
+    warmup: 20
+    iterations: 200
+    client_concurrency: 1
+
+  transform-small:
+    method: POST
+    path: /transform
+    warmup: 20
+    iterations: 200
+    client_concurrency: 4
+    body:
+      records:
+        - id: item-001
+          name: "  Example Name  "
+          tags: [b, a, b]
+          value: 123
+
+  transform-large:
+    method: POST
+    path: /transform
+    warmup: 10
+    iterations: 100
+    client_concurrency: 2
+    body:
+      records:
+        - {id: item-001, name: "  Benchmark Record 001  ", tags: [gamma, alpha, beta, alpha], value: 1}
+        - {id: item-002, name: "  Benchmark Record 002  ", tags: [gamma, alpha, beta, alpha], value: 2}
+        - {id: item-003, name: "  Benchmark Record 003  ", tags: [gamma, alpha, beta, alpha], value: 3}
+        - {id: item-004, name: "  Benchmark Record 004  ", tags: [gamma, alpha, beta, alpha], value: 4}
+        - {id: item-005, name: "  Benchmark Record 005  ", tags: [gamma, alpha, beta, alpha], value: 5}
+        - {id: item-006, name: "  Benchmark Record 006  ", tags: [gamma, alpha, beta, alpha], value: 6}
+        - {id: item-007, name: "  Benchmark Record 007  ", tags: [gamma, alpha, beta, alpha], value: 7}
+        - {id: item-008, name: "  Benchmark Record 008  ", tags: [gamma, alpha, beta, alpha], value: 8}
+        - {id: item-009, name: "  Benchmark Record 009  ", tags: [gamma, alpha, beta, alpha], value: 9}
+        - {id: item-010, name: "  Benchmark Record 010  ", tags: [gamma, alpha, beta, alpha], value: 10}
+        - {id: item-011, name: "  Benchmark Record 011  ", tags: [gamma, alpha, beta, alpha], value: 11}
+        - {id: item-012, name: "  Benchmark Record 012  ", tags: [gamma, alpha, beta, alpha], value: 12}
+        - {id: item-013, name: "  Benchmark Record 013  ", tags: [gamma, alpha, beta, alpha], value: 13}
+        - {id: item-014, name: "  Benchmark Record 014  ", tags: [gamma, alpha, beta, alpha], value: 14}
+        - {id: item-015, name: "  Benchmark Record 015  ", tags: [gamma, alpha, beta, alpha], value: 15}
+        - {id: item-016, name: "  Benchmark Record 016  ", tags: [gamma, alpha, beta, alpha], value: 16}
+        - {id: item-017, name: "  Benchmark Record 017  ", tags: [gamma, alpha, beta, alpha], value: 17}
+        - {id: item-018, name: "  Benchmark Record 018  ", tags: [gamma, alpha, beta, alpha], value: 18}
+        - {id: item-019, name: "  Benchmark Record 019  ", tags: [gamma, alpha, beta, alpha], value: 19}
+        - {id: item-020, name: "  Benchmark Record 020  ", tags: [gamma, alpha, beta, alpha], value: 20}
+
+  compute-sequential:
+    method: POST
+    path: /compute
+    warmup: 10
+    iterations: 100
+    client_concurrency: 1
+    body:
+      items: 100
+      iterations: 1000
+      seed: benchmark-seed
+      profile: sequential
+
+  items:
+    method: GET
+    path: /items/item-001
+    warmup: 20
+    iterations: 200
+    client_concurrency: 4
+
+  aggregate-sequential:
+    method: POST
+    path: /aggregate
+    warmup: 20
+    iterations: 200
+    client_concurrency: 4
+    body:
+      ids:
+        - item-001
+        - item-002
+        - item-003
+        - item-004
+        - item-005
+      profile: sequential
+
+  aggregate-concurrent:
+    method: POST
+    path: /aggregate
+    warmup: 20
+    iterations: 200
+    client_concurrency: 4
+    body:
+      ids:
+        - item-001
+        - item-002
+        - item-003
+        - item-004
+        - item-005
+      profile: concurrent

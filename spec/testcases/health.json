@@ -1,0 +1,19 @@
+{
+  "contract_version": "1.0.0",
+  "endpoint": "GET /health",
+  "cases": [
+    {
+      "name": "health-ok",
+      "request": {
+        "method": "GET",
+        "path": "/health"
+      },
+      "expected": {
+        "status": 200,
+        "body": {
+          "status": "ok"
+        }
+      }
+    }
+  ]
+}

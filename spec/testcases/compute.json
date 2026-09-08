@@ -1,0 +1,132 @@
+{
+  "contract_version": "1.0.0",
+  "endpoint": "POST /compute",
+  "cases": [
+    {
+      "name": "sequential-canonical-digest",
+      "request": {
+        "method": "POST",
+        "path": "/compute",
+        "body": {
+          "items": 3,
+          "iterations": 2,
+          "seed": "benchmark-seed",
+          "profile": "sequential"
+        }
+      },
+      "expected": {
+        "status": 200,
+        "body": {
+          "processed": 3,
+          "iterations": 2,
+          "checksum": "4239a9c91e5b6190e724e15b64ba68ebc5d8afa877c2cfb37bee0bb539be4b47"
+        }
+      }
+    },
+    {
+      "name": "decomposed-utf8-seed-is-not-normalized",
+      "request": {
+        "method": "POST",
+        "path": "/compute",
+        "body": {
+          "items": 2,
+          "iterations": 3,
+          "seed": "é",
+          "profile": "sequential"
+        }
+      },
+      "expected": {
+        "status": 200,
+        "body": {
+          "processed": 2,
+          "iterations": 3,
+          "checksum": "a275dc01e31c0b02098fbf15ffb92b7272fa88e9c3ca6efc97c178c7102b34eb"
+        }
+      }
+    },
+    {
+      "name": "rejects-zero-items",
+      "request": {
+        "method": "POST",
+        "path": "/compute",
+        "body": {
+          "items": 0,
+          "iterations": 2,
+          "seed": "benchmark-seed",
+          "profile": "sequential"
+        }
+      },
+      "expected": {
+        "status": 422,
+        "body": {
+          "error": {
+            "code": "VALIDATION_ERROR",
+            "message": "request validation failed",
+            "details": [
+              {
+                "field": "items",
+                "reason": "minimum:1"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "rejects-work-over-limit",
+      "request": {
+        "method": "POST",
+        "path": "/compute",
+        "body": {
+          "items": 1000,
+          "iterations": 1001,
+          "seed": "benchmark-seed",
+          "profile": "sequential"
+        }
+      },
+      "expected": {
+        "status": 422,
+        "body": {
+          "error": {
+            "code": "VALIDATION_ERROR",
+            "message": "request validation failed",
+            "details": [
+              {
+                "field": "$",
+                "reason": "maximum_work:1000000"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "parallel-is-not-an-mvp-profile",
+      "request": {
+        "method": "POST",
+        "path": "/compute",
+        "body": {
+          "items": 3,
+          "iterations": 2,
+          "seed": "benchmark-seed",
+          "profile": "parallel"
+        }
+      },
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "UNSUPPORTED_PROFILE",
+            "message": "profile is not supported",
+            "details": [
+              {
+                "field": "profile",
+                "reason": "supported_values:sequential"
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

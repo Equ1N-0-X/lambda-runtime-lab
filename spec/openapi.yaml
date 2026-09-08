@@ -1,0 +1,525 @@
+openapi: 3.1.0
+info:
+  title: Lambda Runtime Lab Canonical API
+  version: 1.0.0
+  description: Canonical API contract shared by the Python and Rust Lambdaliths.
+jsonSchemaDialect: https://json-schema.org/draft/2020-12/schema
+servers:
+  - url: https://example.invalid
+    description: Placeholder; deployment supplies the actual endpoint.
+tags:
+  - name: system
+  - name: benchmark
+
+x-canonical-contract:
+  scope: phase-1-mvp
+  wire-format:
+    request-and-response-encoding: UTF-8
+    content-type: application/json
+    json-numbers: Integers are JSON integer tokens; strings, floats, and booleans are never coerced.
+    unknown-properties: Rejected at every object boundary.
+    duplicate-object-members: Invalid JSON; return VALIDATION_ERROR for field "$" with reason "invalid_json".
+    strings: Unicode scalar values are preserved exactly; no Unicode normalization is performed.
+  ordering:
+    ids: Ascending lexicographic order of UTF-8 bytes. The allowed ID alphabet is ASCII, so this is also ASCII order.
+    tags: Ascending lexicographic order of UTF-8 bytes after exact, case-sensitive deduplication.
+    validation-details: Ascending by field, then reason, using UTF-8 byte lexicographic order.
+  transform:
+    trim: Remove only U+0020 SPACE characters from both ends of name.
+    lowercase: Map ASCII A-Z to a-z; all other permitted characters are unchanged.
+    duplicate-record-ids: Rejected with field "records[i].id", where i is each duplicate occurrence after the first, and reason "duplicate".
+  compute:
+    supported-profiles:
+      - sequential
+    item-index-range: 0 through items-1.
+    item-initial-bytes: UTF-8 encoding of seed + ":" + the base-10 index without sign or leading zeroes.
+    item-digest: Apply SHA-256 exactly iterations times; each round hashes the prior round's 32 raw output bytes.
+    checksum: Concatenate the final 32 raw digest bytes in ascending index order, SHA-256 that byte string once, and encode as 64 lowercase hexadecimal characters.
+    work-limit: items multiplied by iterations must be at most 1000000.
+  aggregate:
+    supported-profiles:
+      - sequential
+      - concurrent
+    duplicate-ids: Rejected with field "ids[i]", where i is each duplicate occurrence after the first, and reason "duplicate".
+    reads: Perform exactly one GetItem-equivalent read for every requested ID.
+    missing-item: If any item is absent, return NOT_FOUND for the first absent ID after canonical ID sorting and return no partial aggregate.
+    total-value: Mathematical integer sum of item values after canonical ID sorting.
+    checksum: Sort found items by ID, concatenate payload strings with no delimiter, UTF-8 encode once, SHA-256 once, and encode as 64 lowercase hexadecimal characters.
+  validation:
+    status: 422
+    code: VALIDATION_ERROR
+    message: request validation failed
+    field-path: Root is "$"; object fields use dot notation and arrays use zero-based brackets.
+    precedence:
+      - Decode UTF-8 and JSON. On failure return only field "$", reason "invalid_json".
+      - Collect all structural and boundary violations, then sort details canonically.
+      - If structurally valid, check duplicate IDs and compute work limit, then sort details canonically.
+      - If otherwise valid, map an unsupported profile string to UNSUPPORTED_PROFILE.
+    reason-vocabulary:
+      required: required
+      type: "type:<expected-json-type>"
+      minimum: "minimum:<inclusive-value>"
+      maximum: "maximum:<inclusive-value>"
+      min-items: "min_items:<inclusive-value>"
+      max-items: "max_items:<inclusive-value>"
+      min-length: "min_length:<inclusive-code-point-count>"
+      max-length: "max_length:<inclusive-code-point-count>"
+      pattern: pattern
+      unknown-property: additional_property_not_allowed
+      duplicate: duplicate
+      unique-items: duplicate
+      work-limit: "maximum_work:1000000"
+    header-fields:
+      invalid-benchmark-run-id:
+        field: headers.X-Benchmark-Run-Id
+        reason: pattern
+  errors:
+    unsupported-profile:
+      status: 400
+      code: UNSUPPORTED_PROFILE
+      message: profile is not supported
+      detail-field: profile
+      reason: "supported_values:<comma-separated values in API order>"
+    not-found:
+      status: 404
+      code: NOT_FOUND
+      message: item not found
+      detail-field: id
+      reason: "not_found:<requested-id>"
+    internal:
+      status: 500
+      code: INTERNAL_ERROR
+      message: internal error
+      details: []
+    dependency:
+      status: 502
+      code: DEPENDENCY_ERROR
+      message: dependency error
+      details: []
+
+paths:
+  /health:
+    get:
+      tags: [system]
+      operationId: getHealth
+      parameters:
+        - $ref: "#/components/parameters/BenchmarkRunId"
+      responses:
+        "200":
+          description: Service is healthy.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+              examples:
+                ok:
+                  value:
+                    status: ok
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /transform:
+    post:
+      tags: [benchmark]
+      operationId: transformRecords
+      parameters:
+        - $ref: "#/components/parameters/BenchmarkRunId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TransformRequest"
+      responses:
+        "200":
+          description: Deterministically normalized records.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransformResponse"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /compute:
+    post:
+      tags: [benchmark]
+      operationId: computeDigest
+      parameters:
+        - $ref: "#/components/parameters/BenchmarkRunId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ComputeRequest"
+      responses:
+        "200":
+          description: Deterministic CPU-work result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ComputeResponse"
+        "400":
+          $ref: "#/components/responses/UnsupportedProfileError"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /items/{id}:
+    get:
+      tags: [benchmark]
+      operationId: getItem
+      parameters:
+        - $ref: "#/components/parameters/BenchmarkRunId"
+        - $ref: "#/components/parameters/ItemId"
+      responses:
+        "200":
+          description: Found item.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemResponse"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/DependencyError"
+  /aggregate:
+    post:
+      tags: [benchmark]
+      operationId: aggregateItems
+      parameters:
+        - $ref: "#/components/parameters/BenchmarkRunId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AggregateRequest"
+      responses:
+        "200":
+          description: Deterministic aggregate result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AggregateResponse"
+        "400":
+          $ref: "#/components/responses/UnsupportedProfileError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/DependencyError"
+
+components:
+  parameters:
+    BenchmarkRunId:
+      name: X-Benchmark-Run-Id
+      in: header
+      required: false
+      description: >-
+        Optional benchmark run identifier used only for log correlation. The
+        allowed characters match the run identifiers the Benchmark Runner
+        accepts, so readable run IDs such as arm64-512-health-20260101T000000Z
+        are valid alongside UUIDs.
+      schema:
+        $ref: "#/components/schemas/BenchmarkRunId"
+    ItemId:
+      name: id
+      in: path
+      required: true
+      schema:
+        $ref: "#/components/schemas/ItemId"
+  schemas:
+    HealthResponse:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          const: ok
+    ItemId:
+      type: string
+      minLength: 1
+      maxLength: 128
+      pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    BenchmarkRunId:
+      type: string
+      minLength: 1
+      maxLength: 128
+      pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    Payload:
+      type: string
+      maxLength: 4096
+    ItemValue:
+      type: integer
+      minimum: -1000000000
+      maximum: 1000000000
+    Item:
+      type: object
+      additionalProperties: false
+      required: [id, value, payload]
+      properties:
+        id:
+          $ref: "#/components/schemas/ItemId"
+        value:
+          $ref: "#/components/schemas/ItemValue"
+        payload:
+          $ref: "#/components/schemas/Payload"
+    ItemResponse:
+      type: object
+      additionalProperties: false
+      required: [item]
+      properties:
+        item:
+          $ref: "#/components/schemas/Item"
+    TransformRecordInput:
+      type: object
+      additionalProperties: false
+      required: [id, name, tags, value]
+      properties:
+        id:
+          $ref: "#/components/schemas/ItemId"
+        name:
+          type: string
+          maxLength: 256
+          pattern: "^[ -~]*$"
+        tags:
+          type: array
+          minItems: 0
+          maxItems: 32
+          items:
+            type: string
+            maxLength: 64
+            pattern: "^[ -~]*$"
+        value:
+          $ref: "#/components/schemas/ItemValue"
+    TransformRequest:
+      type: object
+      additionalProperties: false
+      required: [records]
+      properties:
+        records:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          items:
+            $ref: "#/components/schemas/TransformRecordInput"
+    TransformRecord:
+      allOf:
+        - $ref: "#/components/schemas/TransformRecordInput"
+    TransformResponse:
+      type: object
+      additionalProperties: false
+      required: [records, count]
+      properties:
+        records:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          items:
+            $ref: "#/components/schemas/TransformRecord"
+        count:
+          type: integer
+          minimum: 1
+          maximum: 1000
+    ComputeRequest:
+      type: object
+      additionalProperties: false
+      required: [items, iterations, seed, profile]
+      properties:
+        items:
+          type: integer
+          minimum: 1
+          maximum: 1000
+        iterations:
+          type: integer
+          minimum: 1
+          maximum: 1000000
+        seed:
+          type: string
+          minLength: 1
+          maxLength: 256
+        profile:
+          type: string
+          description: MVP supports only sequential; any other string maps to UNSUPPORTED_PROFILE.
+          examples: [sequential]
+          x-supported-values: [sequential]
+    ComputeResponse:
+      type: object
+      additionalProperties: false
+      required: [processed, iterations, checksum]
+      properties:
+        processed:
+          type: integer
+          minimum: 1
+          maximum: 1000
+        iterations:
+          type: integer
+          minimum: 1
+          maximum: 1000000
+        checksum:
+          $ref: "#/components/schemas/Checksum"
+    AggregateRequest:
+      type: object
+      additionalProperties: false
+      required: [ids, profile]
+      properties:
+        ids:
+          type: array
+          minItems: 1
+          maxItems: 100
+          uniqueItems: true
+          items:
+            $ref: "#/components/schemas/ItemId"
+        profile:
+          type: string
+          description: Any string other than sequential or concurrent maps to UNSUPPORTED_PROFILE.
+          examples: [sequential, concurrent]
+          x-supported-values: [sequential, concurrent]
+    AggregateResponse:
+      type: object
+      additionalProperties: false
+      required: [count, total_value, checksum]
+      properties:
+        count:
+          type: integer
+          minimum: 1
+          maximum: 100
+        total_value:
+          type: integer
+          minimum: -100000000000
+          maximum: 100000000000
+        checksum:
+          $ref: "#/components/schemas/Checksum"
+    Checksum:
+      type: string
+      pattern: "^[0-9a-f]{64}$"
+    ErrorDetail:
+      type: object
+      additionalProperties: false
+      required: [field, reason]
+      properties:
+        field:
+          type: string
+          minLength: 1
+        reason:
+          type: string
+          minLength: 1
+    ErrorBody:
+      type: object
+      additionalProperties: false
+      required: [code, message, details]
+      properties:
+        code:
+          type: string
+          enum:
+            - VALIDATION_ERROR
+            - NOT_FOUND
+            - UNSUPPORTED_PROFILE
+            - INTERNAL_ERROR
+            - DEPENDENCY_ERROR
+        message:
+          type: string
+          minLength: 1
+        details:
+          type: array
+          items:
+            $ref: "#/components/schemas/ErrorDetail"
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          $ref: "#/components/schemas/ErrorBody"
+  responses:
+    ValidationError:
+      description: Request syntax, shape, type, or boundary validation failed.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/ErrorResponse"
+              - properties:
+                  error:
+                    properties:
+                      code:
+                        const: VALIDATION_ERROR
+                      message:
+                        const: request validation failed
+                      details:
+                        minItems: 1
+    UnsupportedProfileError:
+      description: A structurally valid profile string is not supported by this MVP endpoint.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/ErrorResponse"
+              - properties:
+                  error:
+                    properties:
+                      code:
+                        const: UNSUPPORTED_PROFILE
+                      message:
+                        const: profile is not supported
+                      details:
+                        minItems: 1
+                        maxItems: 1
+    NotFoundError:
+      description: The requested item was not found.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/ErrorResponse"
+              - properties:
+                  error:
+                    properties:
+                      code:
+                        const: NOT_FOUND
+                      message:
+                        const: item not found
+                      details:
+                        minItems: 1
+                        maxItems: 1
+    InternalError:
+      description: An internal failure without implementation details.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/ErrorResponse"
+              - properties:
+                  error:
+                    properties:
+                      code:
+                        const: INTERNAL_ERROR
+                      message:
+                        const: internal error
+                      details:
+                        maxItems: 0
+    DependencyError:
+      description: DynamoDB or another required dependency failed.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/ErrorResponse"
+              - properties:
+                  error:
+                    properties:
+                      code:
+                        const: DEPENDENCY_ERROR
+                      message:
+                        const: dependency error
+                      details:
+                        maxItems: 0

@@ -1,0 +1,31 @@
+{
+  "contract_version": "1.0.0",
+  "endpoint": "GET /items/{id}",
+  "fixtures": {
+    "items": []
+  },
+  "cases": [
+    {
+      "name": "returns-canonical-not-found-error",
+      "request": {
+        "method": "GET",
+        "path": "/items/item-999"
+      },
+      "expected": {
+        "status": 404,
+        "body": {
+          "error": {
+            "code": "NOT_FOUND",
+            "message": "item not found",
+            "details": [
+              {
+                "field": "id",
+                "reason": "not_found:item-999"
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}
