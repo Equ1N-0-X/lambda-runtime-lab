@@ -11,7 +11,7 @@ LOG_WAIT_SECONDS="${LOG_PROPAGATION_WAIT_SECONDS:-10}"
 DRY_RUN=false
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=true
 
-runner=(env "PYTHONPATH=${ROOT}/benchmark/src" python3 -m benchmark_runner)
+runner=(uv run --project "${ROOT}/benchmark" python -m benchmark_runner)
 
 execute() {
   if "${DRY_RUN}"; then

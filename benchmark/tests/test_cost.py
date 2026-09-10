@@ -1,6 +1,19 @@
+from decimal import Decimal
+from pathlib import Path
+
 import pytest
 
 from benchmark_runner.cost import PricingUnavailable, calculate_cost, load_pricing
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_repository_pricing_configures_tier_one_rates():
+    pricing = load_pricing(ROOT / "spec" / "pricing.yaml")
+
+    assert pricing.request_price_per_million == Decimal("0.20")
+    assert pricing.compute_price_per_gb_second["arm64"] == Decimal("0.0000133334")
+    assert pricing.compute_price_per_gb_second["x86_64"] == Decimal("0.0000166667")
 
 
 def test_calculates_configured_cost_without_free_tier(tmp_path):

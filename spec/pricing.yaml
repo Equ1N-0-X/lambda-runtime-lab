@@ -1,13 +1,13 @@
 version: 1
-updated_at: null
+updated_at: 2026-09-11
 region: ap-northeast-1
-source: https://aws.amazon.com/lambda/pricing/
+source: https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSLambda/current/ap-northeast-1/index.json
 currency: USD
-request_price_per_million: null
+request_price_per_million: 0.20
 compute_price_per_gb_second:
-  arm64: null
-  x86_64: null
+  arm64: 0.0000133334
+  x86_64: 0.0000166667
 notes:
-  - Prices are intentionally unset until current ap-northeast-1 values are verified against an official AWS source.
-  - Cost calculation must fail clearly or return unavailable when a required price is null; it must never treat null as zero.
-  - Values exclude the AWS Free Tier and should represent normalized on-demand pricing when populated.
+  - Tier 1 on-demand rates for Asia Pacific (Tokyo), verified against the AWS Price List API on 2026-09-11.
+  - Values exclude the AWS Free Tier, Savings Plans, taxes, data transfer, API Gateway, DynamoDB, and other service charges.
+  - The model is valid only below the Lambda duration Tier 1 thresholds: 7.5 billion GB-seconds/month for arm64 and 6 billion GB-seconds/month for x86_64.

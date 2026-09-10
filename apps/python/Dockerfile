@@ -28,14 +28,13 @@ LABEL org.opencontainers.image.created="${BUILD_DATE}" \
 
 ENV LAMBDA_TASK_ROOT=/var/task \
     PATH=/var/lang/bin:${PATH} \
-    PYTHONPATH=/var/task \
+    PYTHONPATH=/var/task:/opt/python \
     PYTHONUNBUFFERED=1
 
 COPY --from=python-runtime /var/lang /var/lang
-COPY --from=dependencies /opt/venv/lib/python3.13/site-packages/ ${LAMBDA_TASK_ROOT}/
+COPY --from=dependencies /opt/venv/lib/python3.13/site-packages/ /opt/python/
 COPY src/app/ ${LAMBDA_TASK_ROOT}/app/
 
 WORKDIR ${LAMBDA_TASK_ROOT}
 ENTRYPOINT ["/var/lang/bin/python3.13", "-m", "awslambdaric"]
 CMD ["app.main.handler"]
-

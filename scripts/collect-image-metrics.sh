@@ -78,7 +78,7 @@ for implementation, image in images.items():
         item["artifacts"] = {
             "runtime_size_bytes": container_size(image, "/var/lang"),
             "site_packages_size_bytes": container_size(
-                image, "/var/lang/lib/python3.13/site-packages"
+                image, "/opt/python"
             ),
             "application_source_size_bytes": container_size(image, "/var/task"),
         }
