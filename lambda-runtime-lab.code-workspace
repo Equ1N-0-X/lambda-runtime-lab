@@ -32,10 +32,10 @@
     //   "name": "🏠 HOME",
     //   "path": "/Users/nagatatatsuya"
     // },
-    {
-      "name": "🤖 AGENT_RESOURCES",
-      "path": "/Users/nagatatatsuya/development/agent_resources"
-    }
+    // {
+    //   "name": "🤖 AGENT_RESOURCES",
+    //   "path": "/Users/nagatatatsuya/development/agent_resources"
+    // }
   ],
   "settings": {
     // エディタの基本設定
