@@ -17,6 +17,7 @@ AWS_REGION ?= ap-northeast-1
 ENVIRONMENT ?= benchmark
 WORKLOAD ?= aggregate-concurrent
 RUN_ID ?= auto
+PUBLISH_TAG ?=
 PYTHON_API_URL ?=
 RUST_API_URL ?=
 DYNAMODB_TABLE_NAME ?=
@@ -31,14 +32,14 @@ TF_IMAGE_ARGS := $(if $(strip $(PYTHON_IMAGE_URI)),-var=python_image_uri=$(PYTHO
 
 .PHONY: help format format-check lint test test-python test-rust test-benchmark \
 	test-contract-harness contract-test build build-python build-rust \
-	terraform-init terraform-validate deploy seed benchmark collect report \
+	terraform-init terraform-validate bootstrap-ecr publish-images deploy seed benchmark collect report \
 	benchmark-matrix destroy
 
 help:
 	@printf '%s\n' \
 		'Quality: format format-check lint test contract-test' \
 		'Build:   build build-python build-rust terraform-validate' \
-		'AWS:     deploy seed benchmark collect report benchmark-matrix destroy'
+		'AWS:     bootstrap-ecr publish-images deploy seed benchmark collect report benchmark-matrix destroy'
 
 format:
 	uv run --project $(PYTHON_DIR) ruff format $(PYTHON_DIR)
@@ -101,6 +102,15 @@ terraform-validate:
 	terraform -chdir=$(TERRAFORM_DIR) fmt -check -recursive
 	terraform -chdir=$(TERRAFORM_DIR) init -backend=false
 	terraform -chdir=$(TERRAFORM_DIR) validate
+
+bootstrap-ecr:
+	AWS_REGION="$(AWS_REGION)" ENVIRONMENT="$(ENVIRONMENT)" TF_AUTO_APPROVE="$(TF_AUTO_APPROVE)" \
+		bash scripts/bootstrap-ecr.sh
+
+publish-images:
+	AWS_REGION="$(AWS_REGION)" \
+		$(if $(strip $(PUBLISH_TAG)),TAG="$(PUBLISH_TAG)") \
+		bash scripts/publish-images.sh
 
 deploy:
 	@test -n "$(PYTHON_IMAGE_URI)" || (echo "PYTHON_IMAGE_URI is required" >&2; exit 2)

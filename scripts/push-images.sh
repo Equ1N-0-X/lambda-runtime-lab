@@ -6,6 +6,7 @@ TAG="${TAG:-benchmark}"
 PYTHON_REPOSITORY="${PYTHON_ECR_REPOSITORY_URL:-}"
 RUST_REPOSITORY="${RUST_ECR_REPOSITORY_URL:-}"
 DRY_RUN=false
+PUSH_QUIET="${PUSH_QUIET:-false}"
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=true
 
 if ! "${DRY_RUN}" && { [[ -z "${PYTHON_REPOSITORY}" ]] || [[ -z "${RUST_REPOSITORY}" ]]; }; then
@@ -31,7 +32,11 @@ push_image() {
   aws ecr get-login-password --region "${REGION}" |
     docker login --username AWS --password-stdin "${registry}"
   docker tag "${local_image}" "${destination}"
-  docker push "${destination}"
+  if "${PUSH_QUIET}"; then
+    docker push --quiet "${destination}"
+  else
+    docker push "${destination}"
+  fi
 }
 
 push_image python "${PYTHON_REPOSITORY}"

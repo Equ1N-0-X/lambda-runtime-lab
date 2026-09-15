@@ -14,6 +14,7 @@ FINAL_BASE_REPOSITORY="${FINAL_BASE_REPOSITORY:-public.ecr.aws/lambda/provided}"
 FINAL_BASE_TAG="${FINAL_BASE_TAG:-al2023}"
 BUILD_DATE="${BUILD_DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 GIT_REVISION="${GIT_REVISION:-$(git -C "${ROOT}" rev-parse --verify --quiet HEAD || echo unknown)}"
+BUILD_PROGRESS="${BUILD_PROGRESS:-auto}"
 DRY_RUN=false
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=true
 
@@ -37,7 +38,10 @@ build_image() {
   local dockerfile="${ROOT}/apps/${implementation}/Dockerfile"
   local context="${ROOT}/apps/${implementation}"
   local output="${ROOT}/results/raw/${RUN_ID}/${implementation}-build.json"
-  local command=(docker buildx build --platform "${PLATFORM}" --load
+  # Lambda accepts a single image manifest, but Buildx provenance produces an
+  # OCI image index with an attestation manifest.  Disable provenance so the
+  # pushed tag is directly usable as a Lambda image URI.
+  local command=(docker buildx build --progress "${BUILD_PROGRESS}" --platform "${PLATFORM}" --provenance=false --load
     --build-arg "FINAL_BASE=${final_base}"
     --build-arg "BUILD_DATE=${BUILD_DATE}"
     --build-arg "GIT_REVISION=${GIT_REVISION}"
