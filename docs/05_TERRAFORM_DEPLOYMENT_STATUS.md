@@ -82,7 +82,7 @@ ECR を先に作成した理由は、Lambda を作成するには ECR 上のイ�
 3. 出力された `PYTHON_IMAGE_URI` と `RUST_IMAGE_URI` の `export` 行を実行する。
 4. 出力された digest URI を用い、Terraform plan を確認してから `make deploy` を実行する。
 
-現在の API URL は、Python が `https://clwf5l9sol.execute-api.ap-northeast-1.amazonaws.com`、Rust が `https://b3wszko32b.execute-api.ap-northeast-1.amazonaws.com` です。
+API URL は環境ごとに異なるため、`terraform -chdir=infrastructure/terraform output` で確認し、`.env` の `PYTHON_API_URL` / `RUST_API_URL` へ設定します。
 
 ## 未決事項
 
