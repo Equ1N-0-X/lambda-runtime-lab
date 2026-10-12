@@ -1,8 +1,7 @@
-"""Runs the shared canonical test vectors against the Python implementation.
+"""共有する正規テストベクトルをPython実装へ適用する。
 
-`spec/testcases` is the single source of truth for the contract. Driving those
-files here, and the equivalent Rust test from the same files, is what keeps the
-two implementations comparable without a deployed environment.
+`spec/testcases`を契約の正本とし、Rust側も同じファイルを使うことで、デプロイ環境なしに
+両実装の応答を比較する。
 """
 
 import json

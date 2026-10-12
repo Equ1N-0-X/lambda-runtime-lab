@@ -1,8 +1,7 @@
-//! Canonical error taxonomy.
+//! API・検証・ドメイン層で共有する公開エラー応答の分類を定義する。
 //!
-//! Every code, message, status, and detail string here is fixed by
-//! `spec/openapi.yaml` so that the Python implementation can return
-//! byte-identical error bodies.
+//! コード、メッセージ、HTTP状態、詳細文字列はOpenAPI契約で固定されているため、ログや
+//! コメントとは異なり英語のまま維持し、Python実装と同じ本文を返す。
 
 use axum::{
     Json,
@@ -18,6 +17,7 @@ pub struct ErrorDetail {
 }
 
 impl ErrorDetail {
+    /// 検証失敗のフィールド位置と、契約で定めた理由を一組にする。
     pub fn new(field: impl Into<String>, reason: impl Into<String>) -> Self {
         Self {
             field: field.into(),
@@ -45,6 +45,7 @@ pub struct AppError {
 }
 
 impl AppError {
+    /// 複数の入力エラーを安定した順序に並べ、422応答として保持する。
     pub fn validation(mut details: Vec<ErrorDetail>) -> Self {
         details.sort_by(|left, right| {
             left.field
@@ -61,10 +62,12 @@ impl AppError {
         }
     }
 
+    /// JSON構文・UTF-8・重複キーの不正を、本文全体の検証エラーとして返す。
     pub fn invalid_json() -> Self {
         Self::validation(vec![ErrorDetail::new("$", "invalid_json")])
     }
 
+    /// 未対応プロファイルを、利用可能な候補付きの400応答として返す。
     pub fn unsupported_profile(supported_values: &[&str]) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
@@ -79,6 +82,7 @@ impl AppError {
         }
     }
 
+    /// 検証済みIDに保存項目がない場合の404応答を作る。
     pub fn not_found(id: &str) -> Self {
         Self {
             status: StatusCode::NOT_FOUND,
@@ -90,6 +94,7 @@ impl AppError {
         }
     }
 
+    /// ルーターに登録されていない経路へ、詳細なしの404応答を返す。
     pub fn route_not_found() -> Self {
         Self {
             status: StatusCode::NOT_FOUND,
@@ -101,6 +106,7 @@ impl AppError {
         }
     }
 
+    /// DynamoDBなど外部依存先の障害を502応答へ変換する。
     pub fn dependency() -> Self {
         Self {
             status: StatusCode::BAD_GATEWAY,
@@ -112,6 +118,7 @@ impl AppError {
         }
     }
 
+    /// 内部計算や非同期タスクの予期しない障害を500応答へ変換する。
     pub fn internal() -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
@@ -133,6 +140,7 @@ impl AppError {
 }
 
 impl IntoResponse for AppError {
+    /// 内部エラー型を、契約どおりのHTTP状態とJSON本文へ変換する。
     fn into_response(self) -> Response {
         (
             self.status,

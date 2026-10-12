@@ -1,15 +1,14 @@
 # syntax=docker/dockerfile:1.7
 ARG TARGETPLATFORM=linux/arm64
 
-# The builder runs on the same Amazon Linux 2023 userland as the runtime image
-# so that the dynamically linked binary matches the runtime glibc. A Debian or
-# Alpine builder would either require a newer glibc than AL2023 provides or
-# force a static musl build, which would change allocator behaviour and bias
-# the benchmark.
+# ビルダーとランタイムを同じAmazon Linux 2023系にし、動的リンクするglibcを一致させる。
+# Debianでは新しいglibcを要求する可能性があり、Alpineではmusl静的リンクによりアロケーター挙動が
+# 変わるため、比較結果へビルド環境差を混入させない。
 ARG BUILDER_BASE=public.ecr.aws/amazonlinux/amazonlinux:2023
 ARG FINAL_BASE=public.ecr.aws/lambda/provided:al2023
 ARG RUST_VERSION=1.98.1
 
+# 対象プラットフォームと同じAL2023上へ、固定Rustツールチェーンと最小ビルド依存を導入する。
 FROM --platform=$TARGETPLATFORM ${BUILDER_BASE} AS builder
 ARG RUST_VERSION
 ENV CARGO_HOME=/usr/local/cargo \
@@ -24,9 +23,11 @@ WORKDIR /build
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY src ./src
 
+# lockファイルとツールチェーンを尊重してreleaseビルドし、Lambda custom runtime名bootstrapで配置する。
 RUN cargo build --locked --release \
     && install -D -m 0755 target/release/rust-lambdalith /out/bootstrap
 
+# 共通の最終ベースへ単一バイナリだけをコピーし、ビルダーやCargoキャッシュを含めない。
 FROM --platform=$TARGETPLATFORM ${FINAL_BASE} AS runtime
 
 ARG BUILD_DATE=""

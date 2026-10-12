@@ -1,3 +1,5 @@
+"""ワークロードをPython/Rust APIへ同条件で送信し、測定値と実行メタデータを保存する。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -36,23 +38,35 @@ class RunConfig:
 
 
 def utc_now() -> str:
+    """実行環境のタイムゾーンに依存しないISO 8601 UTC時刻を返す。"""
     return datetime.now(UTC).isoformat()
 
 
 def selected_targets(target: str) -> tuple[str, ...]:
+    """bothは両実装へ展開し、個別指定は一実装だけへ正規化する。"""
+
+    # targetがbothなら比較対象をPythonとRustの固定順で返す。
     if target == "both":
         return ("python", "rust")
+
+    # targetが既知の実装名ならその一件だけを返し、それ以外は設定ミスとして拒否する。
     if target in {"python", "rust"}:
         return (target,)
-    raise ValueError("target must be python, rust, or both")
+    raise ValueError("target は python、rust、both のいずれかで指定してください")
 
 
 def validate_run_id(run_id: str) -> None:
+    """実行IDがヘッダーと安全な結果ディレクトリ名の両方で利用できる形式か確認する。"""
+
+    # 実行IDが英数字開始かつ許可文字・最大長に一致しない場合は、ファイル作成前に拒否する。
     if not RUN_ID_PATTERN.fullmatch(run_id):
-        raise ValueError("run ID may contain only letters, numbers, '.', '_' and '-'")
+        raise ValueError("run IDは英数字で始め、英数字と '.', '_'、'-' だけで指定してください")
 
 
 def _request_body(workload: Workload) -> bytes | None:
+    """本文なしの要求はNone、本文ありの要求は安定したUTF-8 JSONへ変換する。"""
+
+    # ワークロードに本文がない場合はContent-Length付き空JSONを作らず、本文なしで送信する。
     if workload.body is None:
         return None
     return json.dumps(
@@ -61,11 +75,15 @@ def _request_body(workload: Workload) -> bytes | None:
 
 
 def build_plan(config: RunConfig, workload: Workload) -> dict[str, Any]:
+    """実行前に対象と接続先を検証し、保存可能な実行計画へ変換する。"""
     targets = selected_targets(config.target)
+    # ドライランでない場合だけ、選択した全実装に接続先が設定されていることを要求する。
     if not config.dry_run:
         missing = [name for name in targets if not config.endpoints.get(name)]
+
+        # 接続先が不足している場合は、一部実装だけを測定して比較結果を不完全にしない。
         if missing:
-            raise ValueError(f"endpoint not configured for: {', '.join(missing)}")
+            raise ValueError(f"接続先が設定されていません: {', '.join(missing)}")
     return {
         "run_id": config.run_id,
         "target": config.target,
@@ -81,17 +99,22 @@ def build_plan(config: RunConfig, workload: Workload) -> dict[str, Any]:
 
 
 def _lambda_request_id(response: httpx.Response) -> str | None:
+    """API Gatewayヘッダーを優先し、なければJSON本文からLambdaリクエストIDを探す。"""
     for name in ("x-amzn-requestid", "x-amz-request-id"):
         value = response.headers.get(name)
+        # 候補ヘッダーに空でない値があれば、CloudWatchログとの相関IDとして採用する。
         if value:
             return value
     try:
         document = response.json()
+    # 応答がJSONでない場合は本文からIDを取得できないため、相関なしとしてNoneを返す。
     except (json.JSONDecodeError, UnicodeDecodeError):
         return None
+    # JSONルートがオブジェクトの場合だけ、互換候補となる二つのキーを順に確認する。
     if isinstance(document, dict):
         for name in ("lambda_request_id", "request_id"):
             value = document.get(name)
+            # 候補値が空でない文字列の場合だけ相関IDとして採用する。
             if isinstance(value, str) and value:
                 return value
     return None
@@ -108,6 +131,7 @@ async def _send_one(
     region: str,
     credentials: object | None,
 ) -> dict[str, Any]:
+    """一回のHTTP要求を送信し、成功可否・所要時間・相関IDを一レコードへまとめる。"""
     url = urljoin(endpoint.rstrip("/") + "/", workload.path.lstrip("/"))
     body = _request_body(workload)
     headers = {
@@ -115,8 +139,10 @@ async def _send_one(
         "X-Benchmark-Run-Id": run_id,
         "X-Benchmark-Request-Index": str(request_index),
     }
+    # 本文がある場合だけJSONのContent-Typeを付け、GETなど本文なし要求には付けない。
     if body is not None:
         headers["Content-Type"] = "application/json"
+    # 認証情報がある場合だけSigV4署名し、明示的な未署名モードでは元のヘッダーを使う。
     if credentials is not None:
         headers = sign_headers(
             method=workload.method,
@@ -137,8 +163,11 @@ async def _send_one(
         status_code = response.status_code
         request_id = _lambda_request_id(response)
         success = 200 <= status_code < 400
+        # HTTP状態が200以上400未満なら成功、それ以外は応答を受け取れた失敗として記録する。
         if not success:
-            error = f"HTTP {status_code}"
+            error = f"HTTP状態 {status_code}"
+
+    # 通信・タイムアウトなどHTTP応答を得られなかった場合は、例外種別と内容を測定失敗へ記録する。
     except httpx.HTTPError as exc:
         success = False
         error = f"{type(exc).__name__}: {exc}"
@@ -167,6 +196,7 @@ async def _execute_target(
     config: RunConfig,
     credentials: object | None,
 ) -> list[dict[str, Any]]:
+    """一実装への同時要求数を制限し、ウォームアップ後の測定結果だけを返す。"""
     semaphore = asyncio.Semaphore(workload.client_concurrency)
 
     async def invoke(index: int) -> dict[str, Any]:
@@ -182,6 +212,7 @@ async def _execute_target(
                 credentials=credentials,
             )
 
+    # warmupが1件以上なら負の添字で事前要求し、結果ファイルには含めず実行環境だけを温める。
     if workload.warmup:
         await asyncio.gather(*(invoke(-index) for index in range(1, workload.warmup + 1)))
     return list(
@@ -190,6 +221,7 @@ async def _execute_target(
 
 
 def _write_json(path: Path, value: object) -> None:
+    """人が確認できる整形済みJSONとしてメタデータを書き込む。"""
     path.write_text(
         json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -197,14 +229,17 @@ def _write_json(path: Path, value: object) -> None:
 
 
 def _write_jsonl(path: Path, records: list[dict[str, Any]]) -> None:
+    """測定一件を一行にして、追記・逐次処理しやすいJSONL形式で書き込む。"""
     with path.open("w", encoding="utf-8") as stream:
         for record in records:
             stream.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
 
 
 async def run_benchmark(config: RunConfig, workload: Workload) -> dict[str, Any]:
+    """実行計画を確定し、両実装の測定と再現用メタデータを同じ実行ディレクトリへ保存する。"""
     validate_run_id(config.run_id)
     plan = build_plan(config, workload)
+    # ドライランではディレクトリ作成やHTTP送信を行わず、検証済み計画だけを返す。
     if config.dry_run:
         return plan
 
@@ -221,6 +256,7 @@ async def run_benchmark(config: RunConfig, workload: Workload) -> dict[str, Any]
     _write_json(run_dir / "metadata.json", metadata)
 
     credentials = None
+    # 署名ありの設定の場合だけAWS認証情報を取得し、署名なしの場合はローカルAPIへそのまま送る。
     if config.sign_requests:
         credentials = frozen_credentials(boto3.Session(region_name=config.region))
     records: list[dict[str, Any]] = []

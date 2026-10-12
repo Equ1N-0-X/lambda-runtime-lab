@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# Builds both Lambda images from the same pinned OS-only base image.
+# 固定した同一のOS専用ベースイメージから、Python/RustのLambdaイメージを作成する。
 #
-# The base digest is resolved once and passed to both builds so that image size
-# and cold start comparisons cannot be skewed by the two images picking up
-# different revisions of the al2023 tag.
+# ベースdigestを一度だけ解決して両ビルドへ渡し、al2023タグの世代差がイメージサイズや
+# コールドスタート比較へ混入しないようにする。
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -19,6 +18,7 @@ DRY_RUN=false
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=true
 
 resolve_final_base() {
+  # FINAL_BASEが明示された場合はその参照を使い、未指定ならタグから現在のdigestを一度だけ解決する。
   if [[ -n "${FINAL_BASE:-}" ]]; then
     echo "${FINAL_BASE}"
     return
@@ -27,34 +27,37 @@ resolve_final_base() {
   digest="$(docker buildx imagetools inspect \
     "${FINAL_BASE_REPOSITORY}:${FINAL_BASE_TAG}" \
     --format '{{.Manifest.Digest}}')"
-  [[ -n "${digest}" ]] || { echo "cannot resolve the base image digest" >&2; exit 1; }
+  # digestが空なら比較条件を固定できないため、どちらのイメージもビルドせず終了する。
+  [[ -n "${digest}" ]] || { echo "ベースイメージのdigestを解決できません" >&2; exit 1; }
   echo "${FINAL_BASE_REPOSITORY}@${digest}"
 }
 
 build_image() {
+  # 指定実装のイメージを作成し、ビルド時間・サイズ・使用ベースを結果JSONへ保存する。
   local implementation="$1"
   local final_base="$2"
   local image="lambda-runtime-lab-${implementation}:${TAG}"
   local dockerfile="${ROOT}/apps/${implementation}/Dockerfile"
   local context="${ROOT}/apps/${implementation}"
   local output="${ROOT}/results/raw/${RUN_ID}/${implementation}-build.json"
-  # Lambda accepts a single image manifest, but Buildx provenance produces an
-  # OCI image index with an attestation manifest.  Disable provenance so the
-  # pushed tag is directly usable as a Lambda image URI.
+  # Lambdaは単一イメージマニフェストを受け付けるため、証明書付きOCI indexを作らず、
+  # pushしたタグをそのままLambdaイメージURIに使えるようprovenanceを無効化する。
   local command=(docker buildx build --progress "${BUILD_PROGRESS}" --platform "${PLATFORM}" --provenance=false --load
     --build-arg "FINAL_BASE=${final_base}"
     --build-arg "BUILD_DATE=${BUILD_DATE}"
     --build-arg "GIT_REVISION=${GIT_REVISION}"
     --tag "${image}" --file "${dockerfile}" "${context}")
 
+  # ドライラン時はDocker・ファイル出力を行わず、予定コマンドだけを表示して戻る。
   if "${DRY_RUN}"; then
-    printf 'DRY-RUN:'
+    printf 'ドライラン:'
     printf ' %q' "${command[@]}"
     printf '\n'
     return
   fi
 
-  [[ -f "${dockerfile}" ]] || { echo "missing Dockerfile: ${dockerfile}" >&2; exit 2; }
+  # Dockerfileが存在する場合だけビルドし、実装名誤りによる別コンテキストの利用を防ぐ。
+  [[ -f "${dockerfile}" ]] || { echo "Dockerfileが見つかりません: ${dockerfile}" >&2; exit 2; }
   mkdir -p "$(dirname "${output}")"
   local started ended duration image_id size
   started="$(date +%s)"
@@ -85,11 +88,12 @@ path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="ut
 PY
 }
 
+# ドライランではネットワーク解決せず表示用参照を使い、実行時だけdigestを解決して両ビルドへ渡す。
 if "${DRY_RUN}"; then
   FINAL_BASE_RESOLVED="${FINAL_BASE:-${FINAL_BASE_REPOSITORY}:${FINAL_BASE_TAG}}"
 else
   FINAL_BASE_RESOLVED="$(resolve_final_base)"
-  echo "shared base image: ${FINAL_BASE_RESOLVED}"
+  echo "共通ベースイメージ: ${FINAL_BASE_RESOLVED}"
 fi
 
 for implementation in ${IMPLEMENTATIONS:-python rust}; do

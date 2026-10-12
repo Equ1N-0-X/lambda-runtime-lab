@@ -1,9 +1,7 @@
-"""Checks the benchmark inputs against the canonical contract.
+"""ベンチマーク入力が正規API契約を満たすことを検証する。
 
-A workload body or seed item that violates the contract would turn a whole
-benchmark run into uniform 4xx or 5xx responses, which is expensive to discover
-after deploying. These checks read the limits from `spec/openapi.yaml` so they
-follow the contract rather than restating it.
+契約違反のワークロード本文やseed項目は、デプロイ後の全要求を4xx/5xxにする。このテストは
+上限値をOpenAPIから読み、契約を重複定義せずデプロイ前に不整合を検出する。
 """
 
 import re

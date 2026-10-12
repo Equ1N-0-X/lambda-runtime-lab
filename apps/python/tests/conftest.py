@@ -1,3 +1,5 @@
+"""Python APIテストで共有するAWSダミー設定、インメモリ保存先、HTTPクライアントを用意する。"""
+
 import os
 
 import pytest

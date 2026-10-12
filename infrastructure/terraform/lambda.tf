@@ -1,3 +1,4 @@
+# Python/Rustを同じメモリ・タイムアウト・アーキテクチャ・環境変数で作成する。
 resource "aws_lambda_function" "runtime" {
   for_each = local.runtimes
 
@@ -28,6 +29,8 @@ resource "aws_lambda_function" "runtime" {
 
   lifecycle {
     precondition {
+      # image_uriが空でなく、かつ対応するTerraform管理ECRのタグまたはdigest URIの場合だけ作成を許可する。
+      # 別リポジトリのイメージ混入を防ぎ、比較対象とデプロイ手順を一貫させる。
       condition = (
         each.value.image_uri != "" &&
         (
@@ -35,7 +38,7 @@ resource "aws_lambda_function" "runtime" {
           startswith(each.value.image_uri, "${aws_ecr_repository.runtime[each.key].repository_url}@")
         )
       )
-      error_message = "${each.key}_image_uri must be set to a tagged or digest URI from the Terraform-managed ${each.key} ECR repository before terraform plan or apply."
+      error_message = "${each.key}_image_uriにはTerraform管理の${each.key} ECRリポジトリにあるタグまたはdigest付きURIを指定してください。"
     }
   }
 }

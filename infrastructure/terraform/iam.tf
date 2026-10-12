@@ -1,3 +1,4 @@
+# Lambdaサービスだけが引き受けられる、両実装共通の最小実行ロールを作る。
 resource "aws_iam_role" "lambda_execution" {
   name = "${local.name_prefix}-lambda-execution"
 
@@ -16,6 +17,7 @@ resource "aws_iam_role" "lambda_execution" {
   })
 }
 
+# 共有テーブルの一件読み取りと、管理対象ロググループへのログ書き込みだけを許可する。
 resource "aws_iam_role_policy" "lambda_execution" {
   name = "${local.name_prefix}-lambda-execution"
   role = aws_iam_role.lambda_execution.id

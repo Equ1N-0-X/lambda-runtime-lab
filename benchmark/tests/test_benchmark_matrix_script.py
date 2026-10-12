@@ -1,3 +1,5 @@
+"""マトリクス実行のドライランが全メモリ・ワークロード条件を展開することを検証する。"""
+
 import os
 import subprocess
 from pathlib import Path

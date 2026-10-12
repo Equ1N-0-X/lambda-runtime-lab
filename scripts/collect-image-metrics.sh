@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 指定実行IDについて、ローカルイメージ・コンテナ内成果物・ECR登録情報をJSONへ収集する。
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -8,8 +9,9 @@ REGION="${AWS_REGION:-ap-northeast-1}"
 DRY_RUN=false
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=true
 
+# 実行IDが空なら保存先を特定できないため、DockerやAWSへ問い合わせる前に停止する。
 if [[ -z "${RUN_ID}" ]]; then
-  echo "RUN_ID is required" >&2
+  echo "RUN_IDの指定が必要です" >&2
   exit 2
 fi
 
@@ -31,6 +33,7 @@ repositories = {
     "rust": os.getenv("RUST_ECR_REPOSITORY_URL"),
 }
 
+# ドライランではDocker・ECRへアクセスせず、収集対象と出力先の計画だけを表示する。
 if dry_run == "true":
     print(json.dumps({
         "dry_run": True,
@@ -42,20 +45,24 @@ if dry_run == "true":
     raise SystemExit(0)
 
 def run(command, *, check=True):
+    """外部コマンドを実行し、後続のJSON解析に使う標準出力だけを返す。"""
     result = subprocess.run(command, check=check, capture_output=True, text=True)
     return result.stdout.strip()
 
 def container_size(image, path):
+    """コンテナ内パスのバイト数を測り、取得不能なら測定欠損としてNoneを返す。"""
     result = subprocess.run(
         ["docker", "run", "--rm", "--entrypoint", "sh", image, "-c",
          f"du -sb {path} 2>/dev/null | cut -f1"],
         capture_output=True, text=True,
     )
     value = result.stdout.strip()
+    # コマンド成功かつ出力が整数の場合だけ採用し、それ以外はゼロではなく未計測とする。
     return int(value) if result.returncode == 0 and value.isdigit() else None
 
 metrics = {}
 for implementation, image in images.items():
+    # 各実装について、Dockerメタデータとレイヤー履歴を共通形式へまとめる。
     inspected = json.loads(run(["docker", "image", "inspect", image]))[0]
     history_lines = run([
         "docker", "history", "--no-trunc", "--format",
@@ -72,8 +79,10 @@ for implementation, image in images.items():
         "artifacts": {},
     }
     build_path = output.parent / f"{implementation}-build.json"
+    # 同じ実行IDのビルド記録がある場合だけ結合し、ない場合は未収集としてNoneを維持する。
     if build_path.is_file():
         item["build"] = json.loads(build_path.read_text(encoding="utf-8"))
+    # Pythonはランタイム・依存・アプリを分け、Rustは配布バイナリのサイズを測定する。
     if implementation == "python":
         item["artifacts"] = {
             "runtime_size_bytes": container_size(image, "/var/lang"),
@@ -88,6 +97,7 @@ for implementation, image in images.items():
         }
 
     repository = repositories[implementation]
+    # ECRリポジトリURLが設定されている場合だけ、登録済みdigestと圧縮サイズを追加する。
     if repository:
         repository_name = repository.split("/", 1)[-1]
         response = json.loads(run([

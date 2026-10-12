@@ -1,1 +1,1 @@
-"""Python Lambdalith application package."""
+"""共通API契約をPythonで実装するLambdaアプリケーションパッケージ。"""

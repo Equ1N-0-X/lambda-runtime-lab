@@ -1,3 +1,5 @@
+"""対象APIへの要求回数、相関ヘッダー、測定値、保存成果物を検証する。"""
+
 import asyncio
 import json
 

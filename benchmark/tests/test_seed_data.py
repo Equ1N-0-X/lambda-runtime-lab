@@ -1,3 +1,5 @@
+"""比較用seedデータが固定件数・固定長・決定的な内容になることを検証する。"""
+
 import runpy
 from pathlib import Path
 

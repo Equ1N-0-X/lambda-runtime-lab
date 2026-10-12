@@ -1,3 +1,5 @@
+"""Python APIが成功・入力不正・未登録・依存先障害の公開契約を満たすことを検証する。"""
+
 from fastapi.testclient import TestClient
 
 from app.main import create_app

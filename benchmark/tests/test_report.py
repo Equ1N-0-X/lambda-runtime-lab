@@ -1,3 +1,5 @@
+"""測定欠損をゼロにせず、Markdown・CSVへ同じ集計結果を出すことを検証する。"""
+
 import csv
 import json
 
@@ -46,7 +48,12 @@ def test_report_generates_markdown_and_csv_with_null_cost(tmp_path):
 
     content = markdown.read_text(encoding="utf-8")
     assert "Cost: null" in content
-    assert "unmatched samples are unclassified" in content
+    assert "結合できないサンプルはUnclassified" in content
+    assert "`Unclassified`が1件でもある場合" in content
+    assert "このrunは相関不完全" in content
+    assert "`latency_ms`: クライアントから見たAPI全体の応答時間" in content
+    assert "AWS請求額そのものではありません" in content
+    assert "[ベンチマークレポート利用ガイド]" in content
     with csv_path.open(encoding="utf-8") as stream:
         rows = list(csv.DictReader(stream))
     assert rows[0]["implementation"] == "python"

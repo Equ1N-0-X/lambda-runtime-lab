@@ -1,8 +1,7 @@
-//! Runs the shared canonical test vectors against the Rust implementation.
+//! 共有する正規テストベクトルをRust実装へ適用する。
 //!
-//! `spec/testcases` is the single source of truth for the contract. The Python
-//! implementation runs the same files, which is what keeps the two comparable
-//! without a deployed environment.
+//! `spec/testcases`を契約の正本とし、Python実装も同じファイルを使うことで、デプロイ環境なしに
+//! 両実装の応答を比較する。
 
 use std::{fs, path::PathBuf, sync::Arc};
 

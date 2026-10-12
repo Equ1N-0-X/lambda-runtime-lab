@@ -1,9 +1,7 @@
-//! JSON decoding that rejects duplicate object members.
+//! 重複するオブジェクトメンバーを拒否するJSONデコーダー。
 //!
-//! `serde_json` keeps the last occurrence of a repeated member, so the raw
-//! parser cannot enforce the canonical rule that duplicate members make a
-//! document invalid. Decoding through [`StrictValue`] surfaces them as an
-//! ordinary parse failure, which the API layer maps to `invalid_json`.
+//! `serde_json`は重複キーの最後の値を残すため、独自の値ビジターで検出する。重複は通常の
+//! 解析失敗として返し、API層が `invalid_json` へ変換する。
 
 use std::fmt;
 
@@ -15,8 +13,7 @@ use serde_json::{Map, Number, Value};
 
 pub struct StrictValue(pub Value);
 
-/// Decodes a document, returning `None` for any syntax error, invalid UTF-8,
-/// or duplicate object member.
+/// 構文不正、UTF-8不正、重複キーのいずれかならNoneを返し、それ以外はJSON値を返す。
 pub fn parse(body: &[u8]) -> Option<Value> {
     serde_json::from_slice::<StrictValue>(body)
         .ok()
@@ -76,6 +73,7 @@ impl<'de> Visitor<'de> for StrictValueVisitor {
         let mut members = Map::new();
         while let Some(key) = access.next_key::<String>()? {
             let StrictValue(value) = access.next_value()?;
+            // 同じキーが既に存在する場合は、後勝ちにせずJSON全体を不正として解析を中断する。
             if members.insert(key, value).is_some() {
                 return Err(de::Error::custom("duplicate object member"));
             }

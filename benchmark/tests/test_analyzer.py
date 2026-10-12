@@ -1,3 +1,5 @@
+"""百分位点、Cold/Warm分類、エラー率の集計規則を検証する。"""
+
 from benchmark_runner.analyzer import percentile, summarize
 
 
