@@ -189,18 +189,11 @@ report:
 
 ui:
 	# 計測結果の閲覧と計測開始の画面を、手元のマシンだけで起動する。
-	# 計測の接続先と条件は benchmark と同じ環境変数から渡し、ロググループはTerraformの出力から求める。
-	# Terraform stateがない場合はロググループを空にし、画面で設定不足として表示させる。
-	python_function="$$(terraform -chdir=$(TERRAFORM_DIR) output -raw python_lambda_name 2>/dev/null || true)"; \
-	rust_function="$$(terraform -chdir=$(TERRAFORM_DIR) output -raw rust_lambda_name 2>/dev/null || true)"; \
+	# 接続先と比較条件は、画面がTerraformの出力とAWS上のLambdaの実設定から求める。
 	AWS_REGION="$(AWS_REGION)" \
-	PYTHON_API_URL="$(PYTHON_API_URL)" \
-	RUST_API_URL="$(RUST_API_URL)" \
-	ARCHITECTURE="$(ARCHITECTURE)" \
-	LAMBDA_MEMORY_MB="$(LAMBDA_MEMORY_MB)" \
-	PYTHON_LOG_GROUP="$${python_function:+/aws/lambda/$$python_function}" \
-	RUST_LOG_GROUP="$${rust_function:+/aws/lambda/$$rust_function}" \
-	uv run --project $(BENCHMARK_DIR) python -m benchmark_runner ui --port "$(UI_PORT)"
+	uv run --project $(BENCHMARK_DIR) python -m benchmark_runner ui \
+		--port "$(UI_PORT)" \
+		--terraform-dir "$(TERRAFORM_DIR)"
 
 benchmark-matrix:
 	AWS_REGION="$(AWS_REGION)" \

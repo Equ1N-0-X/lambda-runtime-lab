@@ -10,11 +10,14 @@ import threading
 import time
 import uuid
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from benchmark_runner.dashboard.settings import LaunchSettings
 
 logger = logging.getLogger(__name__)
 
@@ -45,61 +48,6 @@ class LaunchError(ValueError):
 
 class JobConflict(LaunchError):
     """別の計測が実行中のため、新しい計測を開始できないことを表す。"""
-
-
-@dataclass(frozen=True)
-class LaunchSettings:
-    """計測の接続先と、比較条件として記録するLambdaの実設定。"""
-
-    python_endpoint: str | None
-    rust_endpoint: str | None
-    architecture: str | None
-    memory_mb: int | None
-    region: str
-    python_log_group: str | None
-    rust_log_group: str | None
-
-    @classmethod
-    def from_environment(cls, environ: dict[str, str] | None = None) -> LaunchSettings:
-        """make ui が渡す環境変数から設定を読み、未設定や不正値はNoneとして保持する。"""
-        environ = os.environ if environ is None else environ
-        memory = environ.get("LAMBDA_MEMORY_MB", "").strip()
-        return cls(
-            python_endpoint=environ.get("PYTHON_API_URL") or None,
-            rust_endpoint=environ.get("RUST_API_URL") or None,
-            architecture=environ.get("ARCHITECTURE") or None,
-            # 数値でないメモリ指定は条件として記録できないため、未設定と同じ扱いにする。
-            memory_mb=int(memory) if memory.isdigit() else None,
-            region=environ.get("AWS_REGION") or "ap-northeast-1",
-            python_log_group=environ.get("PYTHON_LOG_GROUP") or None,
-            rust_log_group=environ.get("RUST_LOG_GROUP") or None,
-        )
-
-    def missing(self) -> list[str]:
-        """計測からレポート作成までに不足している設定を、環境変数名付きで列挙する。"""
-        checks = (
-            (self.python_endpoint, "Python API の URL（PYTHON_API_URL）"),
-            (self.rust_endpoint, "Rust API の URL（RUST_API_URL）"),
-            (self.architecture, "Lambda のアーキテクチャ（ARCHITECTURE）"),
-            (self.memory_mb, "Lambda のメモリ（LAMBDA_MEMORY_MB）"),
-            (self.python_log_group, "Python のロググループ（PYTHON_LOG_GROUP）"),
-            (self.rust_log_group, "Rust のロググループ（RUST_LOG_GROUP）"),
-        )
-        return [label for value, label in checks if not value]
-
-    def public(self) -> dict[str, Any]:
-        """画面に返してよい項目だけを返す。URLやロググループ名は含めない。"""
-        return {
-            "ready": not self.missing(),
-            "missing": self.missing(),
-            "architecture": self.architecture,
-            "memory_mb": self.memory_mb,
-            "region": self.region,
-        }
-
-    def secrets(self) -> list[str]:
-        """実行出力から伏せる接続先の文字列。"""
-        return [value for value in (self.python_endpoint, self.rust_endpoint) if value]
 
 
 def load_workloads(workload_file: Path) -> list[dict[str, Any]]:
@@ -142,6 +90,8 @@ class Job:
     iterations: int
     client_concurrency: int
     warmup: int
+    # 開始時点で確定した接続先と条件。実行中に設定が変わっても、この計測には影響させない。
+    settings: LaunchSettings
     state: str = "running"
     step: str = "run"
     message: str = ""
@@ -178,14 +128,15 @@ class JobManager:
     def __init__(
         self,
         *,
-        settings: LaunchSettings,
+        settings_provider: Callable[[], LaunchSettings],
         workload_file: Path,
         results_dir: Path,
         pricing_path: Path,
         log_wait_seconds: float = LOG_INGESTION_WAIT_SECONDS,
         command_prefix: list[str] | None = None,
     ) -> None:
-        self.settings = settings
+        # 設定は計測のたびに取得元から読み直し、デプロイ後も画面を起動し直さずに使えるようにする。
+        self.settings_provider = settings_provider
         self.workload_file = workload_file
         self.results_dir = results_dir
         self.pricing_path = pricing_path
@@ -197,16 +148,20 @@ class JobManager:
         self._job: Job | None = None
         self._process: subprocess.Popen[str] | None = None
 
+    def resolve_settings(self) -> LaunchSettings:
+        return self.settings_provider()
+
     def current(self) -> dict[str, Any] | None:
         with self._lock:
             return self._job.public() if self._job else None
 
     def start(self, request: dict[str, Any]) -> dict[str, Any]:
         """入力を検証して計測を開始し、開始時点の状態を返す。"""
-        missing = self.settings.missing()
+        settings = self.settings_provider()
+        missing = settings.missing()
         # 接続先や比較条件が欠けたまま計測すると比較に使えないrunになるため、開始しない。
         if missing:
-            raise LaunchError("計測に必要な設定が不足しています: " + "、".join(missing))
+            raise LaunchError("計測に必要な設定がそろっていません: " + " ".join(missing))
         names = {workload["name"] for workload in load_workloads(self.workload_file)}
         workload = request.get("workload")
         # 定義にないワークロード名は、CLIへ渡す前に入力エラーとして返す。
@@ -219,7 +174,9 @@ class JobManager:
             if self._job and self._job.state == "running":
                 raise JobConflict("別の計測が実行中です。終わるまでお待ちください。")
             self._cancel.clear()
-            self._job = Job(run_id=str(uuid.uuid4()), workload=workload, **counts)
+            self._job = Job(
+                run_id=str(uuid.uuid4()), workload=workload, settings=settings, **counts
+            )
             job = self._job
         threading.Thread(target=self._execute, args=(job,), daemon=True).start()
         return job.public()
@@ -236,7 +193,7 @@ class JobManager:
             return self._job.public()
 
     def _commands(self, job: Job) -> dict[str, list[str]]:
-        settings = self.settings
+        settings = job.settings
         results = ["--results-dir", str(self.results_dir)]
         return {
             "run": [
@@ -314,8 +271,8 @@ class JobManager:
         logger.info("計測工程を開始します: run_id=%s step=%s", job.run_id, job.step)
         env = {
             **os.environ,
-            "PYTHON_API_ENDPOINT": self.settings.python_endpoint or "",
-            "RUST_API_ENDPOINT": self.settings.rust_endpoint or "",
+            "PYTHON_API_ENDPOINT": job.settings.python_endpoint or "",
+            "RUST_API_ENDPOINT": job.settings.rust_endpoint or "",
         }
         with self._lock:
             # 起動直前に中止されていれば、子プロセスを作らずに終える。
@@ -352,7 +309,7 @@ class JobManager:
 
     def _append_output(self, job: Job, line: str) -> None:
         # 接続先URLは公開時やスクリーンショットで漏れないよう、画面へ渡す前に伏せる。
-        for secret in self.settings.secrets():
+        for secret in job.settings.secrets():
             line = line.replace(secret, "<API URL>")
         with self._lock:
             job.output.append(line)

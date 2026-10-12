@@ -136,7 +136,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             for workload in load_workloads(self.jobs.workload_file)
         ]
         return {
-            "settings": self.jobs.settings.public(),
+            "settings": self.jobs.resolve_settings().public(),
             "workloads": workloads,
             "limits": {name: {"min": low, "max": high} for name, (low, high) in LIMITS.items()},
             "log_wait_seconds": self.jobs.log_wait_seconds,

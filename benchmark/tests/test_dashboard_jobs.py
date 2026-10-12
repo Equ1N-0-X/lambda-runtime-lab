@@ -8,8 +8,9 @@ import time
 
 import pytest
 
-from benchmark_runner.dashboard.jobs import JobConflict, JobManager, LaunchError, LaunchSettings
+from benchmark_runner.dashboard.jobs import JobConflict, JobManager, LaunchError
 from benchmark_runner.dashboard.server import create_server
+from benchmark_runner.dashboard.settings import LaunchSettings
 
 SECRET_URL = "https://secret-api.example"
 
@@ -55,8 +56,9 @@ def _manager(tmp_path, *, fail="", slow="", settings=None):
     workload_file.write_text(WORKLOADS, encoding="utf-8")
     script = tmp_path / "fake_cli.py"
     script.write_text(FAKE_CLI.replace("{fail}", fail).replace("{slow}", slow), encoding="utf-8")
+    resolved = settings or _settings()
     return JobManager(
-        settings=settings or _settings(),
+        settings_provider=lambda: resolved,
         workload_file=workload_file,
         results_dir=tmp_path / "results",
         pricing_path=tmp_path / "pricing.yaml",
@@ -92,18 +94,6 @@ def _wait_for_step(manager, step, timeout=10):
             return
         time.sleep(0.05)
     raise AssertionError(f"{step} 工程に到達しませんでした")
-
-
-def test_settings_from_environment_reports_missing_values_without_urls():
-    settings = LaunchSettings.from_environment(
-        {"PYTHON_API_URL": SECRET_URL, "LAMBDA_MEMORY_MB": "abc"}
-    )
-
-    public = settings.public()
-    assert public["ready"] is False
-    assert any("RUST_API_URL" in item for item in public["missing"])
-    assert any("LAMBDA_MEMORY_MB" in item for item in public["missing"])
-    assert SECRET_URL not in json.dumps(public)
 
 
 def test_start_runs_all_steps_and_masks_api_urls(tmp_path):
@@ -166,7 +156,7 @@ def test_start_rejects_invalid_requests(tmp_path, request_overrides, message):
 def test_start_rejects_when_settings_are_missing(tmp_path):
     manager = _manager(tmp_path, settings=_settings(architecture=None))
 
-    with pytest.raises(LaunchError, match="ARCHITECTURE"):
+    with pytest.raises(LaunchError, match="アーキテクチャ"):
         manager.start(_request())
 
 

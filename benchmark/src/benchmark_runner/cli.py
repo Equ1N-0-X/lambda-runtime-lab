@@ -16,8 +16,9 @@ from pathlib import Path
 import boto3
 
 from benchmark_runner.cloudwatch import collect_run
-from benchmark_runner.dashboard.jobs import JobManager, LaunchSettings
+from benchmark_runner.dashboard.jobs import JobManager
 from benchmark_runner.dashboard.server import LISTEN_HOST, create_server
+from benchmark_runner.dashboard.settings import SettingsResolver
 from benchmark_runner.report import generate_report
 from benchmark_runner.runner import RunConfig, run_benchmark
 from benchmark_runner.workloads import WorkloadError, load_workload
@@ -94,6 +95,7 @@ def build_parser() -> argparse.ArgumentParser:
     ui = subparsers.add_parser("ui", help="計測結果の閲覧と計測開始の画面を手元で起動する")
     ui.add_argument("--port", type=int, default=8765)
     ui.add_argument("--workload-file", type=Path, default=ROOT / "spec/workloads.yaml")
+    ui.add_argument("--terraform-dir", type=Path, default=ROOT / "infrastructure/terraform")
     ui.add_argument("--results-dir", type=Path, default=ROOT / "results")
     ui.add_argument("--pricing", type=Path, default=ROOT / "spec/pricing.yaml")
     return parser
@@ -182,9 +184,10 @@ def _report_command(args: argparse.Namespace) -> int:
 def _ui_command(args: argparse.Namespace) -> int:
     """画面のサーバーを起動し、Ctrl+Cで停止されるまで待ち受ける。"""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    # 計測の接続先と比較条件は make ui が渡す環境変数から読み、画面からは変更させない。
+    # 接続先と比較条件はTerraformとLambdaの実設定から求め、画面からは変更させない。
+    resolver = SettingsResolver(terraform_dir=args.terraform_dir)
     jobs = JobManager(
-        settings=LaunchSettings.from_environment(),
+        settings_provider=resolver.resolve,
         workload_file=args.workload_file,
         results_dir=args.results_dir,
         pricing_path=args.pricing,

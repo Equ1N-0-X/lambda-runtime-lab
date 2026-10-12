@@ -833,12 +833,15 @@ function renderLaunchForm(options) {
   if (!settings.ready) {
     cards.push(
       el("div", { class: "card notice" }, [
-        el("h3", { class: "badge badge-warning", text: "計測に必要な設定が足りません" }),
+        el("h3", { class: "badge badge-warning", text: "計測の準備ができていません" }),
         el("ul", {}, settings.missing.map((item) => el("li", { text: item }))),
         el("p", {
           class: "section-note",
-          text: "ターミナルで source ./.env.export.sh を実行してから、make ui を起動し直してください。ロググループは Terraform の出力から自動で求めます。",
+          text: "接続先と条件は、Terraform の出力と AWS 上の Lambda の設定から自動で読み取ります。原因を解消したら、画面を起動し直さずに再確認できます。",
         }),
+        el("div", { class: "form-actions" }, [
+          el("button", { type: "button", class: "ghost-button", text: "設定を再確認", onclick: openLaunch }),
+        ]),
       ]),
     );
   }
@@ -847,7 +850,7 @@ function renderLaunchForm(options) {
       el("div", { class: "section-head" }, el("h3", { text: "固定の条件" })),
       el("p", {
         class: "section-note",
-        text: "環境変数から読み込んだ値です。AWS 上の Lambda の実設定と同じか確認してください。",
+        text: "AWS 上の Lambda から読み取った実際の設定です。この条件で計測し、結果に記録します。",
       }),
       fixed,
     ]),
@@ -930,7 +933,7 @@ function renderLaunch() {
   ];
   if (state.job) children.push(renderJobPanel(state.job));
   if (state.launch) children.push(...renderLaunchForm(state.launch));
-  else children.push(el("p", { class: "muted", text: "読み込み中…" }));
+  else children.push(el("p", { class: "muted", text: "AWS 上の設定を確認しています…" }));
   detail.replaceChildren(...children);
 }
 
@@ -994,6 +997,8 @@ async function openLaunch() {
   history.replaceState(null, "", "#launch");
   renderRunList();
   renderJobBanner();
+  // 設定の読み取りには数秒かかるため、古い内容を出さずに確認中であることを示す。
+  state.launch = null;
   renderLaunch();
   try {
     state.launch = await fetchJson("/api/launch");

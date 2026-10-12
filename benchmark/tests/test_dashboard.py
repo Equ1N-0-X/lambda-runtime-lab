@@ -8,8 +8,9 @@ import urllib.request
 import pytest
 
 from benchmark_runner.dashboard.catalog import RunNotFound, list_runs, load_run
-from benchmark_runner.dashboard.jobs import JobManager, LaunchSettings
+from benchmark_runner.dashboard.jobs import JobManager
 from benchmark_runner.dashboard.server import create_server
+from benchmark_runner.dashboard.settings import LaunchSettings
 
 
 def _record(implementation, index, *, start_type="warm"):
@@ -133,7 +134,9 @@ def test_list_runs_returns_empty_when_nothing_measured(tmp_path):
 def server_url(tmp_path):
     _write_run(tmp_path, "complete")
     jobs = JobManager(
-        settings=LaunchSettings.from_environment({}),
+        settings_provider=lambda: LaunchSettings(
+            None, None, None, None, "ap-northeast-1", None, None
+        ),
         workload_file=tmp_path / "workloads.yaml",
         results_dir=tmp_path,
         pricing_path=tmp_path / "missing.yaml",
