@@ -1,3 +1,5 @@
+"""DynamoDB属性変換、未登録、SDK障害、保存形式不正の扱いを検証する。"""
+
 import asyncio
 from decimal import Decimal
 from threading import get_ident

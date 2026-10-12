@@ -1,3 +1,5 @@
+//! DynamoDBとインメモリ保存先を、共通の項目取得境界として提供する。
+
 use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
@@ -8,14 +10,15 @@ use crate::model::Item;
 
 #[derive(Debug, Error)]
 pub enum RepositoryError {
-    #[error("DynamoDB request failed")]
+    #[error("DynamoDBリクエストに失敗しました")]
     Dependency,
-    #[error("DynamoDB item has an invalid schema")]
+    #[error("DynamoDB項目の形式が不正です")]
     InvalidItem,
 }
 
 #[async_trait]
 pub trait ItemRepository: Send + Sync {
+    /// IDで一件を取得し、未登録はNone、保存先障害はRepositoryErrorとして返す。
     async fn get(&self, id: &str) -> Result<Option<Item>, RepositoryError>;
 }
 
@@ -25,6 +28,7 @@ pub struct DynamoDbItemRepository {
 }
 
 impl DynamoDbItemRepository {
+    /// AWS SDKクライアントと対象テーブル名を保持するDynamoDB実装を作る。
     pub fn new(client: Client, table_name: impl Into<String>) -> Self {
         Self {
             client,
@@ -36,6 +40,7 @@ impl DynamoDbItemRepository {
 #[async_trait]
 impl ItemRepository for DynamoDbItemRepository {
     async fn get(&self, id: &str) -> Result<Option<Item>, RepositoryError> {
+        // 強整合読み取りを一回実行し、SDKエラーは利用者入力と区別して依存先障害に変換する。
         let output = self
             .client
             .get_item()
@@ -55,6 +60,7 @@ impl ItemRepository for DynamoDbItemRepository {
 }
 
 fn parse_item(attributes: HashMap<String, AttributeValue>) -> Result<Item, RepositoryError> {
+    // id・value・payloadの全属性が契約どおりの型でそろう場合だけ、ドメイン項目へ変換する。
     let id = string_attribute(&attributes, "id")?;
     let value = string_number_attribute(&attributes, "value")?;
     let payload = string_attribute(&attributes, "payload")?;
@@ -90,6 +96,7 @@ pub struct InMemoryItemRepository {
 }
 
 impl InMemoryItemRepository {
+    /// テストで外部I/Oなしに同じ取得契約を再現する項目集合を作る。
     pub fn new(items: impl IntoIterator<Item = Item>) -> Self {
         Self {
             items: Arc::new(

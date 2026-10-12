@@ -1,4 +1,5 @@
 locals {
+  # 全リソースで共有する名前接頭辞とログ保持期間を一箇所で管理する。
   name_prefix        = "${var.project_name}-${var.environment}"
   log_retention_days = 14
 
@@ -9,6 +10,7 @@ locals {
     Workload    = "lambda-runtime-benchmark"
   }
 
+  # Python/Rustで変えてよい識別子とイメージURIだけを実装別に定義する。
   runtimes = {
     python = {
       image_uri       = var.python_image_uri
@@ -24,6 +26,7 @@ locals {
     }
   }
 
+  # 比較の公平性に関わるLambda設定とログ水準は両実装で共有する。
   common_lambda_settings = {
     memory_size   = var.lambda_memory_mb
     timeout       = var.lambda_timeout_seconds
@@ -39,6 +42,7 @@ locals {
     }
   }
 
+  # APIアクセスログは相関・失敗調査に必要な項目だけをJSONで記録する。
   api_access_log_format = jsonencode({
     request_id        = "$context.requestId"
     request_time      = "$context.requestTime"

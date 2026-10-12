@@ -1,3 +1,5 @@
+"""確認済み料金の読込条件と、一要求・百万要求換算の料金計算を検証する。"""
+
 from decimal import Decimal
 from pathlib import Path
 

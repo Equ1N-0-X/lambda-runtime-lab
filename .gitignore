@@ -2,6 +2,8 @@
 .env
 .env.*
 !.env.example
+!.env.local.example
+!.env.export.sh
 *.tfvars
 !*.tfvars.example
 *.pem
@@ -45,6 +47,7 @@ results/reports/*
 .DS_Store
 .idea/
 .vscode/
+.cursor/
 *.swp
 
 # Local build metadata

@@ -134,13 +134,13 @@ make lint
 make test
 ```
 
-共通の Contract Test は、すでに起動している 2 つの API と、`spec/testcases/` の正本ケースを想定します。
+共通の Contract Test は、URL未指定または `.env.local` の標準ローカル値なら、DynamoDB・Python API・Rust Lambda RIEを起動し、`spec/testcases/` の正本ケースを比較します。既定値で使う場合、環境変数の設定や事前起動は不要です。
 
 ```bash
-PYTHON_API_URL=http://127.0.0.1:8081 \
-RUST_API_URL=http://127.0.0.1:8082 \
 make contract-test
 ```
+
+コマンドが自動起動したサービスはテスト終了時に停止します。AWSや手動起動済みAPIなど、標準ローカル値とは異なる接続先を使う場合は `PYTHON_API_URL` と `RUST_API_URL` を指定してください。この場合、起動・fixture投入・停止を行わず、指定先へテスト要求だけを送ります。RustのRIEを指定先にする場合は、`RUST_CONTRACT_TRANSPORT=lambda-rie` も設定してください。
 
 このリポジトリでコンテナを用いるローカル実行では、DynamoDB Local を起動し、正本フィクスチャを読み込み、Python ASGI アプリを実行してから、Lambda Runtime Interface Emulator 経由で Rust の Lambda イメージを起動します。
 
@@ -173,10 +173,7 @@ docker run --rm -p 9002:8080 \
   --env DYNAMODB_TABLE_NAME=lambda-runtime-lab-contract \
   lambda-runtime-lab-rust:local
 
-PYTHON_CONTRACT_TRANSPORT=direct \
-RUST_CONTRACT_TRANSPORT=lambda-rie \
-PYTHON_API_URL=http://127.0.0.1:9001 \
-RUST_API_URL=http://127.0.0.1:9002 \
+# ローカルサービスを手動で起動済みの場合も、そのまま実行できる
 make contract-test
 ```
 
@@ -184,29 +181,7 @@ Linux では、Rust の `docker run` コマンドに `--add-host host.docker.int
 
 ## デプロイ方法
 
-デプロイにより課金対象の AWS リソースが作成されます。AWS 認証情報チェーンで認証してください。初回は、Lambda が参照するイメージを置くための ECR だけを先に作成します。
-
-```bash
-export AWS_REGION=ap-northeast-1
-make bootstrap-ecr
-```
-
-次に、ローカルで両イメージをビルドして ECR へプッシュします。`make publish-images` は、タグ変更不可の ECR に再プッシュしないよう、一意なタグを自動で使います。任意のタグを指定する場合は `PUBLISH_TAG` を設定してください。
-
-```bash
-make publish-images
-# または: PUBLISH_TAG=benchmark-20260915 make publish-images
-```
-
-コマンドの出力に、digest URI を設定する `export` 行が表示されます。その行を実行してからデプロイします。
-
-```bash
-export PYTHON_IMAGE_URI=<publish-images-output>
-export RUST_IMAGE_URI=<publish-images-output>
-make deploy
-```
-
-承認前に Terraform の実行計画を確認してください。API は IAM 認可を使用し、匿名アクセスを継続的に許可する設計ではありません。ベンチマークランナーは標準の AWS 認証情報チェーンから認証情報を取得し、AWS Signature Version 4（SigV4）で API Gateway リクエストに署名します。認証情報をこのリポジトリに保存することはありません。
+初回作成、イメージ更新、Lambda切替、確認、切戻し、削除は、[AWSデプロイ手順](docs/06_AWSデプロイ手順.md) を参照してください。API URL やテーブル名の環境変数は、同手順の「共通の準備」どおり `source ./.env.export.sh` で読み込みます。`make publish-images` はECRへのpushだけであり、Lambdaを新digestへ更新するには、出力されたURIを指定して `plan` を確認後に `make deploy` が必要です。
 
 実験後は環境を削除します。
 
@@ -216,23 +191,21 @@ make destroy
 
 ## シード方法
 
-`terraform output` からデプロイ済みテーブル名を取得し、決定的なシードスクリプトを実行します。
+`terraform output` からデプロイ済みテーブル名を取得し、`.env` へ書いたうえで決定的なシードスクリプトを実行します。
 
 ```bash
-DYNAMODB_TABLE_NAME=<terraform-output> \
-AWS_REGION=ap-northeast-1 \
+source ./.env.export.sh
 make seed
 ```
 
-DynamoDB Local では、`DYNAMODB_ENDPOINT_URL` も設定してください。コマンドを再実行しても、約 100 件の項目 ID、値、ペイロードは同一になります。
+DynamoDB Local では、`source ./.env.export.sh --local`（`DYNAMODB_ENDPOINT_URL` 含む）を使ってください。コマンドを再実行しても、約 100 件の項目 ID、値、ペイロードは同一になります。
 
 ## ベンチマーク方法
 
-保護された両方の API エンドポイントを設定します。ランナーは `X-Benchmark-Run-Id` を追加し、ウォームアップを実行し、両対象に同一のワークロード設定を使用し、SigV4 で AWS リクエストに署名し、後から再分析できるよう生の観測値を保存します。
+保護された両方の API エンドポイント、実際のLambdaアーキテクチャ、メモリを `.env` に設定し、`source ./.env.export.sh` で読み込みます。Python/RustのLambda設定が同じであることをAWS CLIで確認してから、`ARCHITECTURE` と `LAMBDA_MEMORY_MB` を記録してください。ランナーは `X-Benchmark-Run-Id` とリクエスト番号を追加し、ウォームアップを実行し、両対象に同一のワークロード設定を使用し、SigV4 で AWS リクエストに署名し、後から再分析できるよう生の観測値を保存します。
 
 ```bash
-PYTHON_API_URL=<python-api-output> \
-RUST_API_URL=<rust-api-output> \
+source ./.env.export.sh
 WORKLOAD=aggregate-concurrent \
 RUN_ID=auto \
 make benchmark
@@ -241,8 +214,7 @@ make benchmark
 同一メモリのマトリクスを明示的に実行します。
 
 ```bash
-PYTHON_API_URL=<python-api-output> \
-RUST_API_URL=<rust-api-output> \
+source ./.env.export.sh
 make benchmark-matrix
 ```
 
@@ -259,6 +231,10 @@ RUN_ID=<existing-run-id> make report
 
 出力先は `results/reports/<run-id>.md` と `results/reports/<run-id>.csv` です。レポートには、条件、サンプル数、パーセンタイル、リソース観測値、イメージメタデータ、正規化コスト、測定時の注記を含めます。
 
+レポートは、最初に`Unclassified=0`と実験条件を確認してから数値を比較します。各章・指標・
+`null`の意味、CSVの利用方法、結論を書く際の注意点は
+[ベンチマークレポート利用ガイド](docs/07_BENCHMARK_REPORT_GUIDE.md) を参照してください。
+
 ## テスト方針
 
 - Python プロジェクトで、Python の単体、API、リポジトリ、エラーテストを実行します。
@@ -270,7 +246,7 @@ RUN_ID=<existing-run-id> make report
 - コンテナのスモーク／契約テストでは、arm64 イメージと共通の決定的なデータソースを使用します。
 - Terraform は、リソースをデプロイせずにフォーマット、バックエンドなしの初期化、検証を実行します。
 
-`make test` は暗黙に AWS へ接続しません。`make contract-test` には API URL の明示的な指定が必要です。
+`make test` は暗黙に AWS へ接続しません。`make contract-test` は既定のローカル環境だけを自動起動し、AWSへ接続しません。
 
 ## CI
 

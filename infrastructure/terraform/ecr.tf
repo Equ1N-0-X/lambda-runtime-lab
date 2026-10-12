@@ -1,3 +1,4 @@
+# 実装ごとに暗号化・push時スキャン・タグ不変のECRリポジトリを作る。
 resource "aws_ecr_repository" "runtime" {
   for_each = local.runtimes
 
@@ -14,6 +15,7 @@ resource "aws_ecr_repository" "runtime" {
   }
 }
 
+# 同一アカウントかつ本プロジェクト名のLambdaだけに、イメージレイヤーの取得を許可する。
 resource "aws_ecr_repository_policy" "lambda_pull" {
   for_each = aws_ecr_repository.runtime
 

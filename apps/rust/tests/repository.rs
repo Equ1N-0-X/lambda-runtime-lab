@@ -1,3 +1,5 @@
+//! インメモリ保存先がDynamoDB実装と同じ一件取得契約を満たすことを検証する。
+
 use rust_lambdalith::{
     model::Item,
     repository::{InMemoryItemRepository, ItemRepository},

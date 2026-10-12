@@ -1,9 +1,7 @@
-//! Canonical request validation.
+//! 共通API契約に従い、デコード済みJSONを検証する。
 //!
-//! The contract fixes which field paths and reason tokens a rejected request
-//! produces, so requests are validated against a decoded JSON document rather
-//! than through `serde` derive errors. That keeps failures identical to the
-//! Python implementation, including the order in which checks stop.
+//! 不正入力で返すフィールド位置と理由は契約で固定されているため、serdeの自動エラーへ
+//! 委譲せず、Python実装と同じ順序で検査する。
 
 use serde_json::{Map, Value};
 
@@ -65,6 +63,7 @@ enum Pattern {
 
 impl Pattern {
     fn matches(self, text: &str) -> bool {
+        // パターン種別に応じて、無条件許可・ID形式・表示可能ASCIIだけのいずれかを判定する。
         match self {
             Self::Any => true,
             Self::ItemId => {
@@ -90,6 +89,7 @@ struct StringSpec {
 }
 
 pub fn transform_request(document: &Value) -> Result<TransformRequest, AppError> {
+    // ルートがオブジェクトでない場合は各項目を読めないため、直ちにルートの検証エラーを返す。
     let mut details = Vec::new();
     let Some(root) = object(document, "$", &mut details) else {
         return Err(AppError::validation(details));
@@ -98,15 +98,18 @@ pub fn transform_request(document: &Value) -> Result<TransformRequest, AppError>
 
     let mut records = Vec::new();
     let mut record_count = 0;
+    // recordsが配列かつ件数範囲内の場合だけ、各要素をレコードとして検証・変換する。
     if let Some(items) = array_member(root, "", "records", 1, MAX_RECORDS, &mut details) {
         record_count = items.len();
         for (index, item) in items.iter().enumerate() {
+            // 個別要素が全項目の検証に成功した場合だけ、変換済みレコードへ追加する。
             if let Some(record) = transform_record(item, index, &mut details) {
                 records.push(record);
             }
         }
     }
 
+    // 項目エラーが一件でもある、または変換成功数が入力件数と異なる場合は成功要求を作らない。
     if !details.is_empty() || records.len() != record_count {
         return Err(AppError::validation(details));
     }
@@ -115,6 +118,8 @@ pub fn transform_request(document: &Value) -> Result<TransformRequest, AppError>
 
 pub fn compute_request(document: &Value) -> Result<ComputeRequest, AppError> {
     let mut details = Vec::new();
+
+    // ルートがオブジェクトでない場合は各計算項目を読めないため、ルートの検証エラーを返す。
     let Some(root) = object(document, "$", &mut details) else {
         return Err(AppError::validation(details));
     };
@@ -137,6 +142,7 @@ pub fn compute_request(document: &Value) -> Result<ComputeRequest, AppError> {
     let seed = string_member(root, "", "seed", &SEED, &mut details);
     let profile = string_member(root, "", "profile", &PROFILE, &mut details);
 
+    // 四つの必須項目がすべて取得でき、追加の検証エラーもない場合だけ計算要求を確定する。
     match (items, iterations, seed, profile) {
         (Some(items), Some(iterations), Some(seed), Some(profile)) if details.is_empty() => {
             Ok(ComputeRequest {
@@ -152,6 +158,8 @@ pub fn compute_request(document: &Value) -> Result<ComputeRequest, AppError> {
 
 pub fn aggregate_request(document: &Value) -> Result<AggregateRequest, AppError> {
     let mut details = Vec::new();
+
+    // ルートがオブジェクトでない場合はID一覧とprofileを読めないため、ルートの検証エラーを返す。
     let Some(root) = object(document, "$", &mut details) else {
         return Err(AppError::validation(details));
     };
@@ -159,9 +167,11 @@ pub fn aggregate_request(document: &Value) -> Result<AggregateRequest, AppError>
 
     let mut ids = Vec::new();
     let mut id_count = 0;
+    // idsが配列かつ件数範囲内の場合だけ、各要素をIDとして検証・変換する。
     if let Some(items) = array_member(root, "", "ids", 1, MAX_IDS, &mut details) {
         id_count = items.len();
         for (index, item) in items.iter().enumerate() {
+            // 個別要素がIDの文字数・文字種を満たす場合だけ、検証済みID一覧へ追加する。
             if let Some(id) = string_value(item, &format!("ids[{index}]"), &ITEM_ID, &mut details) {
                 ids.push(id);
             }
@@ -169,6 +179,7 @@ pub fn aggregate_request(document: &Value) -> Result<AggregateRequest, AppError>
     }
     let profile = string_member(root, "", "profile", &PROFILE, &mut details);
 
+    // profileが取得でき、全IDの変換にも失敗していない場合だけ集約要求を確定する。
     match profile {
         Some(profile) if details.is_empty() && ids.len() == id_count => {
             Ok(AggregateRequest { ids, profile })
@@ -181,8 +192,8 @@ pub fn item_id(id: &str) -> Result<(), AppError> {
     checked_string(id, "id", &ITEM_ID)
 }
 
-/// The correlation header accepts the same characters as a Benchmark Runner run
-/// identifier, so readable run IDs work as well as UUIDs.
+/// 計測相関ヘッダーはBenchmark Runnerの実行IDと同じ文字種を受け付けるため、UUIDだけでなく
+/// 人が読める実行IDも使用できる。
 pub fn benchmark_run_id(run_id: &str) -> Result<(), AppError> {
     checked_string(run_id, BENCHMARK_RUN_ID_FIELD, &ITEM_ID)
 }
@@ -190,6 +201,7 @@ pub fn benchmark_run_id(run_id: &str) -> Result<(), AppError> {
 fn checked_string(value: &str, field: &str, spec: &StringSpec) -> Result<(), AppError> {
     let mut details = Vec::new();
     string_value(&Value::String(value.to_owned()), field, spec, &mut details);
+    // 文字列検証で詳細が一件もなければ成功とし、一件でもあれば422エラーへ変換する。
     if details.is_empty() {
         Ok(())
     } else {
@@ -202,6 +214,7 @@ pub fn transform_semantics(request: &TransformRequest) -> Result<(), AppError> {
         request.records.iter().map(|record| record.id.as_str()),
         |index| format!("records[{index}].id"),
     );
+    // 重複IDがなければ成功とし、一件でもあれば重複位置をまとめた422エラーを返す。
     if details.is_empty() {
         Ok(())
     } else {
@@ -210,12 +223,14 @@ pub fn transform_semantics(request: &TransformRequest) -> Result<(), AppError> {
 }
 
 pub fn compute_semantics(request: &ComputeRequest) -> Result<(), AppError> {
+    // 項目数と反復回数の積が計測用上限を超える場合は、過度なCPU消費を防ぐため拒否する。
     if request.items.saturating_mul(request.iterations) > MAX_COMPUTE_WORK {
         return Err(AppError::validation(vec![ErrorDetail::new(
             "$",
             format!("maximum_work:{MAX_COMPUTE_WORK}"),
         )]));
     }
+    // プロファイル名が計算APIで許可した方式に含まれない場合は、400エラーを返す。
     if !COMPUTE_PROFILES.contains(&request.profile.as_str()) {
         return Err(AppError::unsupported_profile(&COMPUTE_PROFILES));
     }
@@ -226,9 +241,11 @@ pub fn aggregate_semantics(request: &AggregateRequest) -> Result<(), AppError> {
     let details = duplicate_details(request.ids.iter().map(String::as_str), |index| {
         format!("ids[{index}]")
     });
+    // 同じIDを複数回集約すると二重計上になるため、重複が一件でもあれば拒否する。
     if !details.is_empty() {
         return Err(AppError::validation(details));
     }
+    // プロファイル名が直列・並行の許可方式に含まれない場合は、400エラーを返す。
     if !AGGREGATE_PROFILES.contains(&request.profile.as_str()) {
         return Err(AppError::unsupported_profile(&AGGREGATE_PROFILES));
     }
@@ -284,6 +301,7 @@ fn tag_member(
     let items = array_member(record, prefix, "tags", 0, MAX_TAGS, details)?;
     let mut tags = Vec::with_capacity(items.len());
     for (index, item) in items.iter().enumerate() {
+        // 個別要素がタグの文字数・文字種を満たす場合だけ、検証済みタグ一覧へ追加する。
         if let Some(tag) = string_value(item, &format!("{prefix}.tags[{index}]"), &TAG, details) {
             tags.push(tag);
         }
@@ -296,6 +314,7 @@ fn object<'a>(
     field: &str,
     details: &mut Vec<ErrorDetail>,
 ) -> Option<&'a Map<String, Value>> {
+    // JSON値がオブジェクトならメンバーを返し、それ以外は対象フィールドの型不正を記録する。
     match document {
         Value::Object(members) => Some(members),
         _ => {
@@ -312,6 +331,7 @@ fn reject_unknown_members(
     details: &mut Vec<ErrorDetail>,
 ) {
     for key in members.keys() {
+        // キーが許可リストにない場合は、未定義の入力項目として検証エラーへ追加する。
         if !allowed.contains(&key.as_str()) {
             details.push(ErrorDetail::new(
                 field_path(prefix, key),
@@ -322,6 +342,7 @@ fn reject_unknown_members(
 }
 
 fn field_path(prefix: &str, name: &str) -> String {
+    // ルート項目なら名前だけ、入れ子項目なら親パスとドットで連結してエラー位置を表す。
     if prefix.is_empty() {
         name.to_owned()
     } else {
@@ -335,6 +356,7 @@ fn member<'a>(
     name: &str,
     details: &mut Vec<ErrorDetail>,
 ) -> Option<&'a Value> {
+    // 指定名のメンバーがあれば値を返し、なければ必須項目不足として記録する。
     match members.get(name) {
         Some(value) => Some(value),
         None => {
@@ -367,6 +389,7 @@ fn string_value(
     };
 
     let length = text.chars().count();
+    // 文字数が最小値未満、最大値超過、またはパターン不一致なら、その最初の理由を記録して失敗する。
     if length < spec.min_length {
         details.push(ErrorDetail::new(
             field,
@@ -404,6 +427,7 @@ fn integer_member(
         return None;
     };
 
+    // i64へ変換できる値は上下限と比較し、変換不能な数値は表記から型不正か範囲外かを判定する。
     match number.as_i64() {
         Some(number) if number < minimum => {
             details.push(ErrorDetail::new(field, format!("minimum:{minimum}")));
@@ -415,10 +439,11 @@ fn integer_member(
         }
         Some(number) => Some(number),
         None => {
-            // Values outside i64 are still JSON integers when written without a
-            // fraction or exponent, so they are reported as range violations
-            // rather than type errors.
+            // i64範囲外でも小数点・指数表記がなければJSON整数であるため、型不正ではなく
+            // 上限または下限違反として報告する。
             let literal = number.to_string();
+
+            // 小数・指数表記なら整数型不正、負の巨大整数なら下限、正の巨大整数なら上限違反にする。
             let reason = if literal.contains(['.', 'e', 'E']) {
                 "type:integer".to_owned()
             } else if literal.starts_with('-') {
@@ -447,6 +472,7 @@ fn array_member<'a>(
         details.push(ErrorDetail::new(field, "type:array"));
         return None;
     };
+    // 配列件数が最小値未満または最大値超過なら、要素を処理せず配列全体の検証エラーにする。
     if items.len() < min_items {
         details.push(ErrorDetail::new(field, format!("min_items:{min_items}")));
         return None;

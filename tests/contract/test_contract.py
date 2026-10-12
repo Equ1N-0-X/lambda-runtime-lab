@@ -1,3 +1,5 @@
+"""稼働中のPython/Rust APIへ全正規ケースを送り、公開契約が一致することを検証する。"""
+
 import os
 from pathlib import Path
 

@@ -1,3 +1,5 @@
+//! Rust APIが成功・入力不正・未登録・依存先障害の公開契約を満たすことを検証する。
+
 use std::sync::Arc;
 
 use axum::{
@@ -10,8 +12,7 @@ use rust_lambdalith::{AppState, build_router, model::Item, repository::InMemoryI
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-/// Mirrors `spec/testcases/aggregate.json` so that expected checksums are the
-/// canonical ones shared with the Python implementation.
+/// `spec/testcases/aggregate.json`と同じ項目を使い、期待チェックサムをPython実装と共有する。
 fn app() -> Router {
     let repository = InMemoryItemRepository::new([
         Item {

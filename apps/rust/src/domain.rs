@@ -1,3 +1,8 @@
+//! 外部I/Oを含まない変換・計算・集約処理を定義する。
+//!
+//! 同じ入力に対してPython実装と同じ出力を返すため、並び順、ハッシュ入力、未登録IDの
+//! 選び方を決定的にする。
+
 use std::{collections::BTreeSet, sync::Arc};
 
 use sha2::{Digest, Sha256};
@@ -13,12 +18,17 @@ use crate::{
 };
 
 pub fn transform(request: TransformRequest) -> TransformResponse {
+    // 受け付けた各レコードを一件ずつ加工し、APIレスポンス用のレコードへ変換する。
     let mut records = request
         .records
         .into_iter()
         .map(|record| TransformedRecord {
             id: record.id,
+
+            // 一般的な空白ではなくU+0020 SPACEだけを取り除き、名前を小文字へ正規化する。
             name: record.name.trim_matches(' ').to_lowercase(),
+
+            // タグの重複を除去し、入力順に依存しない昇順の一覧にする。
             tags: record
                 .tags
                 .into_iter()
@@ -28,8 +38,11 @@ pub fn transform(request: TransformRequest) -> TransformResponse {
             value: record.value,
         })
         .collect::<Vec<_>>();
+
+    // 入力順に関係なく同じレスポンスを返すため、全レコードをID昇順に統一する。
     records.sort_by(|left, right| left.id.cmp(&right.id));
 
+    // 正規化済みのレコード数と一覧をレスポンスとして返す。
     TransformResponse {
         count: records.len(),
         records,
@@ -37,8 +50,10 @@ pub fn transform(request: TransformRequest) -> TransformResponse {
 }
 
 pub fn compute(request: &ComputeRequest) -> ComputeResponse {
+    // 全項目のダイジェストを最後にまとめてハッシュ化するための集約器を用意する。
     let mut final_hasher = Sha256::new();
 
+    // 項目数の範囲で、seedと添字から独立した初期値を作り、指定回数だけSHA-256を適用する。
     for index in 0..request.items {
         let initial = format!("{}:{index}", request.seed);
         let mut digest = Sha256::digest(initial.as_bytes());
@@ -56,6 +71,7 @@ pub fn compute(request: &ComputeRequest) -> ComputeResponse {
 }
 
 pub async fn get_item(repository: &dyn ItemRepository, id: &str) -> Result<Item, AppError> {
+    // 保存先の呼び出しが失敗した場合は502、成功しても項目がない場合は404へ区別して変換する。
     repository
         .get(id)
         .await
@@ -67,10 +83,12 @@ pub async fn aggregate_sequential(
     repository: &dyn ItemRepository,
     ids: &[String],
 ) -> Result<AggregateResponse, AppError> {
+    // 依頼されたID数に見合う容量を確保し、ID順に一件ずつ取得した結果を蓄積する。
     let mut found = Vec::with_capacity(ids.len());
     let mut missing = Vec::new();
 
     for id in ids {
+        // 保存先が項目を返した場合は集約候補へ、未登録の場合は後で404を決める候補へ分ける。
         match repository
             .get(id)
             .await
@@ -88,6 +106,7 @@ pub async fn aggregate_concurrent(
     repository: Arc<dyn ItemRepository>,
     ids: Vec<String>,
 ) -> Result<AggregateResponse, AppError> {
+    // 各IDの読み取りを独立タスクとして開始し、直列方式と同じくIDごとに一回だけ外部I/Oを行う。
     let mut reads = JoinSet::new();
     for id in ids {
         let repository = Arc::clone(&repository);
@@ -99,8 +118,12 @@ pub async fn aggregate_concurrent(
 
     let mut found = Vec::with_capacity(reads.len());
     let mut missing = Vec::new();
+
+    // 完了順は不定でも、取得結果を全件回収してから決定的な集約処理へ渡す。
     while let Some(read) = reads.join_next().await {
         let (id, result) = read.map_err(|_| AppError::internal())?;
+
+        // 保存先が項目を返した場合は集約候補へ、未登録の場合は404候補へ分ける。
         match result.map_err(|_| AppError::dependency())? {
             Some(item) => found.push(item),
             None => missing.push(id),
@@ -110,20 +133,22 @@ pub async fn aggregate_concurrent(
     aggregate(found, missing)
 }
 
-/// Normalizes a completed set of reads into the canonical aggregate result.
+/// 読み取り結果を、実行方式に依存しない共通の集約結果へ正規化する。
 ///
-/// Missing IDs are reported by canonical order rather than completion order so
-/// that the sequential and concurrent profiles fail identically.
+/// 未登録IDは完了順ではなく辞書順で選び、直列・並行のどちらでも同じ失敗応答にする。
 fn aggregate(mut items: Vec<Item>, missing: Vec<String>) -> Result<AggregateResponse, AppError> {
+    // 未登録IDが一件以上ある場合は、辞書順で最初のIDを404として返し、並行処理の完了順を公開しない。
     if let Some(first_missing) = missing.iter().min() {
         return Err(AppError::not_found(first_missing));
     }
 
+    // 全項目が存在する場合だけ、ID順を固定して値の合計とpayload連結順を決定する。
     items.sort_by(|left, right| left.id.cmp(&right.id));
 
     let mut total_value = 0_i64;
     let mut checksum = Sha256::new();
     for item in &items {
+        // 加算結果がi64の範囲を超える場合は、誤った合計を返さず内部エラーとして処理を止める。
         total_value = total_value
             .checked_add(item.value)
             .ok_or_else(AppError::internal)?;

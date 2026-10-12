@@ -1,3 +1,4 @@
+# Python/RustそれぞれにIAM認証付きHTTP APIを作り、対応するLambdaへ全経路を転送する。
 resource "aws_apigatewayv2_api" "runtime" {
   for_each = local.runtimes
 
@@ -5,6 +6,7 @@ resource "aws_apigatewayv2_api" "runtime" {
   protocol_type = "HTTP"
 }
 
+# API GatewayからLambdaへpayload format 2.0で同期転送する統合を実装別に作る。
 resource "aws_apigatewayv2_integration" "lambda_proxy" {
   for_each = local.runtimes
 
@@ -16,6 +18,7 @@ resource "aws_apigatewayv2_integration" "lambda_proxy" {
   timeout_milliseconds   = min(local.common_lambda_settings.timeout * 1000, 30000)
 }
 
+# すべてのAPI経路をLambda統合へ渡し、呼び出し元にはAWS IAM認証を要求する。
 resource "aws_apigatewayv2_route" "lambda_proxy" {
   for_each = local.runtimes
 
@@ -25,6 +28,7 @@ resource "aws_apigatewayv2_route" "lambda_proxy" {
   target             = "integrations/${aws_apigatewayv2_integration.lambda_proxy[each.key].id}"
 }
 
+# 変更を自動反映する既定ステージを作り、アクセスログを実装別CloudWatchへ保存する。
 resource "aws_apigatewayv2_stage" "default" {
   for_each = local.runtimes
 
@@ -38,6 +42,7 @@ resource "aws_apigatewayv2_stage" "default" {
   }
 }
 
+# 各API Gatewayだけが対応するLambdaを呼び出せるリソースベース権限を付与する。
 resource "aws_lambda_permission" "api_gateway" {
   for_each = local.runtimes
 

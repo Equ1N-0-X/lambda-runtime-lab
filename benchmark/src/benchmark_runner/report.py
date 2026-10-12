@@ -1,3 +1,5 @@
+"""集計済み測定値・料金・イメージ情報から、MarkdownとCSVの比較レポートを作成する。"""
+
 from __future__ import annotations
 
 import csv
@@ -10,24 +12,35 @@ from benchmark_runner.cost import PricingUnavailable, load_pricing, summarize_co
 
 
 def _display(value: object, digits: int = 6) -> str:
+    """欠損はnull、浮動小数は指定有効桁、それ以外は文字列として表示する。"""
+
+    # 欠損をゼロと誤認させないため、Noneは明示的なnullとして表示する。
     if value is None:
         return "null"
+    # 浮動小数だけ桁数を制御し、件数や識別子は元の表現を維持する。
     if isinstance(value, float):
         return f"{value:.{digits}g}"
     return str(value)
 
 
 def _difference(reference: object, comparison: object) -> float | None:
+    """Pythonを基準としたRustの増減率を計算し、比較不能ならNoneを返す。"""
+
+    # 基準値が真偽値を除く数値でなければ、意味のある比率を計算できないため欠損とする。
     if not isinstance(reference, int | float) or isinstance(reference, bool):
         return None
+    # 比較値も真偽値を除く数値でなければ、片側欠損として比率を作らない。
     if not isinstance(comparison, int | float) or isinstance(comparison, bool):
         return None
+    # 基準値がゼロの場合は除算不能かつ増減率が誤解を招くため、欠損として扱う。
     if reference == 0:
         return None
     return (float(comparison) - float(reference)) / float(reference) * 100
 
 
 def _load_optional_json(path: Path) -> object | None:
+    """任意成果物が存在する場合だけJSONとして読み、未収集ならNoneを返す。"""
+    # ファイルがなければ異常終了せず、レポート内で未収集と明示できるようNoneを返す。
     if not path.is_file():
         return None
     return json.loads(path.read_text(encoding="utf-8"))
@@ -39,6 +52,7 @@ def generate_report(
     results_dir: Path,
     pricing_path: Path,
 ) -> tuple[Path, Path]:
+    """一実行分の測定を集計し、人向けMarkdownと機械処理向けCSVを同時に生成する。"""
     run_dir = results_dir / "raw" / run_id
     metadata = json.loads((run_dir / "metadata.json").read_text(encoding="utf-8"))
     records = read_records(run_dir)
@@ -47,6 +61,7 @@ def generate_report(
 
     pricing_note: str | None = None
     pricing_metadata: dict[str, Any] | None = None
+    # 料金が確認済みなら推定コストを計算し、未設定なら理由を注記して性能レポートは継続する。
     try:
         pricing = load_pricing(pricing_path)
         costs = summarize_costs(
@@ -66,6 +81,7 @@ def generate_report(
 
     implementations = analysis["implementations"]
     for name, values in implementations.items():
+        # 対応する料金集計がない実装は、ゼロではなく未計算としてNoneを保持する。
         values["cost"] = costs.get(name)
 
     reports_dir = results_dir / "reports"
@@ -76,7 +92,15 @@ def generate_report(
     lines = [
         f"# Benchmark report: {run_id}",
         "",
-        "## Experiment conditions",
+        "このレポートは、同じ条件で実行したPython/Rust Lambdaの観測値を比較するための資料です。",
+        "最初に実験条件とSummaryの欠損を確認し、比較可能な場合だけPercentiles以降を読みます。",
+        "詳しい判断基準は [ベンチマークレポート利用ガイド]"
+        "(../../docs/07_BENCHMARK_REPORT_GUIDE.md) を参照してください。",
+        "",
+        "## Experiment conditions（実験条件）",
+        "",
+        "比較対象を再現するための実行条件です。条件が異なるrun同士の数値は直接比較しません。",
+        "ArchitectureまたはLambda memoryが`null`なら、コストを含む正式な比較には使用できません。",
         "",
         f"- Run ID: `{run_id}`",
         f"- Started: {_display(metadata.get('started_at'))}",
@@ -90,7 +114,10 @@ def generate_report(
         f"- Client concurrency: {_display(metadata.get('workload', {}).get('client_concurrency'))}",
         f"- Warm-up: {_display(metadata.get('workload', {}).get('warmup'))}",
         "",
-        "## Summary",
+        "## Summary（概要）",
+        "",
+        "測定件数、Cold/Warm分類、エラー率を確認する入口です。`Unclassified`が1件でもある場合は、",
+        "CloudWatchの実行情報と結合できていないため、Lambda実行時間・メモリ・コストを判断しません。",
         "",
         "| Implementation | Samples | Cold | Warm | Unclassified | Error rate |",
         "|---|---:|---:|---:|---:|---:|",
@@ -104,10 +131,30 @@ def generate_report(
             f"{rendered_rate} |"
         )
 
+    # 未分類が残るレポートでは、クライアント側レイテンシー以外を比較しないよう明示する。
+    if any(values["unclassified_count"] for values in implementations.values()):
+        lines.extend(
+            [
+                "",
+                "> 注意: Unclassifiedが残っています。このrunは相関不完全なため、"
+                "Lambda内部メトリクスやコストの比較には使用しません。",
+            ]
+        )
+
     lines.extend(
         [
             "",
-            "## Percentiles",
+            "## Percentiles（パーセンタイル）",
+            "",
+            "値の分布をP50（中央値）、P95、P99で示します。`all`は全件、`cold`と`warm`は",
+            "Lambda REPORTによる分類別です。Countが0の行の`null`は、",
+            "ゼロではなく未取得を意味します。",
+            "",
+            "- `latency_ms`: クライアントから見たAPI全体の応答時間",
+            "- `duration_ms`: Lambda内でハンドラーを実行した時間",
+            "- `billed_duration_ms`: Lambda料金計算に使われる課金対象時間",
+            "- `init_duration_ms`: Cold Start時の初期化時間",
+            "- `max_memory_used_mb`: 実行中に観測された最大メモリ使用量",
             "",
             "| Implementation | Scope | Metric | Count | P50 | P95 | P99 |",
             "|---|---|---|---:|---:|---:|---:|",
@@ -127,7 +174,17 @@ def generate_report(
                     f"{_display(stats['p99'])} |"
                 )
 
-    lines.extend(["", "## Estimated cost (Free Tier excluded)", ""])
+    lines.extend(
+        [
+            "",
+            "## Estimated cost（推定コスト、Free Tier除外）",
+            "",
+            "Billed Duration、設定メモリ、料金表から求めた概算です。Free Tier、税、API Gateway、",
+            "DynamoDB等は含まず、AWS請求額そのものではありません。`null`なら理由を解消するまで比較しません。",
+            "",
+        ]
+    )
+    # 料金注記がある場合は推定値を載せず、ない場合だけ出典と実装別料金表を出力する。
     if pricing_note:
         lines.append(f"Cost: null — {pricing_note}")
     else:
@@ -143,6 +200,7 @@ def generate_report(
         )
         for name, values in implementations.items():
             cost = values["cost"]
+            # 有効な料金サンプルがない実装は、金額ゼロとせずnullとして表示する。
             if cost is None:
                 lines.append(f"| {name} | 0 | null | null |")
             else:
@@ -152,11 +210,21 @@ def generate_report(
                     f"{_display(cost['estimated_cost_per_1m'], 10)} |"
                 )
 
-    lines.extend(["", "## Python/Rust difference", ""])
+    lines.extend(
+        [
+            "",
+            "## Python/Rust difference（差分）",
+            "",
+            "Pythonを基準にRustの値が何%増減したかを示します。正数はRustが高く、負数はRustが低い値です。",
+            "時間・メモリ・コストは通常低い方が有利ですが、欠損やサンプル数を確認せず優劣を断定しません。",
+            "",
+        ]
+    )
+    # PythonとRustの両方がある場合だけ相対差を計算し、片方だけなら比較不能と明示する。
     if {"python", "rust"} <= implementations.keys():
         lines.extend(
             [
-                "Positive values mean Rust is higher than Python.",
+                "正数はRustがPythonより高い値、負数は低い値であることを表します。",
                 "",
                 "| Metric | Percentile | Difference |",
                 "|---|---|---:|",
@@ -175,7 +243,17 @@ def generate_report(
     else:
         lines.append("Comparison: null — both implementations are required.")
 
-    lines.extend(["", "## Image metrics", ""])
+    lines.extend(
+        [
+            "",
+            "## Image metrics（イメージ指標）",
+            "",
+            "デプロイしたコンテナイメージのdigestやサイズを確認する章です。イメージサイズは配布・保管上の",
+            "指標であり、Lambda実行料金やメモリ使用量とは別に評価します。",
+            "",
+        ]
+    )
+    # イメージ計測ファイルがなければ未収集と明示し、あれば加工せずJSONで掲載する。
     if image_metrics is None:
         lines.append("Image metrics: null — image-metrics.json was not collected.")
     else:
@@ -186,14 +264,17 @@ def generate_report(
     lines.extend(
         [
             "",
-            "## Measurement notes",
+            "## Measurement notes（測定上の注意）",
             "",
-            "- Missing measurements are shown as `null`; they are never replaced with zero.",
-            "- A sample is cold only when Lambda REPORT contains Init Duration.",
-            "- Samples with a REPORT but no Init Duration are warm; "
-            "unmatched samples are unclassified.",
-            "- Cost is normalized without subtracting the AWS Free Tier.",
-            "- Image size is an artifact metric and is not part of Lambda execution pricing.",
+            "欠損値の扱いと、このレポートを解釈するときの共通ルールです。比較結果を引用・公開する場合も",
+            "この注記を前提として併記します。",
+            "",
+            "- 未取得の測定値は`null`で示し、ゼロへ置き換えません。",
+            "- Lambda REPORTにInit DurationがあるサンプルだけをColdと分類します。",
+            "- REPORTがありInit DurationがないサンプルはWarm、結合できないサンプルは"
+            "Unclassifiedです。",
+            "- コストはAWS Free Tierを差し引かずに正規化します。",
+            "- イメージサイズは成果物の指標であり、Lambda実行料金には含めません。",
             "",
         ]
     )
@@ -215,6 +296,7 @@ def generate_report(
         ["priced_sample_count", "estimated_cost_per_request", "estimated_cost_per_1m"]
     )
     with csv_path.open("w", encoding="utf-8", newline="") as stream:
+        # CSVは一実装一行とし、Markdownと同じ集計値を後続処理が再利用できる形で保存する。
         writer = csv.DictWriter(stream, fieldnames=fieldnames)
         writer.writeheader()
         for name, values in implementations.items():

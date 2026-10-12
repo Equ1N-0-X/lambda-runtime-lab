@@ -1,3 +1,5 @@
+"""契約ケースの読込、正規化、fixture統合、応答比較というハーネス自身の規則を検証する。"""
+
 import json
 from pathlib import Path
 

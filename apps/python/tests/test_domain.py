@@ -1,3 +1,5 @@
+"""Pythonの変換・計算・集約が入力順に依存しない決定的な結果を返すことを検証する。"""
+
 from app.domain import aggregate_items, compute_checksum, transform_records
 from app.models import Item, TransformRecord
 

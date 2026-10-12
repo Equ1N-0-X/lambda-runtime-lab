@@ -1,3 +1,5 @@
+"""イメージ公開スクリプトのドライラン、安全な引数検証、digest出力を検証する。"""
+
 import os
 import subprocess
 from pathlib import Path

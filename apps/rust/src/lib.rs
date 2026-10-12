@@ -1,3 +1,5 @@
+//! Rust Lambda実装の公開モジュールと、アプリ組み立てに必要な型を公開する。
+
 pub mod api;
 pub mod domain;
 pub mod error;
