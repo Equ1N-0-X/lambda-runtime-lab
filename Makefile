@@ -29,6 +29,7 @@ CONTRACT_TRANSPORT ?= direct
 PYTHON_CONTRACT_TRANSPORT ?=
 RUST_CONTRACT_TRANSPORT ?=
 TF_AUTO_APPROVE ?=
+UI_PORT ?= 8765
 
 TF_IMAGE_ARGS := $(if $(strip $(PYTHON_IMAGE_URI)),-var=python_image_uri=$(PYTHON_IMAGE_URI)) \
 	$(if $(strip $(RUST_IMAGE_URI)),-var=rust_image_uri=$(RUST_IMAGE_URI))
@@ -36,14 +37,15 @@ TF_IMAGE_ARGS := $(if $(strip $(PYTHON_IMAGE_URI)),-var=python_image_uri=$(PYTHO
 .PHONY: help format format-check lint test test-python test-rust test-benchmark \
 	test-contract-harness contract-test build build-python build-rust \
 	terraform-init terraform-validate bootstrap-ecr publish-images deploy seed benchmark collect report \
-	benchmark-matrix destroy
+	benchmark-matrix destroy ui
 
 help:
 	# 利用可能な操作を品質確認、ビルド、AWS操作の順に短く表示する。
 	@printf '%s\n' \
 		'Quality: format format-check lint test contract-test' \
 		'Build:   build build-python build-rust terraform-validate' \
-		'AWS:     bootstrap-ecr publish-images deploy seed benchmark collect report benchmark-matrix destroy'
+		'AWS:     bootstrap-ecr publish-images deploy seed benchmark collect report benchmark-matrix destroy' \
+		'View:    ui'
 
 format:
 	# Python、ベンチマーク、契約テスト、Rust、Terraformをそれぞれの標準フォーマッタで整形する。
@@ -184,6 +186,10 @@ report:
 	@test "$(RUN_ID)" != "auto" || (echo "RUN_ID には既存の実行IDを指定してください" >&2; exit 2)
 	AWS_REGION="$(AWS_REGION)" \
 	uv run --project $(BENCHMARK_DIR) python -m benchmark_runner report --run-id "$(RUN_ID)"
+
+ui:
+	# 保存済みの計測結果をブラウザで閲覧する画面を、手元のマシンだけで起動する。
+	uv run --project $(BENCHMARK_DIR) python -m benchmark_runner ui --port "$(UI_PORT)"
 
 benchmark-matrix:
 	AWS_REGION="$(AWS_REGION)" \

@@ -10,6 +10,8 @@ from typing import Any
 from benchmark_runner.analyzer import METRICS, read_records, summarize
 from benchmark_runner.cost import PricingUnavailable, load_pricing, summarize_costs
 
+PERCENTILES = ("p50", "p95", "p99")
+
 
 def _display(value: object, digits: int = 6) -> str:
     """欠損はnull、浮動小数は指定有効桁、それ以外は文字列として表示する。"""
@@ -46,13 +48,11 @@ def _load_optional_json(path: Path) -> object | None:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def generate_report(
-    *,
-    run_id: str,
-    results_dir: Path,
-    pricing_path: Path,
-) -> tuple[Path, Path]:
-    """一実行分の測定を集計し、人向けMarkdownと機械処理向けCSVを同時に生成する。"""
+def build_report(*, run_id: str, results_dir: Path, pricing_path: Path) -> dict[str, Any]:
+    """一実行分の測定・料金・イメージ情報を集計し、出力形式に依存しない比較結果を返す。
+
+    Markdown・CSVと画面表示が同じ計算結果を使うよう、集計はこの関数だけで行う。
+    """
     run_dir = results_dir / "raw" / run_id
     metadata = json.loads((run_dir / "metadata.json").read_text(encoding="utf-8"))
     records = read_records(run_dir)
@@ -83,6 +83,46 @@ def generate_report(
     for name, values in implementations.items():
         # 対応する料金集計がない実装は、ゼロではなく未計算としてNoneを保持する。
         values["cost"] = costs.get(name)
+
+    differences: dict[str, dict[str, float | None]] | None = None
+    # PythonとRustの両方がある場合だけ、Pythonを基準にしたRustの増減率を指標・百分位ごとに求める。
+    if {"python", "rust"} <= implementations.keys():
+        differences = {
+            metric: {
+                percentile_name: _difference(
+                    implementations["python"]["metrics"][metric][percentile_name],
+                    implementations["rust"]["metrics"][metric][percentile_name],
+                )
+                for percentile_name in PERCENTILES
+            }
+            for metric in METRICS
+        }
+
+    return {
+        "run_id": run_id,
+        "metadata": metadata,
+        "implementations": implementations,
+        "differences": differences,
+        "pricing": pricing_metadata,
+        "pricing_note": pricing_note,
+        "image_metrics": image_metrics,
+    }
+
+
+def generate_report(
+    *,
+    run_id: str,
+    results_dir: Path,
+    pricing_path: Path,
+) -> tuple[Path, Path]:
+    """一実行分の測定を集計し、人向けMarkdownと機械処理向けCSVを同時に生成する。"""
+    report = build_report(run_id=run_id, results_dir=results_dir, pricing_path=pricing_path)
+    metadata = report["metadata"]
+    implementations = report["implementations"]
+    differences = report["differences"]
+    pricing_metadata = report["pricing"]
+    pricing_note = report["pricing_note"]
+    image_metrics = report["image_metrics"]
 
     reports_dir = results_dir / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
@@ -220,8 +260,8 @@ def generate_report(
             "",
         ]
     )
-    # PythonとRustの両方がある場合だけ相対差を計算し、片方だけなら比較不能と明示する。
-    if {"python", "rust"} <= implementations.keys():
+    # 相対差を計算できた場合だけ表を出し、片方の実装しかなければ比較不能と明示する。
+    if differences is not None:
         lines.extend(
             [
                 "正数はRustがPythonより高い値、負数は低い値であることを表します。",
@@ -231,11 +271,8 @@ def generate_report(
             ]
         )
         for metric in METRICS:
-            for percentile_name in ("p50", "p95", "p99"):
-                difference = _difference(
-                    implementations["python"]["metrics"][metric][percentile_name],
-                    implementations["rust"]["metrics"][metric][percentile_name],
-                )
+            for percentile_name in PERCENTILES:
+                difference = differences[metric][percentile_name]
                 lines.append(
                     f"| {metric} | {percentile_name.upper()} | "
                     f"{'null' if difference is None else f'{difference:.2f}%'} |"

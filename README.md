@@ -235,6 +235,17 @@ RUN_ID=<existing-run-id> make report
 `null`の意味、CSVの利用方法、結論を書く際の注意点は
 [ベンチマークレポート利用ガイド](docs/07_BENCHMARK_REPORT_GUIDE.md) を参照してください。
 
+## 計測結果を画面で見る
+
+`results/raw/` に保存した計測結果は、ブラウザで一覧・比較できます。
+
+```bash
+make ui                  # http://127.0.0.1:8765/ で起動（Ctrl+C で停止）
+UI_PORT=9000 make ui     # ポートを変える場合
+```
+
+画面は Markdown・CSV レポートと同じ集計処理を使い、計測履歴、比較に使えるかどうかの判定と理由、応答時間・Lambda 実行時間・メモリ・推定料金の Python/Rust 比較、実験条件を表示します。サーバーは `127.0.0.1` だけで待ち受け、API の URL は画面に返しません。
+
 ## テスト方針
 
 - Python プロジェクトで、Python の単体、API、リポジトリ、エラーテストを実行します。

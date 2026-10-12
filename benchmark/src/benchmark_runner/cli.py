@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -15,6 +16,7 @@ from pathlib import Path
 import boto3
 
 from benchmark_runner.cloudwatch import collect_run
+from benchmark_runner.dashboard.server import LISTEN_HOST, create_server
 from benchmark_runner.report import generate_report
 from benchmark_runner.runner import RunConfig, run_benchmark
 from benchmark_runner.workloads import WorkloadError, load_workload
@@ -87,6 +89,11 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--run-id", required=True)
     report.add_argument("--results-dir", type=Path, default=ROOT / "results")
     report.add_argument("--pricing", type=Path, default=ROOT / "spec/pricing.yaml")
+
+    ui = subparsers.add_parser("ui", help="計測結果を閲覧する画面を手元で起動する")
+    ui.add_argument("--port", type=int, default=8765)
+    ui.add_argument("--results-dir", type=Path, default=ROOT / "results")
+    ui.add_argument("--pricing", type=Path, default=ROOT / "spec/pricing.yaml")
     return parser
 
 
@@ -170,16 +177,37 @@ def _report_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _ui_command(args: argparse.Namespace) -> int:
+    """閲覧画面のサーバーを起動し、Ctrl+Cで停止されるまで待ち受ける。"""
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    server = create_server(
+        port=args.port,
+        results_dir=args.results_dir,
+        pricing_path=args.pricing,
+    )
+    print(f"計測結果の画面: http://{LISTEN_HOST}:{args.port}/ （Ctrl+Cで停止）", flush=True)
+    try:
+        server.serve_forever()
+    # Ctrl+Cは利用者による通常の停止操作なので、エラー扱いせず正常終了する。
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """サブコマンドを振り分け、利用者が修正可能なエラーを日本語で標準エラーへ表示する。"""
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
-        # runなら計測、collectならログ収集、それ以外の必須選択肢reportなら報告作成を実行する。
+        # runなら計測、collectならログ収集、uiなら閲覧画面、それ以外のreportなら報告作成を実行する。
         if args.command == "run":
             return _run_command(args)
         if args.command == "collect":
             return _collect_command(args)
+        if args.command == "ui":
+            return _ui_command(args)
         return _report_command(args)
     except (OSError, ValueError, WorkloadError) as exc:
         print(f"エラー: {exc}", file=sys.stderr)
