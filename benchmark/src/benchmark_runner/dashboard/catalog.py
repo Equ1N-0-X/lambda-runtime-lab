@@ -133,3 +133,32 @@ def list_runs(*, results_dir: Path, pricing_path: Path) -> list[dict[str, Any]]:
     # 開始日時がないrunは並べようがないため、一覧の末尾へ置く。
     runs.sort(key=lambda run: run["started_at"] or "", reverse=True)
     return runs
+
+
+def latest_costs_by_workload(*, results_dir: Path, pricing_path: Path) -> dict[str, Any]:
+    """ワークロードごとに、比較可能な最新runの1リクエストあたり推定料金を返す。
+
+    計測開始前の料金の目安は、同じワークロードの実測から算出する。実測がなければ目安を出さない。
+    """
+    basis: dict[str, Any] = {}
+    # 一覧は新しい順なので、各ワークロードで最初に見つかった比較可能runを採用する。
+    for summary in list_runs(results_dir=results_dir, pricing_path=pricing_path):
+        workload = summary["workload"]
+        # 比較不能なrunは料金や条件が欠けるため使わない。
+        # 採用済みのワークロードは、それより古いrunなので飛ばす。
+        if not summary["comparable"] or workload in basis:
+            continue
+        run = load_run(summary["run_id"], results_dir=results_dir, pricing_path=pricing_path)
+        costs = {
+            name: (values.get("cost") or {}).get("estimated_cost_per_request")
+            for name, values in run["implementations"].items()
+        }
+        # どちらかの料金が計算できていなければ、目安の根拠にしない。
+        if None in costs.values():
+            continue
+        basis[workload] = {
+            "run_id": summary["run_id"],
+            "started_at": summary["started_at"],
+            "cost_per_request": costs,
+        }
+    return basis

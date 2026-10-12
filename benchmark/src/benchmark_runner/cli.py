@@ -16,6 +16,7 @@ from pathlib import Path
 import boto3
 
 from benchmark_runner.cloudwatch import collect_run
+from benchmark_runner.dashboard.jobs import JobManager, LaunchSettings
 from benchmark_runner.dashboard.server import LISTEN_HOST, create_server
 from benchmark_runner.report import generate_report
 from benchmark_runner.runner import RunConfig, run_benchmark
@@ -90,8 +91,9 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--results-dir", type=Path, default=ROOT / "results")
     report.add_argument("--pricing", type=Path, default=ROOT / "spec/pricing.yaml")
 
-    ui = subparsers.add_parser("ui", help="計測結果を閲覧する画面を手元で起動する")
+    ui = subparsers.add_parser("ui", help="計測結果の閲覧と計測開始の画面を手元で起動する")
     ui.add_argument("--port", type=int, default=8765)
+    ui.add_argument("--workload-file", type=Path, default=ROOT / "spec/workloads.yaml")
     ui.add_argument("--results-dir", type=Path, default=ROOT / "results")
     ui.add_argument("--pricing", type=Path, default=ROOT / "spec/pricing.yaml")
     return parser
@@ -178,12 +180,20 @@ def _report_command(args: argparse.Namespace) -> int:
 
 
 def _ui_command(args: argparse.Namespace) -> int:
-    """閲覧画面のサーバーを起動し、Ctrl+Cで停止されるまで待ち受ける。"""
+    """画面のサーバーを起動し、Ctrl+Cで停止されるまで待ち受ける。"""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    # 計測の接続先と比較条件は make ui が渡す環境変数から読み、画面からは変更させない。
+    jobs = JobManager(
+        settings=LaunchSettings.from_environment(),
+        workload_file=args.workload_file,
+        results_dir=args.results_dir,
+        pricing_path=args.pricing,
+    )
     server = create_server(
         port=args.port,
         results_dir=args.results_dir,
         pricing_path=args.pricing,
+        jobs=jobs,
     )
     print(f"計測結果の画面: http://{LISTEN_HOST}:{args.port}/ （Ctrl+Cで停止）", flush=True)
     try:

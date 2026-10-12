@@ -8,6 +8,7 @@ import urllib.request
 import pytest
 
 from benchmark_runner.dashboard.catalog import RunNotFound, list_runs, load_run
+from benchmark_runner.dashboard.jobs import JobManager, LaunchSettings
 from benchmark_runner.dashboard.server import create_server
 
 
@@ -131,7 +132,15 @@ def test_list_runs_returns_empty_when_nothing_measured(tmp_path):
 @pytest.fixture
 def server_url(tmp_path):
     _write_run(tmp_path, "complete")
-    server = create_server(port=0, results_dir=tmp_path, pricing_path=tmp_path / "missing.yaml")
+    jobs = JobManager(
+        settings=LaunchSettings.from_environment({}),
+        workload_file=tmp_path / "workloads.yaml",
+        results_dir=tmp_path,
+        pricing_path=tmp_path / "missing.yaml",
+    )
+    server = create_server(
+        port=0, results_dir=tmp_path, pricing_path=tmp_path / "missing.yaml", jobs=jobs
+    )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     yield f"http://127.0.0.1:{server.server_address[1]}"

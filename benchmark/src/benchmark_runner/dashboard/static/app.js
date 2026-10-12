@@ -66,11 +66,19 @@ const state = {
   run: null,
   metric: "latency_ms",
   scope: "metrics",
+  // "run" は計測結果、"launch" は計測開始の表示。
+  view: "run",
+  launch: null,
+  job: null,
 };
+
+// 実行中の計測の状態を問い合わせる間隔。
+const JOB_POLL_MS = 2000;
 
 const runListBody = document.getElementById("run-list-body");
 const detail = document.getElementById("run-detail");
 const tooltip = document.getElementById("tooltip");
+const jobBanner = document.getElementById("job-banner");
 
 // --- DOM補助 ---------------------------------------------------------------
 
@@ -160,10 +168,14 @@ function relativeDifference(reference, comparison) {
 
 // --- 通信 ------------------------------------------------------------------
 
-async function fetchJson(path) {
+async function fetchJson(path, body) {
   let response;
+  // 本文があればJSONのPOST、なければGETとして送る。サーバーはJSON以外のPOSTを拒否する。
+  const options = body === undefined
+    ? { cache: "no-store" }
+    : { method: "POST", cache: "no-store", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
   try {
-    response = await fetch(path, { cache: "no-store" });
+    response = await fetch(path, options);
   } catch {
     throw new Error("画面のサーバーに接続できません。ターミナルで make ui が動いているか確認してください。");
   }
@@ -655,10 +667,351 @@ function renderError(target, message, retry) {
   );
 }
 
+
+// --- 計測の開始 ------------------------------------------------------------
+
+const COUNT_FIELDS = [
+  { key: "iterations", label: "反復回数（各実装）", unit: "回", help: "Python と Rust にそれぞれ送る計測用のリクエスト数です。" },
+  { key: "client_concurrency", label: "同時実行数", unit: "", help: "同時に送るリクエスト数です。" },
+  { key: "warmup", label: "ウォームアップ（各実装）", unit: "回", help: "計測前に送る、結果に含めないリクエスト数です。" },
+];
+
+function formatElapsed(seconds) {
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+function stepLabel(job) {
+  return job.steps.find((step) => step.key === job.step)?.label ?? job.step;
+}
+
+// 入力欄の値を検証し、範囲外なら理由を返す。
+function validateCount(value, limit) {
+  if (value === "" || !/^\d+$/.test(value)) return "整数で入力してください。";
+  const number = Number(value);
+  if (number < limit.min || number > limit.max) return `${limit.min} 以上 ${limit.max} 以下で入力してください。`;
+  return null;
+}
+
+function costEstimate(workload, iterations, warmup) {
+  const basis = workload.cost_basis;
+  if (!basis) {
+    return "料金の見込み: 同じワークロードで比較に使える実測がないため、算出できません。";
+  }
+  const perImplementation = iterations + warmup;
+  const total = IMPLEMENTATIONS.reduce(
+    (sum, { key }) => sum + (basis.cost_per_request[key] ?? 0) * perImplementation,
+    0,
+  );
+  return `Lambda 料金の見込み: 約 ${formatCost(total)}（${formatDate(basis.started_at)} の同じワークロードの実測から算出。API Gateway・DynamoDB・CloudWatch は含みません）`;
+}
+
+function renderLaunchForm(options) {
+  const { settings, workloads, limits } = options;
+  const running = state.job?.state === "running";
+  const form = el("form", { class: "launch-form", novalidate: "" });
+
+  // 固定条件。Lambda の実設定と食い違うと比較が無効になるため、画面では変更させない。
+  const fixed = el("dl", { class: "conditions" }, [
+    el("dt", { text: "アーキテクチャ" }),
+    el("dd", { text: formatOptional(settings.architecture) }),
+    el("dt", { text: "Lambda メモリ" }),
+    el("dd", { text: formatOptional(settings.memory_mb, " MB") }),
+    el("dt", { text: "リージョン" }),
+    el("dd", { text: settings.region }),
+  ]);
+
+  const workloadSelect = el(
+    "select",
+    { id: "launch-workload", name: "workload" },
+    workloads.map((workload) =>
+      el("option", { value: workload.name, text: `${workload.name}（${workload.method} ${workload.path}）` }),
+    ),
+  );
+
+  const inputs = {};
+  const errors = {};
+  const fields = COUNT_FIELDS.map((field) => {
+    const limit = limits[field.key];
+    inputs[field.key] = el("input", {
+      id: `launch-${field.key}`,
+      type: "number",
+      inputmode: "numeric",
+      min: String(limit.min),
+      max: String(limit.max),
+      step: "1",
+      required: "",
+      "aria-describedby": `launch-${field.key}-help launch-${field.key}-error`,
+    });
+    errors[field.key] = el("p", { id: `launch-${field.key}-error`, class: "field-error", role: "alert" });
+    return el("div", { class: "field" }, [
+      el("label", { for: `launch-${field.key}`, text: field.label }),
+      el("div", { class: "field-input" }, [inputs[field.key], field.unit ? el("span", { class: "muted", text: field.unit }) : null]),
+      el("p", { id: `launch-${field.key}-help`, class: "field-help", text: `${field.help}（${limit.min}〜${limit.max}）` }),
+      errors[field.key],
+    ]);
+  });
+
+  const summary = el("p", { class: "launch-summary" });
+  const estimate = el("p", { class: "field-help" });
+  const submitError = el("p", { class: "field-error", role: "alert" });
+  const submit = el("button", { type: "submit", class: "primary-button", text: "計測を開始" });
+
+  const applyDefaults = () => {
+    const workload = workloads.find((item) => item.name === workloadSelect.value);
+    for (const field of COUNT_FIELDS) inputs[field.key].value = String(workload[field.key] ?? "");
+    update();
+  };
+
+  // 入力のたびに検証と見込みを更新し、開始前に送信内容を確認できるようにする。
+  const update = () => {
+    let valid = settings.ready && !running;
+    for (const field of COUNT_FIELDS) {
+      const message = validateCount(inputs[field.key].value, limits[field.key]);
+      errors[field.key].textContent = message ?? "";
+      inputs[field.key].setAttribute("aria-invalid", String(Boolean(message)));
+      if (message) valid = false;
+    }
+    submit.disabled = !valid;
+    if (!valid && settings.ready && !running) {
+      summary.textContent = "入力を確認してください。";
+      estimate.textContent = "";
+      return;
+    }
+    const iterations = Number(inputs.iterations.value);
+    const warmup = Number(inputs.warmup.value);
+    const perImplementation = iterations + warmup;
+    summary.textContent = `Python と Rust にそれぞれ ${perImplementation.toLocaleString("ja-JP")} 回（ウォームアップ ${warmup.toLocaleString("ja-JP")} 回を含む）、合計 ${(perImplementation * 2).toLocaleString("ja-JP")} リクエストを送ります。`;
+    const workload = workloads.find((item) => item.name === workloadSelect.value);
+    estimate.textContent = costEstimate(workload, iterations, warmup);
+  };
+
+  workloadSelect.addEventListener("change", applyDefaults);
+  for (const field of COUNT_FIELDS) inputs[field.key].addEventListener("input", update);
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    update();
+    if (submit.disabled) return;
+    submit.disabled = true;
+    submit.textContent = "開始しています…";
+    submitError.textContent = "";
+    try {
+      const { job } = await fetchJson("/api/jobs", {
+        workload: workloadSelect.value,
+        iterations: Number(inputs.iterations.value),
+        client_concurrency: Number(inputs.client_concurrency.value),
+        warmup: Number(inputs.warmup.value),
+      });
+      setJob(job);
+    } catch (error) {
+      submitError.textContent = error.message;
+      submit.textContent = "計測を開始";
+      update();
+    }
+  });
+
+  form.append(
+    el("div", { class: "field" }, [
+      el("label", { for: "launch-workload", text: "ワークロード" }),
+      workloadSelect,
+      el("p", { class: "field-help", text: "spec/workloads.yaml の定義です。選ぶと回数の既定値が入ります。" }),
+    ]),
+    el("div", { class: "field-grid" }, fields),
+    el("div", { class: "launch-confirm" }, [summary, estimate]),
+    submitError,
+    el("div", { class: "form-actions" }, [
+      submit,
+      el("p", {
+        class: "field-help",
+        text: `開始後は、ログの反映を ${options.log_wait_seconds} 秒待ってから、ログ収集とレポート作成まで自動で行います。`,
+      }),
+    ]),
+  );
+
+  const cards = [];
+  if (!settings.ready) {
+    cards.push(
+      el("div", { class: "card notice" }, [
+        el("h3", { class: "badge badge-warning", text: "計測に必要な設定が足りません" }),
+        el("ul", {}, settings.missing.map((item) => el("li", { text: item }))),
+        el("p", {
+          class: "section-note",
+          text: "ターミナルで source ./.env.export.sh を実行してから、make ui を起動し直してください。ロググループは Terraform の出力から自動で求めます。",
+        }),
+      ]),
+    );
+  }
+  cards.push(
+    el("div", { class: "card" }, [
+      el("div", { class: "section-head" }, el("h3", { text: "固定の条件" })),
+      el("p", {
+        class: "section-note",
+        text: "環境変数から読み込んだ値です。AWS 上の Lambda の実設定と同じか確認してください。",
+      }),
+      fixed,
+    ]),
+    el("div", { class: "card" }, [
+      el("div", { class: "section-head" }, el("h3", { text: "計測の内容" })),
+      running
+        ? el("p", { class: "section-note", text: "計測の実行中は、新しい計測を開始できません。" })
+        : null,
+      form,
+    ]),
+  );
+  // 既定値の反映は要素の生成後に行う。
+  queueMicrotask(applyDefaults);
+  return cards;
+}
+
+function renderJobPanel(job) {
+  const currentIndex = job.steps.findIndex((step) => step.key === job.step);
+  const finished = job.state !== "running";
+  const steps = el(
+    "ol",
+    { class: "job-steps" },
+    job.steps.map((step, index) => {
+      // 成功時は全工程を完了、実行中・失敗・中止時は現在の工程より前だけを完了として示す。
+      let status = "pending";
+      if (job.state === "succeeded" || index < currentIndex) status = "done";
+      else if (index === currentIndex) status = job.state === "running" ? "current" : job.state;
+      const labels = { done: "完了", current: "実行中", pending: "待機", failed: "失敗", cancelled: "中止" };
+      return el("li", { class: `job-step job-step-${status}` }, [
+        el("span", { class: "job-step-mark", "aria-hidden": "true" }),
+        el("span", { text: step.label }),
+        el("span", { class: "muted", text: labels[status] }),
+      ]);
+    }),
+  );
+
+  const headings = {
+    running: { class: "badge badge-running", text: "計測を実行中です" },
+    succeeded: { class: "badge badge-good", text: "計測が完了しました" },
+    failed: { class: "badge badge-error", text: "計測に失敗しました" },
+    cancelled: { class: "badge badge-warning", text: "計測を中止しました" },
+  };
+  const actions = [];
+  if (job.state === "running") {
+    actions.push(el("button", { type: "button", class: "ghost-button", text: "中止する", onclick: cancelJob }));
+  }
+  if (job.state === "succeeded") {
+    actions.push(
+      el("button", {
+        type: "button",
+        class: "primary-button",
+        text: "結果を見る",
+        onclick: () => loadRuns(job.run_id),
+      }),
+    );
+  }
+
+  return el("div", { class: `card notice job-panel job-${job.state}`, id: "job-panel" }, [
+    el("h3", headings[job.state]),
+    el("p", {
+      class: "section-note",
+      text: `${job.workload} · 合計 ${job.total_requests.toLocaleString("ja-JP")} リクエスト · 経過 ${formatElapsed(job.elapsed_seconds)}`,
+    }),
+    steps,
+    job.message ? el("p", { text: job.message }) : null,
+    finished && job.state !== "succeeded" && job.output.length
+      ? el("details", {}, [el("summary", { text: "コマンド出力の末尾" }), el("pre", { text: job.output.join("\n") })])
+      : null,
+    actions.length ? el("div", { class: "form-actions" }, actions) : null,
+  ]);
+}
+
+function renderLaunch() {
+  hideTooltip();
+  const children = [
+    el("div", { class: "detail-head" }, [
+      el("h2", { text: "新しく計測する" }),
+      el("p", { text: "AWS 上の Python と Rust の Lambda に同じリクエストを送り、結果を比較できる形で保存します。" }),
+    ]),
+  ];
+  if (state.job) children.push(renderJobPanel(state.job));
+  if (state.launch) children.push(...renderLaunchForm(state.launch));
+  else children.push(el("p", { class: "muted", text: "読み込み中…" }));
+  detail.replaceChildren(...children);
+}
+
+function renderJobBanner() {
+  const job = state.job;
+  // 計測開始画面を開いていない間だけ、実行中の計測を画面上部で知らせる。
+  if (!job || job.state !== "running" || state.view === "launch") {
+    jobBanner.hidden = true;
+    return;
+  }
+  jobBanner.replaceChildren(
+    el("span", { class: "badge badge-running", text: "計測を実行中" }),
+    el("span", { text: `${job.workload} · ${stepLabel(job)} · 経過 ${formatElapsed(job.elapsed_seconds)}` }),
+    el("button", { type: "button", class: "ghost-button", text: "進み具合を見る", onclick: openLaunch }),
+  );
+  jobBanner.hidden = false;
+}
+
+let jobTimer = null;
+
+// 計測の状態を反映し、実行中なら一定間隔で問い合わせ、終わったら計測履歴を更新する。
+function setJob(job) {
+  const wasRunning = state.job?.state === "running";
+  state.job = job;
+  clearTimeout(jobTimer);
+  if (job?.state === "running") jobTimer = setTimeout(pollJob, JOB_POLL_MS);
+  if (wasRunning && job && job.state !== "running") loadRuns(state.selectedId, { keepView: true });
+  renderJobBanner();
+  if (state.view !== "launch") return;
+  const panel = document.getElementById("job-panel");
+  // 実行中かどうかが変わらない間は状態パネルだけを差し替え、入力中のフォームを保つ。
+  if (panel && job && wasRunning === (job.state === "running")) {
+    panel.replaceWith(renderJobPanel(job));
+  } else {
+    renderLaunch();
+  }
+}
+
+async function pollJob() {
+  try {
+    const { job } = await fetchJson("/api/jobs/current");
+    setJob(job);
+  } catch {
+    // サーバーへ一時的に接続できなくても、次の問い合わせで回復できるよう再試行する。
+    jobTimer = setTimeout(pollJob, JOB_POLL_MS * 2);
+  }
+}
+
+async function cancelJob() {
+  try {
+    const { job } = await fetchJson("/api/jobs/current/cancel", {});
+    setJob(job);
+  } catch (error) {
+    renderError(detail, error.message, openLaunch);
+  }
+}
+
+async function openLaunch() {
+  state.view = "launch";
+  state.selectedId = null;
+  history.replaceState(null, "", "#launch");
+  renderRunList();
+  renderJobBanner();
+  renderLaunch();
+  try {
+    state.launch = await fetchJson("/api/launch");
+    state.job = state.launch.job;
+    // 設定を読み込んだらフォームを含む画面全体を描き、その後に実行中の計測の問い合わせを始める。
+    renderLaunch();
+    setJob(state.job);
+  } catch (error) {
+    renderError(detail, error.message, openLaunch);
+  }
+}
+
 // --- 状態遷移 ----------------------------------------------------------------
 
 async function selectRun(runId) {
+  state.view = "run";
   state.selectedId = runId;
+  renderJobBanner();
   history.replaceState(null, "", `#run=${encodeURIComponent(runId)}`);
   renderRunList();
   detail.replaceChildren(el("p", { class: "muted", text: "読み込み中…" }));
@@ -678,7 +1031,9 @@ function runIdFromHash() {
   return match ? decodeURIComponent(match[1]) : null;
 }
 
-async function loadRuns() {
+// 計測履歴を読み直す。preferredに指定したrun、URLのrun、最新のrunの順で開く。
+// keepViewなら計測開始画面を開いたまま履歴だけを更新する。
+async function loadRuns(preferred = null, { keepView = false } = {}) {
   runListBody.replaceChildren(el("p", { class: "muted", text: "読み込み中…" }));
   try {
     const { runs } = await fetchJson("/api/runs");
@@ -689,6 +1044,7 @@ async function loadRuns() {
     return;
   }
   renderRunList();
+  if (keepView && state.view === "launch") return;
   if (state.runs.length === 0) {
     detail.replaceChildren(
       el("div", { class: "card" }, [
@@ -702,17 +1058,28 @@ async function loadRuns() {
     return;
   }
   // URLで指定されたrunがあればそれを、なければ最新のrunを開く。
-  const requested = runIdFromHash();
+  const requested = typeof preferred === "string" ? preferred : runIdFromHash();
   const initial = state.runs.some((run) => run.run_id === requested) ? requested : state.runs[0].run_id;
   await selectRun(initial);
 }
 
-document.getElementById("reload").addEventListener("click", loadRuns);
+document.getElementById("reload").addEventListener("click", () => loadRuns(state.selectedId, { keepView: true }));
+document.getElementById("open-launch").addEventListener("click", openLaunch);
 
 let resizeTimer;
 window.addEventListener("resize", () => {
   clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(renderDetail, 150);
+  // 計測結果の表示中だけ、グラフを新しい幅で描き直す。
+  resizeTimer = setTimeout(() => state.view === "run" && renderDetail(), 150);
 });
 
-loadRuns();
+// 起動時は実行中の計測を確認し、URLが#launchなら計測開始画面、それ以外は計測結果を開く。
+fetchJson("/api/jobs/current")
+  .then(({ job }) => setJob(job))
+  .catch(() => {});
+if (location.hash === "#launch") {
+  loadRuns(null, { keepView: true });
+  openLaunch();
+} else {
+  loadRuns();
+}

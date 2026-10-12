@@ -12,12 +12,15 @@
       <p class="lede">同じ条件で計測した Python と Rust の Lambda を比べます。</p>
     </header>
 
+    <div id="job-banner" class="job-banner" role="status" hidden></div>
+
     <main class="layout">
       <nav class="run-list" aria-labelledby="run-list-title">
         <div class="run-list-head">
           <h2 id="run-list-title">計測履歴</h2>
           <button type="button" id="reload" class="ghost-button">再読み込み</button>
         </div>
+        <button type="button" id="open-launch" class="primary-button">＋ 新しく計測する</button>
         <div id="run-list-body" aria-live="polite">
           <p class="muted">読み込み中…</p>
         </div>
