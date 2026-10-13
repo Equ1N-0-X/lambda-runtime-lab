@@ -19,8 +19,51 @@ REPORT_PATTERN = re.compile(
 )
 
 
+def _parse_json_report(message: str) -> dict[str, Any] | None:
+    """ログ形式JSONのLambdaが出すplatform.reportを、テキスト形式REPORTと同じ項目へ変換する。"""
+    opening = message.find("{")
+    # JSON開始文字がない行は、テキスト形式のREPORTか別種のログとして扱う。
+    if opening < 0:
+        return None
+    try:
+        value = json.loads(message[opening:])
+    # JSONとして読めない行はplatform.reportではないため、別種のログとして扱う。
+    except json.JSONDecodeError:
+        return None
+    # typeがplatform.reportでなければ、アプリログや開始ログなので実行レポートとして扱わない。
+    if not isinstance(value, dict) or value.get("type") != "platform.report":
+        return None
+
+    record = value.get("record")
+    metrics = record.get("metrics") if isinstance(record, dict) else None
+    # リクエストIDか指標がなければ計測と結合できないため、壊れたレポートとして読み飛ばす。
+    if not isinstance(metrics, dict) or not isinstance(record.get("requestId"), str):
+        return None
+    try:
+        init = metrics.get("initDurationMs")
+        return {
+            "lambda_request_id": record["requestId"],
+            "duration_ms": float(metrics["durationMs"]),
+            "billed_duration_ms": float(metrics["billedDurationMs"]),
+            "memory_size_mb": int(metrics["memorySizeMB"]),
+            "max_memory_used_mb": int(metrics["maxMemoryUsedMB"]),
+            "init_duration_ms": float(init) if init is not None else None,
+        }
+    # 必須指標の欠落や非数値は、誤った料金やメモリを出さないためレポートなしとして扱う。
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def parse_report(message: str) -> dict[str, Any] | None:
-    """Lambda REPORT行だけを認識し、課金時間・メモリ・Cold Start情報を数値化する。"""
+    """LambdaのREPORT（テキスト・JSON形式）を認識し、課金時間・メモリ・Cold Start情報を数値化する。
+
+    Lambdaのログ形式がJSONの場合、REPORT行はテキストではなくtype=platform.reportのJSONで出力される。
+    """
+    json_report = _parse_json_report(message)
+    # JSON形式のレポートとして読めた場合は、テキスト形式の解析を行わずそのまま返す。
+    if json_report:
+        return json_report
+
     match = REPORT_PATTERN.search(message)
     # REPORT形式に一致しないログ行は、別種のログとして扱えるようNoneを返す。
     if not match:
