@@ -36,7 +36,33 @@ def _run_dirs(results_dir: Path) -> list[Path]:
     ]
 
 
-def _issues(report: dict[str, Any], *, collected: bool) -> list[str]:
+def _unlinked_cause(run_dir: Path) -> str:
+    """収集済みLambdaログの内容から、計測と結び付けられなかった理由と対処を返す。"""
+    events_path = run_dir / "cloudwatch.jsonl"
+    events = []
+    # 収集イベントがあれば読み、なければ理由を特定できないため一般的な文言に任せる。
+    if events_path.is_file():
+        with events_path.open(encoding="utf-8") as stream:
+            events = [json.loads(line) for line in stream if line.strip()]
+    reports = [event for event in events if event.get("type") == "report"]
+    app_logs = [event for event in events if event.get("type") == "structured"]
+
+    # 実行レポートが一件もなければ、実行時間・メモリ・課金時間の元データ自体を読めていない。
+    if not reports:
+        return (
+            "Lambdaの実行レポート（実行時間・課金時間・メモリ）をログから読み取れませんでした。"
+            "ログを再収集してください。"
+        )
+    # アプリログに計測番号がなければ、デプロイ中のLambdaが計測番号を出力しない古い版である。
+    if app_logs and all(event.get("benchmark_request_index") is None for event in app_logs):
+        return (
+            "デプロイ中のLambdaが計測番号をログに出力していないため、どのリクエストの記録か特定できません。"
+            "最新のアプリをデプロイしてから計測し直してください。"
+        )
+    return "対応するLambdaのログが見つかりませんでした。"
+
+
+def _issues(report: dict[str, Any], *, collected: bool, run_dir: Path) -> list[str]:
     """Python/Rustを同じ条件で比較できない理由を、利用者が対処できる文言で列挙する。"""
     metadata = report["metadata"]
     implementations = report["implementations"]
@@ -62,9 +88,10 @@ def _issues(report: dict[str, Any], *, collected: bool) -> list[str]:
         unclassified = sum(values["unclassified_count"] for values in implementations.values())
         # 収集後もログと結合できない計測が残れば、Lambda内部の指標は一部欠けている。
         if unclassified:
+            total = sum(values["sample_count"] for values in implementations.values())
             issues.append(
-                f"Lambdaのログと結び付けられない計測が{unclassified}件あります。"
-                "応答時間以外の指標とコストは比較に使えません。"
+                f"{total}件中{unclassified}件の計測で、Lambda側の記録（実行時間・メモリ・料金）が"
+                f"得られていません。{_unlinked_cause(run_dir)}"
             )
     return issues
 
@@ -82,9 +109,10 @@ def load_run(run_id: str, *, results_dir: Path, pricing_path: Path) -> dict[str,
     }:
         raise RunNotFound(run_id)
 
-    collected = (results_dir / "raw" / run_id / "merged.jsonl").is_file()
+    run_dir = results_dir / "raw" / run_id
+    collected = (run_dir / "merged.jsonl").is_file()
     report = build_report(run_id=run_id, results_dir=results_dir, pricing_path=pricing_path)
-    issues = _issues(report, collected=collected)
+    issues = _issues(report, collected=collected, run_dir=run_dir)
     return {
         **report,
         "metadata": _public_metadata(report["metadata"]),

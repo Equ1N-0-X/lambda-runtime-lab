@@ -91,7 +91,27 @@ def test_load_run_reports_unmatched_samples_after_collection(tmp_path):
 
     run = load_run("unmatched", results_dir=tmp_path, pricing_path=tmp_path / "missing.yaml")
 
-    assert any("1件あります" in issue for issue in run["issues"])
+    issues = "\n".join(run["issues"])
+    assert "2件中1件" in issues
+    assert "実行レポート" in issues
+
+
+def test_load_run_explains_stale_deployment_when_app_logs_lack_request_index(tmp_path):
+    records = [_record("python", 1, start_type=None), _record("rust", 1, start_type=None)]
+    run_dir = _write_run(tmp_path, "stale", records=records)
+    events = [
+        {"type": "report", "lambda_request_id": "req-1"},
+        {"type": "structured", "lambda_request_id": "req-1", "benchmark_request_index": None},
+    ]
+    (run_dir / "cloudwatch.jsonl").write_text(
+        "".join(json.dumps(event) + "\n" for event in events), encoding="utf-8"
+    )
+
+    run = load_run("stale", results_dir=tmp_path, pricing_path=tmp_path / "missing.yaml")
+
+    issues = "\n".join(run["issues"])
+    assert "計測番号をログに出力していない" in issues
+    assert "デプロイ" in issues
 
 
 @pytest.mark.parametrize("run_id", ["../secret", "missing", ".hidden", ""])
