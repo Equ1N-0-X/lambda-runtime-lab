@@ -53,8 +53,8 @@ const SCOPES = [
 
 const PERCENTILES = [
   { key: "p50", label: "P50", description: "中央値" },
-  { key: "p95", label: "P95", description: "遅い方から5%" },
-  { key: "p99", label: "P99", description: "遅い方から1%" },
+  { key: "p95", label: "P95", description: "95%がこの値以下" },
+  { key: "p99", label: "P99", description: "99%がこの値以下" },
 ];
 
 // 差がこの割合未満なら、計測の揺らぎの範囲として「ほぼ同じ」と表示する。
@@ -282,7 +282,7 @@ function renderTiles(run) {
     );
     tiles.push(
       renderTile({
-        label: `応答時間 ${percentile.toUpperCase()}（${percentile === "p50" ? "中央値" : "遅い方から5%"}）`,
+        label: `応答時間 ${percentile.toUpperCase()}（${percentile === "p50" ? "中央値" : "95%がこの値以下"}）`,
         values,
         format: (value) => valueWithUnit(value, "ms"),
         difference: describeDifference(run.differences?.latency_ms?.[percentile], "短い", "長い"),
@@ -393,7 +393,7 @@ function renderChart(container, run) {
     viewBox: `0 0 ${width} ${height}`,
     height,
     role: "img",
-    "aria-label": `${metric.label}（${scopeLabel}）の百分位ごとの比較`,
+    "aria-label": `${metric.label}（${scopeLabel}）のP50・P95・P99の比較`,
   });
 
   // 目盛り線と軸ラベル。データより目立たない細線にする。
@@ -485,10 +485,10 @@ function renderComparison(run) {
   }).join(" / ");
 
   const card = el("div", { class: "card", id: "comparison" }, [
-    el("div", { class: "section-head" }, [el("h3", { text: "百分位ごとの比較" }), legend()]),
+    el("div", { class: "section-head" }, [el("h3", { text: "指標ごとの比較（P50・P95・P99）" }), legend()]),
     el("p", {
       class: "section-note",
-      text: `${metric.description} 値が小さいほど有利です。`,
+      text: `${metric.description} 値が小さいほど有利です。P50は計測の半分がこの値以下、P95・P99は95%・99%がこの値以下になる値で、まれに起きる悪いケースの大きさを表します。`,
     }),
     el("div", { class: "controls" }, [
       segmented(
