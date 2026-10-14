@@ -70,6 +70,9 @@ const state = {
   view: "run",
   launch: null,
   job: null,
+  // この画面を開いている間に実行中の状態を確認した計測のrun ID。
+  // 終わった計測の結果を出すのは、利用者が見届けた計測だけに限る。
+  watchedRunId: null,
 };
 
 // 実行中の計測の状態を問い合わせる間隔。
@@ -903,7 +906,11 @@ function renderJobPanel(job) {
         type: "button",
         class: "primary-button",
         text: "結果を見る",
-        onclick: () => loadRuns(job.run_id),
+        onclick: () => {
+          // 結果を開いたら案内は済んだため、次に計測開始画面を開いたときは出さない。
+          state.watchedRunId = null;
+          loadRuns(job.run_id);
+        },
       }),
     );
   }
@@ -923,6 +930,12 @@ function renderJobPanel(job) {
   ]);
 }
 
+// 計測開始画面に出す計測は、実行中のものか、この画面で実行中から見届けたものに限る。
+// サーバーは前回の計測を保持し続けるため、以前に終わった計測は出さない。
+function isJobRelevant(job) {
+  return job.state === "running" || job.run_id === state.watchedRunId;
+}
+
 function renderLaunch() {
   hideTooltip();
   const children = [
@@ -931,7 +944,7 @@ function renderLaunch() {
       el("p", { text: "AWS 上の Python と Rust の Lambda に同じリクエストを送り、結果を比較できる形で保存します。" }),
     ]),
   ];
-  if (state.job) children.push(renderJobPanel(state.job));
+  if (state.job && isJobRelevant(state.job)) children.push(renderJobPanel(state.job));
   if (state.launch) children.push(...renderLaunchForm(state.launch));
   else children.push(el("p", { class: "muted", text: "AWS 上の設定を確認しています…" }));
   detail.replaceChildren(...children);
@@ -958,6 +971,8 @@ let jobTimer = null;
 function setJob(job) {
   const wasRunning = state.job?.state === "running";
   state.job = job;
+  // 実行中の計測は、終わったときに結果を案内できるよう見届け対象として覚える。
+  if (job?.state === "running") state.watchedRunId = job.run_id;
   clearTimeout(jobTimer);
   if (job?.state === "running") jobTimer = setTimeout(pollJob, JOB_POLL_MS);
   if (wasRunning && job && job.state !== "running") loadRuns(state.selectedId, { keepView: true });
@@ -1014,6 +1029,8 @@ async function openLaunch() {
 // --- 状態遷移 ----------------------------------------------------------------
 
 async function selectRun(runId) {
+  // 計測開始画面で終わった計測を表示した後に離れる場合は、案内は済んだものとして次から出さない。
+  if (state.view === "launch" && state.job && state.job.state !== "running") state.watchedRunId = null;
   state.view = "run";
   state.selectedId = runId;
   renderJobBanner();
