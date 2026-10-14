@@ -221,6 +221,7 @@ def generate_report(
             "",
             "Billed Duration、設定メモリ、料金表から求めた概算です。Free Tier、税、API Gateway、",
             "DynamoDB等は含まず、AWS請求額そのものではありません。`null`なら理由を解消するまで比較しません。",
+            "Compute cost/1M requestsは、実装によらず同額のリクエスト料金を除いた料金です。",
             "",
         ]
     )
@@ -234,20 +235,22 @@ def generate_report(
                 f"- Pricing region: {_display(pricing_metadata['region'])}",
                 f"- Pricing source: {_display(pricing_metadata['source'])}",
                 "",
-                "| Implementation | Priced samples | Cost/request | Cost/1M requests |",
-                "|---|---:|---:|---:|",
+                "| Implementation | Priced samples | Cost/request | Cost/1M requests "
+                "| Compute cost/1M requests |",
+                "|---|---:|---:|---:|---:|",
             ]
         )
         for name, values in implementations.items():
             cost = values["cost"]
             # 有効な料金サンプルがない実装は、金額ゼロとせずnullとして表示する。
             if cost is None:
-                lines.append(f"| {name} | 0 | null | null |")
+                lines.append(f"| {name} | 0 | null | null | null |")
             else:
                 lines.append(
                     f"| {name} | {cost['priced_sample_count']} | "
                     f"{_display(cost['estimated_cost_per_request'], 10)} | "
-                    f"{_display(cost['estimated_cost_per_1m'], 10)} |"
+                    f"{_display(cost['estimated_cost_per_1m'], 10)} | "
+                    f"{_display(cost['estimated_compute_cost_per_1m'], 10)} |"
                 )
 
     lines.extend(
@@ -330,7 +333,12 @@ def generate_report(
     for metric in METRICS:
         fieldnames.extend(f"{metric}_{percentile}" for percentile in ("p50", "p95", "p99"))
     fieldnames.extend(
-        ["priced_sample_count", "estimated_cost_per_request", "estimated_cost_per_1m"]
+        [
+            "priced_sample_count",
+            "estimated_cost_per_request",
+            "estimated_cost_per_1m",
+            "estimated_compute_cost_per_1m",
+        ]
     )
     with csv_path.open("w", encoding="utf-8", newline="") as stream:
         # CSVは一実装一行とし、Markdownと同じ集計値を後続処理が再利用できる形で保存する。
@@ -356,6 +364,7 @@ def generate_report(
                     "priced_sample_count": cost.get("priced_sample_count"),
                     "estimated_cost_per_request": cost.get("estimated_cost_per_request"),
                     "estimated_cost_per_1m": cost.get("estimated_cost_per_1m"),
+                    "estimated_compute_cost_per_1m": cost.get("estimated_compute_cost_per_1m"),
                 }
             )
             writer.writerow(row)
