@@ -307,6 +307,53 @@ button:focus-visible,
   margin-left: 2px;
 }
 
+.summary {
+  display: grid;
+  gap: 4px;
+}
+
+.tile {
+  display: flex;
+  flex-direction: column;
+}
+
+.tile-hint {
+  margin: 8px 0 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--ink-secondary);
+}
+
+.metric-guide {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+  margin: 0 0 16px;
+  padding: 12px 16px;
+  border-radius: 8px;
+  background: var(--hover);
+  font-size: 13px;
+}
+
+.metric-guide dt {
+  color: var(--ink-secondary);
+}
+
+.metric-guide dd {
+  margin: 0;
+}
+
+@media (max-width: 560px) {
+  .metric-guide {
+    grid-template-columns: 1fr;
+  }
+
+  .metric-guide dd {
+    margin-bottom: 8px;
+  }
+}
+
 .tile-delta {
   margin: 8px 0 0;
   font-size: 13px;

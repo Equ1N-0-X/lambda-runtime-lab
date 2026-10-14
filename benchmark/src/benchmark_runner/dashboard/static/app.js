@@ -6,39 +6,45 @@ const IMPLEMENTATIONS = [
   { key: "rust", label: "Rust" },
 ];
 
-// 指標ごとの表示名・説明・単位と、Rustが小さいときの言い方。いずれも小さいほど有利な指標。
+// 指標ごとの表示名・何を表すか・何が分かるか・単位と、Rustが小さいときの言い方。
+// いずれも小さいほど有利な指標。
 const METRICS = {
   latency_ms: {
     label: "応答時間",
-    description: "クライアントから見たAPI全体の応答時間です。",
+    description: "リクエストを送ってから応答が届くまでの時間です。手元の回線の速さも含みます。",
+    insight: "利用者が待つ時間の差が分かります。",
     unit: "ms",
     lower: "短い",
     higher: "長い",
   },
   duration_ms: {
     label: "Lambda実行時間",
-    description: "Lambda内でハンドラーを実行した時間です。",
+    description: "Lambda がリクエストを処理していた時間です。回線の影響を含みません。",
+    insight: "言語と実装そのものの処理の速さが分かります。",
     unit: "ms",
     lower: "短い",
     higher: "長い",
   },
   billed_duration_ms: {
     label: "課金対象時間",
-    description: "Lambda料金の計算に使われる時間です。",
+    description: "Lambda 料金の計算に使われる時間です（1ms 単位で切り上げ）。",
+    insight: "実行時間分の料金はこの時間に比例します。",
     unit: "ms",
     lower: "短い",
     higher: "長い",
   },
   init_duration_ms: {
     label: "初期化時間",
-    description: "コールドスタート時の初期化時間です。コールドの計測だけに値があります。",
+    description: "新しい実行環境を起動するときの準備時間です。コールドスタートの計測だけに値があります。",
+    insight: "しばらく呼ばれなかった後や、アクセスが急に増えたときの最初の応答の遅さが分かります。",
     unit: "ms",
     lower: "短い",
     higher: "長い",
   },
   max_memory_used_mb: {
     label: "最大メモリ使用量",
-    description: "実行中に観測された最大メモリ使用量です。",
+    description: "1回の実行で使ったメモリの最大値です。",
+    insight: "Lambda のメモリ設定をどこまで下げられるかの目安になります。",
     unit: "MB",
     lower: "少ない",
     higher: "多い",
@@ -46,9 +52,17 @@ const METRICS = {
 };
 
 const SCOPES = [
-  { key: "metrics", label: "全体" },
-  { key: "cold_metrics", label: "コールドスタート" },
-  { key: "warm_metrics", label: "ウォームスタート" },
+  { key: "metrics", label: "全体", description: "すべての計測を対象にしています。" },
+  {
+    key: "cold_metrics",
+    label: "コールドスタート",
+    description: "実行環境の起動を伴った呼び出しだけを対象にしています。",
+  },
+  {
+    key: "warm_metrics",
+    label: "ウォームスタート",
+    description: "起動済みの実行環境で処理した呼び出しだけを対象にしています。普段の性能はこちらで比べます。",
+  },
 ];
 
 const PERCENTILES = [
@@ -254,17 +268,18 @@ function renderNotice(run) {
   ]);
 }
 
-function renderTile({ label, values, format, difference }) {
+function renderTile({ label, hint, values, format, difference }) {
   const rows = IMPLEMENTATIONS.map(({ key, label: name }) =>
     el("div", { class: "tile-row" }, [
       el("span", { class: `series-key series-${key}`, text: name }),
       el("span", { class: "tile-value" }, format(values[key])),
     ]),
   );
-  return el("div", { class: "card" }, [
+  return el("div", { class: "card tile" }, [
     el("p", { class: "tile-label", text: label }),
     ...rows,
     el("p", { class: "tile-delta", text: difference }),
+    el("p", { class: "tile-hint", text: hint }),
   ]);
 }
 
@@ -275,37 +290,53 @@ function valueWithUnit(value, unit) {
 
 function renderTiles(run) {
   const implementations = run.implementations;
-  const metricValue = (key, metric, percentile) =>
-    implementations[key]?.metrics?.[metric]?.[percentile] ?? null;
-  const tiles = [];
+  const valuesOf = (read) => Object.fromEntries(IMPLEMENTATIONS.map(({ key }) => [key, read(implementations[key])]));
+  const costFormat = (value) =>
+    isNumber(value) ? formatCost(value) : [el("span", { class: "tile-unit", text: "未計算" })];
 
-  for (const percentile of ["p50", "p95"]) {
-    const values = Object.fromEntries(
-      IMPLEMENTATIONS.map(({ key }) => [key, metricValue(key, "latency_ms", percentile)]),
-    );
-    tiles.push(
-      renderTile({
-        label: `応答時間 ${percentile.toUpperCase()}（${percentile === "p50" ? "中央値" : "95%がこの値以下"}）`,
-        values,
-        format: (value) => valueWithUnit(value, "ms"),
-        difference: describeDifference(run.differences?.latency_ms?.[percentile], "短い", "長い"),
-      }),
-    );
-  }
+  const totalCosts = valuesOf((values) => values?.cost?.estimated_cost_per_1m ?? null);
+  const computeCosts = valuesOf((values) => values?.cost?.estimated_compute_cost_per_1m ?? null);
+  const memory = valuesOf((values) => values?.metrics?.max_memory_used_mb?.p50 ?? null);
+  const latency = valuesOf((values) => values?.metrics?.latency_ms?.p50 ?? null);
 
-  const costs = Object.fromEntries(
-    IMPLEMENTATIONS.map(({ key }) => [key, implementations[key]?.cost?.estimated_cost_per_1m ?? null]),
-  );
-  tiles.push(
+  const tiles = [
     renderTile({
-      label: "100万リクエストあたりの推定 Lambda 料金",
-      values: costs,
-      format: (value) =>
-        isNumber(value) ? formatCost(value) : [el("span", { class: "tile-unit", text: "未計算" })],
-      difference: describeDifference(relativeDifference(costs.python, costs.rust), "安い", "高い"),
+      label: "Lambda 料金（100万リクエストあたり）",
+      hint: "実際の請求に近い総額です。リクエスト料金 $0.20 は言語によらず同じです。",
+      values: totalCosts,
+      format: costFormat,
+      difference: describeDifference(relativeDifference(totalCosts.python, totalCosts.rust), "安い", "高い"),
     }),
-  );
-  return el("div", { class: "tiles" }, tiles);
+    renderTile({
+      label: "うち実行時間分の料金（100万リクエストあたり）",
+      hint: "リクエスト料金を除いた部分です。言語による料金の差はここに表れます。",
+      values: computeCosts,
+      format: costFormat,
+      difference: describeDifference(relativeDifference(computeCosts.python, computeCosts.rust), "安い", "高い"),
+    }),
+    renderTile({
+      label: "使ったメモリ（中央値）",
+      hint: METRICS.max_memory_used_mb.insight,
+      values: memory,
+      format: (value) => valueWithUnit(value, "MB"),
+      difference: describeDifference(run.differences?.max_memory_used_mb?.p50, "少ない", "多い"),
+    }),
+    renderTile({
+      label: "応答時間（中央値）",
+      hint: "手元の回線の影響を含みます。処理そのものの速さは下の「Lambda実行時間」で比べます。",
+      values: latency,
+      format: (value) => valueWithUnit(value, "ms"),
+      difference: describeDifference(run.differences?.latency_ms?.p50, "短い", "長い"),
+    }),
+  ];
+  return el("section", { class: "summary", "aria-labelledby": "summary-title" }, [
+    el("div", { class: "section-head" }, el("h3", { id: "summary-title", text: "結果の要点" })),
+    el("p", {
+      class: "section-note",
+      text: "Python と Rust の差を、料金・メモリ・速さの順にまとめています。差の文は Python を基準にしています。",
+    }),
+    el("div", { class: "tiles" }, tiles),
+  ]);
 }
 
 function segmented(options, selected, onSelect, label) {
@@ -481,6 +512,7 @@ function renderChart(container, run) {
 
 function renderComparison(run) {
   const metric = METRICS[state.metric];
+  const scope = SCOPES.find(({ key }) => key === state.scope);
   const chart = el("div", { class: "chart" });
   const counts = IMPLEMENTATIONS.map(({ key, label }) => {
     const count = run.implementations[key]?.[state.scope]?.[state.metric]?.count ?? 0;
@@ -488,10 +520,10 @@ function renderComparison(run) {
   }).join(" / ");
 
   const card = el("div", { class: "card", id: "comparison" }, [
-    el("div", { class: "section-head" }, [el("h3", { text: "指標ごとの比較（P50・P95・P99）" }), legend()]),
+    el("div", { class: "section-head" }, [el("h3", { text: "指標ごとの詳しい比較" }), legend()]),
     el("p", {
       class: "section-note",
-      text: `${metric.description} 値が小さいほど有利です。P50は計測の半分がこの値以下、P95・P99は95%・99%がこの値以下になる値で、まれに起きる悪いケースの大きさを表します。`,
+      text: "指標と対象の計測を選ぶと、Python と Rust を P50・P95・P99 の3つの位置で比べます。棒が短いほど有利です。",
     }),
     el("div", { class: "controls" }, [
       segmented(
@@ -512,6 +544,16 @@ function renderComparison(run) {
         },
         "対象の計測",
       ),
+    ]),
+    el("dl", { class: "metric-guide" }, [
+      el("dt", { text: "表しているもの" }),
+      el("dd", { text: `${metric.description}${scope.description}` }),
+      el("dt", { text: "分かること" }),
+      el("dd", { text: metric.insight }),
+      el("dt", { text: "P50・P95・P99" }),
+      el("dd", {
+        text: "P50 は普段の値（半分の計測がこれ以下）、P95・P99 はまれに起きる遅い・重いケースの値（95%・99% がこれ以下）です。P50 と P99 の差が小さいほど安定しています。",
+      }),
     ]),
     chart,
     el("p", { class: "chart-count", text: `集計した計測の件数: ${counts}` }),
@@ -574,7 +616,7 @@ function renderSampleTable(run) {
     el("div", { class: "section-head" }, el("h3", { text: "計測件数" })),
     el("p", {
       class: "section-note",
-      text: "コールドは初期化を伴った呼び出しです。ログと未結合の計測は、Lambda 内部の指標を持ちません。",
+      text: "各指標が何件の計測から求めたかを示します。コールドは実行環境の起動を伴った呼び出し、ウォームは起動済みの環境での呼び出しです。「ログと未結合」が 0 件でないと、Lambda 側の指標と料金が欠けます。",
     }),
     el("div", { class: "table-scroll" }, el("table", {}, [el("thead", {}, header), el("tbody", {}, rows)])),
   ]);
