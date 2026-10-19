@@ -12,6 +12,8 @@ from benchmark_runner.dashboard.settings import (
     SettingsUnavailable,
 )
 
+REGISTRY = Path(__file__).parent / "fixtures/implementations.yaml"
+
 OUTPUTS = {
     "api_endpoints": {"python": "https://python.example", "rust": "https://rust.example"},
     "lambda_names": {"python": "lab-python", "rust": "lab-rust"},
@@ -38,6 +40,7 @@ def _resolver(*, environ=None, outputs=OUTPUTS, conditions=None, calls=None, che
 
     return SettingsResolver(
         terraform_dir=Path("unused"),
+        registry_path=REGISTRY,
         environ=environ or {},
         read_outputs=read_outputs,
         read_conditions=read_conditions,

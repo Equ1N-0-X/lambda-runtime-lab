@@ -1,0 +1,9 @@
+# テスト用の実装一覧。正本（spec/implementations.yaml）に言語を足してもテストの前提が変わらないよう固定する。
+version: 1
+implementations:
+  python:
+    label: Python
+    app_dir: apps/python
+  rust:
+    label: Rust
+    app_dir: apps/rust
