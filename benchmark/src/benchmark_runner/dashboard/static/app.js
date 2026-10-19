@@ -1161,6 +1161,215 @@ async function openLaunch() {
   }
 }
 
+// --- 作りたいAPIの見込み ------------------------------------------------------
+
+// 入力が止まってから計算する待ち時間。入力のたびに計算を送らないようにする。
+const ESTIMATE_DEBOUNCE_MS = 300;
+
+function formatMonthlyCost(value) {
+  if (!isNumber(value)) return "未計算";
+  return `$${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function renderEstimateResult(result) {
+  const estimable = result.languages.filter((language) => language.estimable);
+  const ranked = [...estimable].sort((left, right) => left.monthly_cost - right.monthly_cost);
+  const best = ranked[0];
+  const series = Object.fromEntries(result.languages.map(({ key }, index) => [key, `series-${(index % 6) + 1}`]));
+  const header = el("tr", {}, [
+    el("th", { class: "text", scope: "col", text: "言語" }),
+    el("th", { scope: "col", text: "月額料金（見込み）" }),
+    el("th", { scope: "col", text: "うち実行時間分" }),
+    el("th", { scope: "col", text: "処理時間（普段・平均）" }),
+    el("th", { scope: "col", text: "コールドスタート時の追加" }),
+  ]);
+  const rows = [
+    ...ranked.map((language) =>
+      el("tr", {}, [
+        el("th", { class: "text", scope: "row" }, el("span", { class: `series-key ${series[language.key]}`, text: language.label })),
+        el("td", { class: language === best ? "best" : "" }, [
+          el("span", { text: formatMonthlyCost(language.monthly_cost) }),
+          el("span", { class: "cell-note", text: language === best ? "★ 最も安い" : formatRatio(language.monthly_cost, best.monthly_cost) }),
+        ]),
+        el("td", { text: formatMonthlyCost(language.monthly_compute_cost) }),
+        el("td", { text: formatValue(language.warm_duration_ms, "ms") }),
+        el("td", { text: isNumber(language.init_duration_ms) ? `+${formatValue(language.init_duration_ms, "ms")}` : "実測なし" }),
+      ]),
+    ),
+    // 実測が足りない言語は、見込みを出さずに理由と対処を示す。
+    ...result.languages
+      .filter((language) => !language.estimable)
+      .map((language) =>
+        el("tr", {}, [
+          el("th", { class: "text", scope: "row" }, el("span", { class: `series-key ${series[language.key]}`, text: language.label })),
+          el("td", {
+            colspan: "4",
+            class: "text muted",
+            text: `見込めません: ${language.missing_workloads.join("・")} の実測がありません（この言語を含めて計測すると見込めます）`,
+          }),
+        ]),
+      ),
+  ];
+
+  const notes = [
+    "Lambda の料金（リクエスト料金と実行時間分）だけの見込みです。API Gateway・DynamoDB・データ転送・Free Tier は含みません。",
+    `料金表: ${result.pricing.region} ${result.pricing.updated_at} 時点。実測の平均を構成割合で重み付けしています。`,
+  ];
+  const approximated = estimable.filter((language) => language.approximated_cold_workloads.length);
+  if (approximated.length) {
+    notes.push(
+      "コールドスタートの実測がないワークロードは、その言語の初期化時間（中央値）の分の料金を足して近似しています。",
+    );
+  }
+  const sources = estimable.map((language) =>
+    el("li", {
+      text: `${language.label}: ${language.sources.map((source) => `${source.workload}（${formatDate(source.started_at)}）`).join("、")}`,
+    }),
+  );
+
+  return [
+    el("div", { class: "table-scroll" }, el("table", { class: "summary-table" }, [el("thead", {}, header), el("tbody", {}, rows)])),
+    el("ul", { class: "estimate-notes" }, notes.map((text) => el("li", { text }))),
+    el("details", {}, [el("summary", { text: "根拠にした計測" }), el("ul", {}, sources)]),
+  ];
+}
+
+function renderEstimateForm(options) {
+  const { workloads, conditions } = options;
+  if (conditions.length === 0) {
+    return el("div", { class: "card" }, [
+      el("h3", { text: "見込みに使える計測がありません" }),
+      el("p", { class: "section-note", text: "「新しく計測する」で、見込みたい処理に近いワークロードを計測してください。" }),
+    ]);
+  }
+
+  const condition = el(
+    "select",
+    { id: "estimate-condition" },
+    conditions.map((item, index) =>
+      el("option", {
+        value: String(index),
+        text: `${item.architecture} · ${item.memory_mb} MB（計測 ${item.run_count} 件）`,
+      }),
+    ),
+  );
+  const shares = {};
+  const shareRows = workloads.map((workload, index) => {
+    // 初期値は最初のワークロードを100%にし、合計100%の状態から始める。
+    shares[workload.name] = el("input", {
+      type: "number",
+      inputmode: "numeric",
+      min: "0",
+      max: "100",
+      step: "1",
+      value: index === 0 ? "100" : "0",
+      "aria-label": `${workload.name} の割合`,
+    });
+    return el("tr", {}, [
+      el("td", { class: "text" }, [el("strong", { text: workload.name }), el("span", { class: "cell-note", text: workload.description ?? "" })]),
+      el("td", {}, el("div", { class: "field-input" }, [shares[workload.name], el("span", { class: "muted", text: "%" })])),
+    ]);
+  });
+  const total = el("p", { class: "launch-summary", role: "status" });
+  const monthly = el("input", { id: "estimate-monthly", type: "number", inputmode: "numeric", min: "1", step: "1", value: "1000000" });
+  const cold = el("input", { id: "estimate-cold", type: "number", inputmode: "decimal", min: "0", max: "100", step: "0.1", value: "1" });
+  const error = el("p", { class: "field-error", role: "alert" });
+  const output = el("div", { class: "estimate-output", "aria-live": "polite" });
+
+  let timer = null;
+  let sequence = 0;
+  const calculate = async () => {
+    const mix = Object.fromEntries(Object.entries(shares).map(([name, input]) => [name, Number(input.value || 0)]));
+    const sum = Object.values(mix).reduce((left, right) => left + right, 0);
+    total.textContent = `割合の合計: ${sum}%${sum === 100 ? "" : "（100% にしてください）"}`;
+    error.textContent = "";
+    // 合計が100%でない間は計算を送らず、直前の結果も消して誤読を防ぐ。
+    if (sum !== 100) {
+      output.replaceChildren();
+      return;
+    }
+    const selected = conditions[Number(condition.value)];
+    const current = ++sequence;
+    output.replaceChildren(el("p", { class: "muted", text: "計算しています…" }));
+    try {
+      const result = await fetchJson("/api/estimate", {
+        mix,
+        monthly_requests: Number(monthly.value),
+        cold_start_percent: Number(cold.value),
+        architecture: selected.architecture,
+        memory_mb: selected.memory_mb,
+      });
+      // 計算中に入力が変わっていたら、古い結果で表示を上書きしない。
+      if (current === sequence) output.replaceChildren(...renderEstimateResult(result));
+    } catch (failure) {
+      if (current === sequence) {
+        output.replaceChildren();
+        error.textContent = failure.message;
+      }
+    }
+  };
+  const schedule = () => {
+    clearTimeout(timer);
+    timer = setTimeout(calculate, ESTIMATE_DEBOUNCE_MS);
+  };
+  for (const input of [condition, monthly, cold, ...Object.values(shares)]) input.addEventListener("input", schedule);
+  queueMicrotask(calculate);
+
+  return el("div", { class: "card" }, [
+    el("div", { class: "section-head" }, el("h3", { text: "作りたいAPIの処理の構成" })),
+    el("p", {
+      class: "section-note",
+      text: "作りたいAPIのリクエストが、どの処理にどれくらいの割合で近いかを入力してください。計測済みの結果を割合で重み付けして見込みます。",
+    }),
+    el("div", { class: "table-scroll" }, el("table", { class: "estimate-mix" }, el("tbody", {}, shareRows))),
+    total,
+    el("div", { class: "field-grid" }, [
+      el("div", { class: "field" }, [
+        el("label", { for: "estimate-monthly", text: "月間リクエスト数" }),
+        monthly,
+        el("p", { class: "field-help", text: "1か月に受けるリクエストの数です。" }),
+      ]),
+      el("div", { class: "field" }, [
+        el("label", { for: "estimate-cold", text: "コールドスタートの割合" }),
+        el("div", { class: "field-input" }, [cold, el("span", { class: "muted", text: "%" })]),
+        el("p", {
+          class: "field-help",
+          text: "新しい実行環境の起動を伴うリクエストの割合です。目安: 常にアクセスがある 0.1%、ときどき 1〜5%、まれ 10%以上。",
+        }),
+      ]),
+      el("div", { class: "field" }, [
+        el("label", { for: "estimate-condition", text: "Lambda の条件" }),
+        condition,
+        el("p", { class: "field-help", text: "この条件で計測した結果だけを使います。" }),
+      ]),
+    ]),
+    error,
+    el("div", { class: "section-head" }, el("h3", { text: "言語ごとの見込み（安い順）" })),
+    output,
+  ]);
+}
+
+async function openEstimate() {
+  state.view = "estimate";
+  state.selectedId = null;
+  history.replaceState(null, "", "#estimate");
+  renderRunList();
+  renderJobBanner();
+  hideTooltip();
+  const head = el("div", { class: "detail-head" }, [
+    el("h2", { text: "作りたいAPIの料金を見込む" }),
+    el("p", { text: "計測済みのワークロードを組み合わせて、言語ごとの月額料金と処理時間を見込みます。実績ではなく見込みです。" }),
+  ]);
+  detail.replaceChildren(head, el("p", { class: "muted", text: "読み込み中…" }));
+  try {
+    const options = await fetchJson("/api/estimate/options");
+    if (state.view !== "estimate") return;
+    detail.replaceChildren(head, renderEstimateForm(options));
+  } catch (failure) {
+    renderError(detail, failure.message, openEstimate);
+  }
+}
+
 // --- 状態遷移 ----------------------------------------------------------------
 
 async function selectRun(runId) {
@@ -1201,7 +1410,7 @@ async function loadRuns(preferred = null, { keepView = false } = {}) {
     return;
   }
   renderRunList();
-  if (keepView && state.view === "launch") return;
+  if (keepView && state.view !== "run") return;
   if (state.runs.length === 0) {
     detail.replaceChildren(
       el("div", { class: "card" }, [
@@ -1222,6 +1431,7 @@ async function loadRuns(preferred = null, { keepView = false } = {}) {
 
 document.getElementById("reload").addEventListener("click", () => loadRuns(state.selectedId, { keepView: true }));
 document.getElementById("open-launch").addEventListener("click", openLaunch);
+document.getElementById("open-estimate").addEventListener("click", openEstimate);
 
 let resizeTimer;
 window.addEventListener("resize", () => {
@@ -1237,6 +1447,9 @@ fetchJson("/api/jobs/current")
 if (location.hash === "#launch") {
   loadRuns(null, { keepView: true });
   openLaunch();
+} else if (location.hash === "#estimate") {
+  loadRuns(null, { keepView: true });
+  openEstimate();
 } else {
   loadRuns();
 }
