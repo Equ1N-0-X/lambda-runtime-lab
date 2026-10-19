@@ -5,7 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from benchmark_runner.cost import PricingUnavailable, calculate_cost, load_pricing
+from benchmark_runner.cost import (
+    PricingUnavailable,
+    calculate_cost,
+    load_pricing,
+    summarize_costs,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -62,3 +67,20 @@ compute_price_per_gb_second:
 
     with pytest.raises(PricingUnavailable):
         load_pricing(path)
+
+
+def test_summarizes_compute_cost_without_request_charge():
+    pricing = load_pricing(ROOT / "spec" / "pricing.yaml")
+    records = [
+        {"implementation": "rust", "billed_duration_ms": 2, "memory_size_mb": 512},
+        {"implementation": "rust", "billed_duration_ms": 4, "memory_size_mb": 512},
+    ]
+
+    summary = summarize_costs(
+        records, architecture="arm64", default_memory_mb=512, pricing=pricing
+    )["rust"]
+
+    # 平均3msを0.5GBで実行した料金を百万回分にした値。リクエスト料金$0.20を含まない。
+    expected_compute = 0.003 * 0.5 * 0.0000133334 * 1_000_000
+    assert summary["estimated_compute_cost_per_1m"] == pytest.approx(expected_compute)
+    assert summary["estimated_cost_per_1m"] == pytest.approx(expected_compute + 0.20)

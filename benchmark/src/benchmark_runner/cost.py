@@ -116,7 +116,10 @@ def summarize_costs(
     default_memory_mb: int | None,
     pricing: Pricing,
 ) -> dict[str, Any]:
-    """料金計算に必要な測定だけを実装別に集め、平均推定コストを返す。"""
+    """料金計算に必要な測定だけを実装別に集め、平均推定コストを返す。
+
+    リクエスト料金は実装によらず同額のため、実装差を見られるよう実行時間分だけの料金も返す。
+    """
 
     # 実行メタデータにアーキテクチャがなければ料金表を選べないため、推定しない。
     if not architecture:
@@ -147,5 +150,8 @@ def summarize_costs(
             "estimated_cost_per_request": sum(item["total_cost"] for item in costs) / len(costs),
             "estimated_cost_per_1m": sum(item["normalized_cost_per_1m"] for item in costs)
             / len(costs),
+            "estimated_compute_cost_per_1m": sum(item["compute_cost"] for item in costs)
+            / len(costs)
+            * 1_000_000,
         }
     return result
