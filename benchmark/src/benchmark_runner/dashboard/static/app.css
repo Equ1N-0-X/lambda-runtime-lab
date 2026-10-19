@@ -1,0 +1,797 @@
+:root {
+  color-scheme: light;
+  --page: #f9f9f7;
+  --surface: #fcfcfb;
+  --ink: #0b0b0b;
+  --ink-secondary: #52514e;
+  --ink-muted: #6f6d68;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --border: rgba(11, 11, 11, 0.1);
+  --hover: rgba(11, 11, 11, 0.05);
+  --selected: #e8f0fb;
+  --python: #2a78d6;
+  --rust: #eb6834;
+  --good: #0ca30c;
+  --good-ink: #006300;
+  --warning: #fab219;
+  --critical: #d03b3b;
+  /* 白文字のボタン背景と赤系の文字は、小さい文字でも4.5:1を満たす段を使う。 */
+  --accent: #256abf;
+  --critical-ink: #b3261e;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page: #0d0d0d;
+    --surface: #1a1a19;
+    --ink: #ffffff;
+    --ink-secondary: #c3c2b7;
+    --ink-muted: #a3a29b;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --border: rgba(255, 255, 255, 0.1);
+    --hover: rgba(255, 255, 255, 0.06);
+    --selected: #1d2a3b;
+    --python: #3987e5;
+    --rust: #d95926;
+    --good-ink: #0ca30c;
+    --accent: #1c5cab;
+    --critical-ink: #ff8a80;
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d;
+  --surface: #1a1a19;
+  --ink: #ffffff;
+  --ink-secondary: #c3c2b7;
+  --ink-muted: #a3a29b;
+  --grid: #2c2c2a;
+  --axis: #383835;
+  --border: rgba(255, 255, 255, 0.1);
+  --hover: rgba(255, 255, 255, 0.06);
+  --selected: #1d2a3b;
+  --python: #3987e5;
+  --rust: #d95926;
+  --good-ink: #0ca30c;
+  --accent: #1c5cab;
+  --critical-ink: #ff8a80;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--ink);
+  font-family: system-ui, -apple-system, "Segoe UI", "Hiragino Sans", sans-serif;
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+h1,
+h2,
+h3 {
+  margin: 0;
+  line-height: 1.3;
+}
+
+.page-header {
+  padding: 24px 24px 8px;
+  max-width: 1280px;
+  margin: 0 auto;
+}
+
+.page-header h1 {
+  font-size: 22px;
+}
+
+.lede {
+  margin: 4px 0 0;
+  color: var(--ink-secondary);
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  gap: 24px;
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 16px 24px 48px;
+  align-items: start;
+}
+
+.muted {
+  color: var(--ink-muted);
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+}
+
+/* 計測履歴 */
+.run-list {
+  position: sticky;
+  top: 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px 8px 8px;
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+}
+
+.run-list-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 8px 8px;
+}
+
+.run-list-head h2 {
+  font-size: 15px;
+}
+
+.run-list ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.run-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-radius: 8px;
+  padding: 10px 8px;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.run-item:hover {
+  background: var(--hover);
+}
+
+.run-item[aria-current="true"] {
+  background: var(--selected);
+}
+
+.run-item-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.run-item-meta {
+  font-size: 13px;
+  color: var(--ink-secondary);
+}
+
+.ghost-button,
+.segmented button {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--ink);
+  border-radius: 8px;
+  padding: 4px 12px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.ghost-button:hover,
+.segmented button:hover {
+  background: var(--hover);
+}
+
+button:focus-visible,
+.bar-hit:focus-visible {
+  outline: 2px solid var(--python);
+  outline-offset: 2px;
+}
+
+/* 状態表示: 色だけに頼らず記号と文言を併記する */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.badge::before {
+  font-size: 13px;
+}
+
+.badge-good {
+  color: var(--good-ink);
+}
+
+.badge-good::before {
+  content: "✓";
+}
+
+.badge-warning {
+  color: var(--ink);
+}
+
+.badge-warning::before {
+  content: "⚠";
+  color: var(--warning);
+}
+
+.notice {
+  border-left: 4px solid var(--warning);
+  padding: 12px 16px;
+}
+
+.notice-good {
+  border-left-color: var(--good);
+}
+
+.notice h3 {
+  font-size: 15px;
+  margin-bottom: 4px;
+}
+
+.notice ul {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.notice-error {
+  border-left-color: var(--critical);
+}
+
+/* 詳細 */
+.run-detail {
+  display: grid;
+  /* 表やグラフの内容幅で列が広がらないよう、列幅を親に合わせる。表は各カード内で横スクロールする。 */
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+  min-width: 0;
+}
+
+.detail-head h2 {
+  font-size: 20px;
+}
+
+.detail-head p {
+  margin: 4px 0 0;
+  color: var(--ink-secondary);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
+  gap: 16px;
+}
+
+.tile-label {
+  font-size: 13px;
+  color: var(--ink-secondary);
+  margin: 0 0 8px;
+}
+
+.tile-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.tile-value {
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.tile-unit {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--ink-secondary);
+  margin-left: 2px;
+}
+
+.summary {
+  display: grid;
+  gap: 4px;
+}
+
+.tile {
+  display: flex;
+  flex-direction: column;
+}
+
+.tile-hint {
+  margin: 8px 0 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--ink-secondary);
+}
+
+.metric-guide {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+  margin: 0 0 16px;
+  padding: 12px 16px;
+  border-radius: 8px;
+  background: var(--hover);
+  font-size: 13px;
+}
+
+.metric-guide dt {
+  color: var(--ink-secondary);
+}
+
+.metric-guide dd {
+  margin: 0;
+}
+
+@media (max-width: 560px) {
+  .metric-guide {
+    grid-template-columns: 1fr;
+  }
+
+  .metric-guide dd {
+    margin-bottom: 8px;
+  }
+}
+
+.tile-delta {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--ink-secondary);
+}
+
+.series-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--ink-secondary);
+}
+
+.series-key::before {
+  content: "";
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: var(--key-color);
+}
+
+.series-python {
+  --key-color: var(--python);
+}
+
+.series-rust {
+  --key-color: var(--rust);
+}
+
+.section-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.section-head h3 {
+  font-size: 16px;
+}
+
+.section-note {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: var(--ink-secondary);
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.segmented {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.segmented button[aria-pressed="true"] {
+  background: var(--ink);
+  color: var(--surface);
+  border-color: var(--ink);
+}
+
+.legend {
+  display: flex;
+  gap: 16px;
+}
+
+.chart {
+  width: 100%;
+}
+
+.chart svg {
+  display: block;
+  width: 100%;
+  overflow: visible;
+}
+
+.chart text {
+  fill: var(--ink-secondary);
+  font-size: 12px;
+}
+
+.chart .axis-label {
+  fill: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.chart .row-label {
+  fill: var(--ink);
+  font-weight: 600;
+}
+
+.chart .grid {
+  stroke: var(--grid);
+  stroke-width: 1;
+}
+
+.chart .baseline {
+  stroke: var(--axis);
+  stroke-width: 1;
+}
+
+.bar-hit {
+  cursor: default;
+}
+
+.bar-hit:hover path,
+.bar-hit:focus path {
+  opacity: 0.8;
+}
+
+.chart-count {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--ink-secondary);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+th,
+td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--grid);
+  text-align: right;
+  white-space: nowrap;
+}
+
+th:first-child,
+td:first-child,
+th.text,
+td.text {
+  text-align: left;
+}
+
+td {
+  font-variant-numeric: tabular-nums;
+}
+
+thead th {
+  color: var(--ink-secondary);
+  font-weight: 600;
+}
+
+.table-scroll {
+  overflow-x: auto;
+}
+
+details summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+details[open] summary {
+  margin-bottom: 12px;
+}
+
+.conditions {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+  margin: 0;
+  font-size: 14px;
+}
+
+.conditions dt {
+  color: var(--ink-secondary);
+}
+
+.conditions dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+pre {
+  margin: 0;
+  font-size: 12px;
+  overflow-x: auto;
+}
+
+code {
+  font-size: 0.92em;
+}
+
+.tooltip {
+  position: fixed;
+  z-index: 10;
+  pointer-events: none;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+}
+
+.tooltip strong {
+  display: block;
+  font-size: 15px;
+}
+
+.tooltip span {
+  color: var(--ink-secondary);
+}
+
+/* 計測の開始 */
+.primary-button {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #ffffff;
+  border-radius: 8px;
+  padding: 8px 16px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.primary-button:hover {
+  filter: brightness(1.08);
+}
+
+.primary-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.run-list > .primary-button {
+  display: block;
+  width: calc(100% - 16px);
+  margin: 0 8px 8px;
+}
+
+.job-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  max-width: 1232px;
+  margin: 8px auto 0;
+  padding: 8px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--python);
+  border-radius: 8px;
+  font-size: 14px;
+}
+
+.job-banner[hidden] {
+  display: none;
+}
+
+.badge-running {
+  color: var(--ink);
+}
+
+.badge-running::before {
+  content: "●";
+  color: var(--python);
+}
+
+.badge-error {
+  color: var(--ink);
+}
+
+.badge-error::before {
+  content: "✕";
+  color: var(--critical);
+}
+
+.job-running {
+  border-left-color: var(--python);
+}
+
+.job-succeeded {
+  border-left-color: var(--good);
+}
+
+.job-failed {
+  border-left-color: var(--critical);
+}
+
+.job-steps {
+  list-style: none;
+  margin: 8px 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.job-step {
+  display: grid;
+  grid-template-columns: 20px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.job-step-mark::before {
+  content: "○";
+  color: var(--ink-muted);
+}
+
+.job-step-done .job-step-mark::before {
+  content: "✓";
+  color: var(--good-ink);
+}
+
+.job-step-current .job-step-mark::before {
+  content: "●";
+  color: var(--python);
+}
+
+.job-step-failed .job-step-mark::before {
+  content: "✕";
+  color: var(--critical);
+}
+
+.job-step-cancelled .job-step-mark::before {
+  content: "–";
+  color: var(--ink-muted);
+}
+
+.launch-form {
+  display: grid;
+  gap: 16px;
+}
+
+.field {
+  display: grid;
+  align-content: start;
+  gap: 4px;
+}
+
+.field label {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.field-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr));
+  gap: 16px;
+}
+
+.field-input {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.field select,
+.field input {
+  font: inherit;
+  color: var(--ink);
+  background: var(--page);
+  border: 1px solid var(--axis);
+  border-radius: 8px;
+  padding: 6px 10px;
+  min-width: 0;
+}
+
+.field input {
+  width: 120px;
+}
+
+.field input[aria-invalid="true"] {
+  border-color: var(--critical);
+}
+
+.field-help {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ink-secondary);
+}
+
+.field-error {
+  margin: 0;
+  font-size: 13px;
+  color: var(--critical-ink);
+  font-weight: 600;
+}
+
+.field-error:empty {
+  display: none;
+}
+
+.field-error:not(:empty)::before {
+  content: "✕ ";
+}
+
+.launch-confirm {
+  border-top: 1px solid var(--grid);
+  padding-top: 12px;
+}
+
+.launch-summary {
+  margin: 0 0 4px;
+  font-weight: 600;
+}
+
+.form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+@media (max-width: 760px) {
+  .page-header {
+    padding: 16px 16px 4px;
+  }
+
+  .layout {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 12px 16px 32px;
+    gap: 16px;
+  }
+
+  .run-list {
+    position: static;
+    max-height: 320px;
+  }
+
+  .job-banner {
+    margin: 8px 16px 0;
+  }
+
+  .card {
+    padding: 16px;
+  }
+}

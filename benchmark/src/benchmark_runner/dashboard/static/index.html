@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Lambda ベンチマーク結果</title>
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body>
+    <header class="page-header">
+      <h1>Lambda ベンチマーク結果</h1>
+      <p class="lede">同じ条件で計測した Python と Rust の Lambda を比べます。</p>
+    </header>
+
+    <div id="job-banner" class="job-banner" role="status" hidden></div>
+
+    <main class="layout">
+      <nav class="run-list" aria-labelledby="run-list-title">
+        <div class="run-list-head">
+          <h2 id="run-list-title">計測履歴</h2>
+          <button type="button" id="reload" class="ghost-button">再読み込み</button>
+        </div>
+        <button type="button" id="open-launch" class="primary-button">＋ 新しく計測する</button>
+        <div id="run-list-body" aria-live="polite">
+          <p class="muted">読み込み中…</p>
+        </div>
+      </nav>
+
+      <section id="run-detail" class="run-detail" aria-live="polite">
+        <p class="muted">読み込み中…</p>
+      </section>
+    </main>
+
+    <div id="tooltip" class="tooltip" role="status" hidden></div>
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
