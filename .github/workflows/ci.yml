@@ -99,21 +99,22 @@ jobs:
 
   docker-arm64:
     name: Docker (linux/arm64)
-    runs-on: ubuntu-latest
+    # Lambdaと同じarm64のランナーで、エミュレーション（QEMU）なしにビルドする。
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       # ビルド対象の言語は spec/implementations.yaml から読むため、読み取りに使うuvを用意する。
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
-      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - name: Build every implementation image
         run: make build
 
   contract:
     name: Shared Contract Test
-    runs-on: ubuntu-latest
+    # arm64のイメージをエミュレーションなしで起動する。JVMなどはQEMU上では起動に失敗しやすい。
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -122,7 +123,6 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
-      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - name: Build Lambda images
         run: make build
