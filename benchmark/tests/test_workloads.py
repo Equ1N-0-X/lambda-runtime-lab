@@ -56,3 +56,43 @@ def test_rejects_invalid_workload(tmp_path, fragment):
     path.write_text(fragment, encoding="utf-8")
     with pytest.raises(WorkloadError):
         load_workload(path, "bad")
+
+
+def test_supported_languages_default_to_all_and_can_be_limited(tmp_path):
+    config = tmp_path / "workloads.yaml"
+    config.write_text(
+        """
+version: 1
+workloads:
+  everyone:
+    method: GET
+    path: /health
+    iterations: 1
+  newer:
+    description: 一部の言語だけで先に計測する処理
+    method: GET
+    path: /health
+    iterations: 1
+    implementations: [rust, python]
+""",
+        encoding="utf-8",
+    )
+    available = ("python", "rust", "typescript", "java")
+
+    assert load_workload(config, "everyone").supported(available) == available
+    newer = load_workload(config, "newer")
+    # 対応言語は実装一覧の表示順で返す。
+    assert newer.supported(available) == ("python", "rust")
+    assert newer.description == "一部の言語だけで先に計測する処理"
+
+
+def test_rejects_empty_supported_language_list(tmp_path):
+    config = tmp_path / "workloads.yaml"
+    config.write_text(
+        "version: 1\nworkloads:\n  x:\n    method: GET\n    path: /\n"
+        "    iterations: 1\n    implementations: []\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(WorkloadError, match="implementations"):
+        load_workload(config, "x")

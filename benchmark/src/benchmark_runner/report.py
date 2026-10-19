@@ -129,6 +129,8 @@ def build_report(
         "implementations": implementations,
         # 画面とレポートで使う表示名。一覧から外れた実装はキーをそのまま表示名にする。
         "labels": {name: labels.get(name, name) for name in implementations},
+        # ワークロードが未対応のため計測していない言語の表示名。欠損とは区別して示す。
+        "unsupported": [labels.get(name, name) for name in metadata.get("unsupported_targets", [])],
         "baseline": baseline if len(implementations) >= 2 else None,
         "differences": differences or None,
         "pricing": pricing_metadata,

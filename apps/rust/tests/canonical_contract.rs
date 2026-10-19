@@ -68,6 +68,12 @@ async fn every_canonical_case_matches() {
 
     let mut executed = 0;
     for document in &documents {
+        // 一部の言語だけで実装済みのケースファイルは、Rustが対象に含まれる場合だけ使う。
+        if let Some(implementations) = document["implementations"].as_array()
+            && !implementations.iter().any(|key| key == "rust")
+        {
+            continue;
+        }
         let cases = document["cases"]
             .as_array()
             .expect("cases must be an array");

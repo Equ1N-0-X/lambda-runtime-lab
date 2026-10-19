@@ -61,7 +61,15 @@ class CanonicalContractTest {
     try (Stream<Path> files = Files.list(TESTCASES)) {
       List<JsonNode> documents = new ArrayList<>();
       for (Path file : files.filter(path -> path.toString().endsWith(".json")).sorted().toList()) {
-        documents.add(MAPPER.readTree(file.toFile()));
+        JsonNode document = MAPPER.readTree(file.toFile());
+        JsonNode implementations = document.path("implementations");
+        // 一部の言語だけで実装済みのケースファイルは、Javaが対象に含まれる場合だけ使う。
+        boolean applies =
+            implementations.isMissingNode()
+                || implementations.valueStream().anyMatch(key -> "java".equals(key.asString()));
+        if (applies) {
+          documents.add(document);
+        }
       }
       return documents;
     }

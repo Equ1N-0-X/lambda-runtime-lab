@@ -144,7 +144,7 @@ make contract-test
 
 ## デプロイ方法
 
-初回作成、イメージ更新、Lambda切替、言語の追加、確認、切戻し、削除は、[AWSデプロイ手順](docs/06_AWSデプロイ手順.md) を参照してください。テーブル名などの環境変数は、同手順の「共通の準備」どおり `source ./.env.export.sh` で読み込みます。`make publish-images` はECRへのpushとデプロイ対象のdigest URIの書き出しだけであり、Lambdaを新digestへ更新するには、`plan` を確認後に `make deploy` が必要です。
+初回作成、イメージ更新、Lambda切替、言語の追加、確認、切戻し、削除は、[AWSデプロイ手順](docs/06_AWSデプロイ手順.md) を参照してください。ワークロード（計測する処理）や比較する言語を増やす手順は、[ワークロードと言語の追加手順](docs/08_ワークロードと言語の追加手順.md) にまとめています。テーブル名などの環境変数は、同手順の「共通の準備」どおり `source ./.env.export.sh` で読み込みます。`make publish-images` はECRへのpushとデプロイ対象のdigest URIの書き出しだけであり、Lambdaを新digestへ更新するには、`plan` を確認後に `make deploy` が必要です。
 
 実験後は環境を削除します。
 
