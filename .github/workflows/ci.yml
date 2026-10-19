@@ -193,6 +193,16 @@ jobs:
           cat /tmp/contract-python.log || true
           docker logs contract-rust || true
           docker logs contract-dynamodb || true
+      # バックグラウンドのuv runがuvキャッシュのロックを保持したままだと、
+      # setup-uvの後処理（cache prune）がロック待ちで失敗するため、成否に関わらず停止する。
+      - name: Stop local runtimes
+        if: always()
+        run: |
+          if [[ -f /tmp/contract-python.pid ]]; then
+            kill "$(cat /tmp/contract-python.pid)" 2>/dev/null || true
+          fi
+          pkill -f "uvicorn app.main:app" || true
+          docker stop contract-rust contract-dynamodb >/dev/null 2>&1 || true
 
   terraform:
     name: Terraform
