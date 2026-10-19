@@ -1,3 +1,9 @@
+# 計測するワークロード（処理の種類）の定義。
+#
+# description: 画面で処理の内容を伝える一文。
+# implementations: このワークロードを実装済みの言語（spec/implementations.yaml の実装キー）。
+#                  省略すると全言語が対応しているものとして扱う。新しいワークロードを一部の言語
+#                  だけで先に計測したい場合に指定する（docs/08_ワークロードと言語の追加手順.md）。
 version: 1
 contract: openapi.yaml
 defaults:
@@ -11,6 +17,7 @@ defaults:
 
 workloads:
   health:
+    description: 外部への通信をせずに応答する、最小の処理です（Lambdaとフレームワークの基本的な重さ）。
     method: GET
     path: /health
     warmup: 20
@@ -18,6 +25,7 @@ workloads:
     client_concurrency: 1
 
   transform-small:
+    description: 1件のレコードを検証・正規化して返す、小さなJSON変換です。
     method: POST
     path: /transform
     warmup: 20
@@ -31,6 +39,7 @@ workloads:
           value: 123
 
   transform-large:
+    description: 20件のレコードを検証・正規化・並べ替えして返す、大きめのJSON変換です。
     method: POST
     path: /transform
     warmup: 10
@@ -60,6 +69,7 @@ workloads:
         - {id: item-020, name: "  Benchmark Record 020  ", tags: [gamma, alpha, beta, alpha], value: 20}
 
   compute-sequential:
+    description: SHA-256を10万回計算する、CPUを使う処理です。
     method: POST
     path: /compute
     warmup: 10
@@ -72,6 +82,7 @@ workloads:
       profile: sequential
 
   items:
+    description: DynamoDBから1件を読み取って返す処理です。
     method: GET
     path: /items/item-001
     warmup: 20
@@ -79,6 +90,7 @@ workloads:
     client_concurrency: 4
 
   aggregate-sequential:
+    description: DynamoDBから5件を順番に読み取り、集計する処理です。
     method: POST
     path: /aggregate
     warmup: 20
@@ -94,6 +106,7 @@ workloads:
       profile: sequential
 
   aggregate-concurrent:
+    description: DynamoDBから5件を同時に読み取り、集計する処理です。
     method: POST
     path: /aggregate
     warmup: 20

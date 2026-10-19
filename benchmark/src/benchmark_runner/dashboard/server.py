@@ -11,12 +11,14 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
+from benchmark_runner.cost import PricingUnavailable
 from benchmark_runner.dashboard.catalog import (
     RunNotFound,
     latest_costs_by_workload,
     list_runs,
     load_run,
 )
+from benchmark_runner.dashboard.estimate import EstimateError, available_conditions, build_estimate
 from benchmark_runner.dashboard.jobs import (
     LIMITS,
     JobConflict,
@@ -87,7 +89,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except JobConflict as exc:
             self._send_error(HTTPStatus.CONFLICT, str(exc))
         # 入力値や設定の不足は、利用者が直せる誤りとして400で返す。
-        except LaunchError as exc:
+        except (LaunchError, EstimateError, PricingUnavailable) as exc:
             self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
         # 結果ファイルの破損などは画面で再試行・確認できるよう、原因を添えて500で返す。
         except (OSError, ValueError, KeyError) as exc:
@@ -113,6 +115,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json(self._launch_options())
         elif path == "/api/jobs/current":
             self._send_json({"job": self.jobs.current()})
+        # 見込みの入力欄に必要なワークロードの説明と、根拠にできる計測条件を返す。
+        elif path == "/api/estimate/options":
+            self._send_json(
+                {
+                    "workloads": [
+                        {"name": item["name"], "description": item["description"]}
+                        for item in load_workloads(self.jobs.workload_file)
+                    ],
+                    "conditions": available_conditions(
+                        results_dir=self.results_dir, pricing_path=self.pricing_path
+                    ),
+                }
+            )
         else:
             raise RequestRejected(HTTPStatus.NOT_FOUND, "ページが見つかりません。")
 
@@ -121,6 +136,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # 計測開始は入力を検証してから非同期に実行し、開始時点の状態を返す。
         if path == "/api/jobs":
             self._send_json({"job": self.jobs.start(self._read_json())}, HTTPStatus.ACCEPTED)
+        # 見込みは保存済みの計測だけから計算し、AWSへは問い合わせない。
+        elif path == "/api/estimate":
+            request = self._read_json()
+            self._send_json(
+                build_estimate(
+                    mix=request.get("mix"),
+                    monthly_requests=request.get("monthly_requests"),
+                    cold_start_percent=request.get("cold_start_percent"),
+                    architecture=request.get("architecture"),
+                    memory_mb=request.get("memory_mb"),
+                    results_dir=self.results_dir,
+                    pricing_path=self.pricing_path,
+                )
+            )
         # 中止は実行中の計測だけを対象にし、何もなければ現在の状態を返す。
         elif path == "/api/jobs/current/cancel":
             self._send_json({"job": self.jobs.cancel()})

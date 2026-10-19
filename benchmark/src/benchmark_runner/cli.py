@@ -202,9 +202,19 @@ def _run_command(args: argparse.Namespace) -> int:
     # run-idがautoなら新しいUUIDを生成し、明示値なら複数工程で共有できるようそのまま使う。
     run_id = str(uuid.uuid4()) if args.run_id == "auto" else args.run_id
     keys = tuple(implementation.key for implementation in load_implementations())
+    supported = workload.supported(keys)
+    requested = resolve_targets(args.target, keys)
+    unsupported = [key for key in requested if key not in supported]
+    # 言語を明示した場合に未対応の言語が含まれていれば、黙って外さず指定の誤りとして止める。
+    if args.target not in ("all", "both") and unsupported:
+        raise ValueError(
+            f"ワークロード {workload.name} は次の言語に未対応です: {', '.join(unsupported)}"
+        )
     config = RunConfig(
         run_id=run_id,
-        targets=resolve_targets(args.target, keys),
+        # allの場合は、ワークロードに対応する言語だけを計測する。
+        targets=tuple(key for key in requested if key in supported),
+        unsupported_targets=tuple(key for key in keys if key not in supported),
         endpoints=_per_implementation(
             args.endpoint,
             env_suffixes=("API_ENDPOINT", "API_URL"),

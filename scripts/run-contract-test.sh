@@ -191,7 +191,8 @@ start_runtime() {
     network_options=(--add-host host.docker.internal:host-gateway)
   fi
   # shellcheck disable=SC2086 # 起動コマンドは空白区切りの引数として渡す。
-  docker run --detach --rm --name "${container}" --publish "127.0.0.1:${port}:8080" \
+  # 起動に失敗しても原因をログで確かめられるよう --rm を付けず、終了時の片付けで削除する。
+  docker run --detach --name "${container}" --publish "127.0.0.1:${port}:8080" \
     ${network_options[@]+"${network_options[@]}"} \
     --env AWS_ACCESS_KEY_ID=test --env AWS_SECRET_ACCESS_KEY=test --env AWS_REGION="${AWS_REGION}" \
     --env AWS_ENDPOINT_URL_DYNAMODB="${RUNTIME_DYNAMODB_URL}" \
