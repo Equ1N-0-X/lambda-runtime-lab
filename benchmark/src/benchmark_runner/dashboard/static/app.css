@@ -12,10 +12,10 @@
   --selected: #e8f0fb;
   --series-1: #2a78d6;
   --series-2: #eb6834;
-  --series-3: #1a9e6f;
-  --series-4: #8a5cd6;
-  --series-5: #c2558a;
-  --series-6: #8a7a1a;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+  --series-6: #008300;
   --good: #0ca30c;
   --good-ink: #006300;
   --warning: #fab219;
@@ -40,10 +40,10 @@
     --selected: #1d2a3b;
     --series-1: #3987e5;
     --series-2: #d95926;
-    --series-3: #2bb383;
-    --series-4: #9d74e6;
-    --series-5: #d96a9e;
-    --series-6: #b3a23a;
+    --series-3: #199e70;
+    --series-4: #c98500;
+    --series-5: #d55181;
+    --series-6: #008300;
     --good-ink: #0ca30c;
     --accent: #1c5cab;
     --critical-ink: #ff8a80;
@@ -64,10 +64,10 @@
   --selected: #1d2a3b;
   --series-1: #3987e5;
   --series-2: #d95926;
-  --series-3: #2bb383;
-  --series-4: #9d74e6;
-  --series-5: #d96a9e;
-  --series-6: #b3a23a;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-6: #008300;
   --good-ink: #0ca30c;
   --accent: #1c5cab;
   --critical-ink: #ff8a80;
@@ -250,10 +250,6 @@ button:focus-visible,
   padding: 12px 16px;
 }
 
-.notice-good {
-  border-left-color: var(--good);
-}
-
 .notice h3 {
   font-size: 15px;
   margin-bottom: 4px;
@@ -288,53 +284,105 @@ button:focus-visible,
   overflow-wrap: anywhere;
 }
 
-.tiles {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
-  gap: 16px;
-}
-
-.tile-label {
-  font-size: 13px;
-  color: var(--ink-secondary);
-  margin: 0 0 8px;
-}
-
-.tile-row {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.tile-value {
-  font-size: 22px;
-  font-weight: 600;
-}
-
-.tile-unit {
-  font-size: 13px;
-  font-weight: 400;
-  color: var(--ink-secondary);
-  margin-left: 2px;
-}
-
+/* 結論のカード。最も有利な言語を大きく示し、最も不利な言語との差を添える。 */
 .summary {
   display: grid;
   gap: 4px;
 }
 
-.tile {
-  display: flex;
-  flex-direction: column;
+.verdicts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
+  gap: 16px;
 }
 
-.tile-hint {
-  margin: 8px 0 0;
-  padding-top: 8px;
-  border-top: 1px solid var(--border);
+.verdict {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.verdict p {
+  margin: 0;
+}
+
+.verdict-title {
+  font-size: 13px;
+  color: var(--ink-secondary);
+}
+
+.verdict-winner .series-key {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.verdict-value {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.verdict-note,
+.verdict-empty {
   font-size: 12px;
   color: var(--ink-secondary);
+}
+
+/* 比較表。最も有利な値は太字と「★ 最良」の文言で示し、色だけに頼らない。 */
+.summary-table td {
+  white-space: nowrap;
+}
+
+.summary-table td.best {
+  font-weight: 600;
+}
+
+.cell-note {
+  display: block;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--ink-secondary);
+}
+
+.summary-table .best .cell-note {
+  color: var(--good-ink);
+}
+
+.run-item-languages {
+  display: block;
+  font-size: 13px;
+  color: var(--ink);
+  margin: 2px 0;
+}
+
+/* 計測する言語の選択。 */
+fieldset.field {
+  border: 0;
+  padding: 0;
+  margin: 0 0 16px;
+}
+
+fieldset.field legend {
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+}
+
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.check .series-key {
+  font-size: 14px;
+  color: var(--ink);
 }
 
 .metric-guide {
@@ -364,12 +412,6 @@ button:focus-visible,
   .metric-guide dd {
     margin-bottom: 8px;
   }
-}
-
-.tile-delta {
-  margin: 8px 0 0;
-  font-size: 13px;
-  color: var(--ink-secondary);
 }
 
 .series-key {
@@ -822,4 +864,17 @@ code {
   .card {
     padding: 16px;
   }
+}
+
+/* 言語の選択欄は数値入力の見た目（枠・幅）を引き継がず、チェックボックスと名前を並べる。 */
+.field .check input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent);
+}
+
+.field .check {
+  font-weight: 400;
 }
