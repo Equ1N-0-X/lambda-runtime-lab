@@ -182,7 +182,7 @@ def test_server_serves_page_and_run_api(server_url):
     status, content_type, body = _get(f"{server_url}/")
     assert status == 200
     assert content_type.startswith("text/html")
-    assert "Lambda ベンチマーク結果".encode() in body
+    assert "Lambda 言語比較".encode() in body
 
     _, _, runs_body = _get(f"{server_url}/api/runs")
     assert json.loads(runs_body)["runs"][0]["run_id"] == "complete"

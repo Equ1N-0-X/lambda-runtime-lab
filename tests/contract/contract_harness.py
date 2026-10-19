@@ -7,7 +7,7 @@ import copy
 import json
 import os
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError
@@ -28,6 +28,12 @@ class ContractCase:
     expected_status: int
     expected_body: JsonValue
     ignored_response_fields: tuple[str, ...] = ()
+    # このケースを実装済みの言語（実装キー）。Noneなら全言語が対象。
+    implementations: tuple[str, ...] | None = None
+
+    def applies_to(self, key: str) -> bool:
+        """指定した言語がこのケースの検証対象かどうか。"""
+        return self.implementations is None or key in self.implementations
 
 
 @dataclass(frozen=True)
@@ -60,10 +66,11 @@ def load_cases(case_directory: Path) -> list[ContractCase]:
         # ファイルのルートがオブジェクトでない場合は、ケース項目を取得できないため拒否する。
         if not isinstance(raw, dict):
             raise ValueError(f"{file_path}: テストケースはJSONオブジェクトで指定してください")
+        implementations = _implementations(file_path, raw.get("implementations"))
         file_cases = raw.get("cases")
         # cases項目がない場合はファイル全体を一ケースとして解釈する。
         if file_cases is None:
-            cases.append(_parse_case(file_path, raw))
+            cases.append(replace(_parse_case(file_path, raw), implementations=implementations))
             continue
         # cases項目がある場合は、一件以上の配列だけを複数ケース形式として許可する。
         if not isinstance(file_cases, list) or not file_cases:
@@ -72,8 +79,18 @@ def load_cases(case_directory: Path) -> list[ContractCase]:
             # 配列要素がオブジェクトでない場合は、要求・期待応答を取得できないため拒否する。
             if not isinstance(case, dict):
                 raise ValueError(f"{file_path}: cases[{index}]はオブジェクトで指定してください")
-            cases.append(_parse_case(file_path, case))
+            cases.append(replace(_parse_case(file_path, case), implementations=implementations))
     return cases
+
+
+def _implementations(file_path: Path, raw: object) -> tuple[str, ...] | None:
+    """ファイル単位の対応言語の指定を検証する。未指定なら全言語が対象。"""
+    if raw is None:
+        return None
+    # 一部の言語だけで先に実装したワークロードは、実装キーの一覧で対象を限定する。
+    if not isinstance(raw, list) or not raw or not all(isinstance(key, str) for key in raw):
+        raise ValueError(f"{file_path}: implementationsは実装キーの一覧で指定してください")
+    return tuple(raw)
 
 
 def load_fixture_items(case_directory: Path) -> list[dict[str, JsonValue]]:

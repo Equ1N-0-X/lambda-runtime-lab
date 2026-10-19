@@ -75,9 +75,6 @@ const PERCENTILES = [
   { key: "p99", label: "P99", description: "99%がこの値以下" },
 ];
 
-// 差がこの割合未満なら、計測の揺らぎの範囲として「ほぼ同じ」と表示する。
-const SAME_THRESHOLD_PERCENT = 1;
-
 const state = {
   runs: [],
   selectedId: null,
@@ -173,20 +170,6 @@ function formatOptional(value, suffix = "") {
   return value === null || value === undefined || value === "" ? "未記録" : `${value}${suffix}`;
 }
 
-// 基準の言語に対する増減率を、比較の向きが分かる文にする。
-function describeDifference(difference, lowerWord, higherWord, label, baselineLabel) {
-  if (!isNumber(difference)) return `${label}: 比較できません（値がありません）`;
-  if (Math.abs(difference) < SAME_THRESHOLD_PERCENT) return `${label} は ${baselineLabel} とほぼ同じ`;
-  const amount = Math.abs(difference).toFixed(1);
-  const word = difference < 0 ? lowerWord : higherWord;
-  return `${label} は ${baselineLabel} より ${amount}% ${word}`;
-}
-
-function relativeDifference(reference, comparison) {
-  if (!isNumber(reference) || !isNumber(comparison) || reference === 0) return null;
-  return ((comparison - reference) / reference) * 100;
-}
-
 // --- 通信 ------------------------------------------------------------------
 
 async function fetchJson(path, body) {
@@ -207,10 +190,9 @@ async function fetchJson(path, body) {
 
 // --- 計測履歴 ----------------------------------------------------------------
 
+// 比較に使えない計測だけに印を付け、通常の計測は印なしにして注意を目立たせる。
 function statusBadge(comparable) {
-  return comparable
-    ? el("span", { class: "badge badge-good", text: "比較可能" })
-    : el("span", { class: "badge badge-warning", text: "要確認" });
+  return comparable ? null : el("span", { class: "badge badge-warning", text: "要確認" });
 }
 
 function renderRunList() {
@@ -229,7 +211,7 @@ function renderRunList() {
     const conditions = [
       run.architecture ?? "アーキテクチャ未記録",
       run.memory_mb ? `${run.memory_mb} MB` : "メモリ未記録",
-      run.iterations ? `${run.iterations} 回` : null,
+      run.iterations ? `各 ${run.iterations} 回` : null,
     ].filter(Boolean);
     const button = el(
       "button",
@@ -245,7 +227,7 @@ function renderRunList() {
           statusBadge(run.comparable),
         ]),
         el("span", { class: "run-item-meta", text: formatDate(run.started_at) }),
-        el("br"),
+        el("span", { class: "run-item-languages", text: (run.languages ?? []).join(" · ") }),
         el("span", { class: "run-item-meta", text: conditions.join(" · ") }),
       ],
     );
@@ -256,103 +238,145 @@ function renderRunList() {
 
 // --- 詳細 --------------------------------------------------------------------
 
+// 比較に使えない理由があるときだけ注意を出す。問題がない計測では何も出さない。
 function renderNotice(run) {
-  if (run.comparable) {
-    return el("div", { class: "card notice notice-good" }, [
-      el("h3", { class: "badge badge-good", text: "この計測は比較に使えます" }),
-      el("p", {
-        class: "section-note",
-        text: "実験条件がそろい、すべての計測が Lambda のログと結び付いています。",
-      }),
-    ]);
-  }
+  if (run.comparable) return null;
   return el("div", { class: "card notice" }, [
     el("h3", { class: "badge badge-warning", text: "この計測には確認が必要な点があります" }),
     el("ul", {}, run.issues.map((issue) => el("li", { text: issue }))),
   ]);
 }
 
-function renderTile({ run, label, hint, values, format, differences }) {
-  const rows = implementationsOf(run).map(({ key, label: name, series }) =>
-    el("div", { class: "tile-row" }, [
-      el("span", { class: `series-key ${series}`, text: name }),
-      el("span", { class: "tile-value" }, format(values[key])),
-    ]),
-  );
-  return el("div", { class: "card tile" }, [
-    el("p", { class: "tile-label", text: label }),
-    ...rows,
-    ...differences.map((text) => el("p", { class: "tile-delta", text })),
-    el("p", { class: "tile-hint", text: hint }),
+// 比較表の列。いずれも小さいほど有利な指標で、値は中央値（P50）を使う。
+// readは計測結果の言語ごとの値から列の値を取り出す。
+const SUMMARY_COLUMNS = [
+  {
+    key: "cost",
+    label: "料金（総額）",
+    hint: "100万リクエストあたりの Lambda 料金。リクエスト料金 $0.20 を含みます。",
+    read: (values) => values?.cost?.estimated_cost_per_1m,
+    format: formatCost,
+  },
+  {
+    key: "compute_cost",
+    label: "うち実行時間分",
+    hint: "総額からリクエスト料金を除いた部分。言語による差はここに表れます。",
+    read: (values) => values?.cost?.estimated_compute_cost_per_1m,
+    format: formatCost,
+  },
+  {
+    key: "duration",
+    label: "処理時間（普段）",
+    hint: "起動済みの実行環境で Lambda が処理した時間。回線の影響を含みません。",
+    read: (values) => values?.warm_metrics?.duration_ms?.p50,
+    format: (value) => formatValue(value, "ms"),
+  },
+  {
+    key: "init",
+    label: "コールドスタート",
+    hint: "新しい実行環境の起動にかかった初期化時間。しばらく呼ばれなかった後の最初の応答が遅れる分です。",
+    read: (values) => values?.cold_metrics?.init_duration_ms?.p50,
+    format: (value) => formatValue(value, "ms"),
+  },
+  {
+    key: "latency",
+    label: "応答時間",
+    hint: "手元から見た、リクエストから応答までの時間。回線の影響を含みます。",
+    read: (values) => values?.metrics?.latency_ms?.p50,
+    format: (value) => formatValue(value, "ms"),
+  },
+  {
+    key: "memory",
+    label: "メモリ使用量",
+    hint: "1回の実行で使ったメモリの最大値。メモリ設定をどこまで下げられるかの目安です。",
+    read: (values) => values?.metrics?.max_memory_used_mb?.p50,
+    format: (value) => formatValue(value, "MB"),
+  },
+];
+
+// 列の値で言語を有利な順（小さい順）に並べる。値がない言語は含めない。
+function rankBy(run, column) {
+  return implementationsOf(run)
+    .map((implementation) => ({ ...implementation, value: column.read(run.implementations[implementation.key]) }))
+    .filter(({ value }) => isNumber(value))
+    .sort((left, right) => left.value - right.value);
+}
+
+function formatRatio(value, best) {
+  if (!isNumber(value) || !isNumber(best) || best <= 0) return "";
+  const ratio = value / best;
+  return `×${ratio < 10 ? ratio.toFixed(1) : Math.round(ratio)}`;
+}
+
+// 結論のカード。最も有利な言語と、最も不利な言語との差を示す。
+function renderVerdict(run) {
+  const cards = [
+    { column: "cost", title: "最も安い" },
+    { column: "duration", title: "普段の処理が最も速い" },
+    { column: "init", title: "コールドスタートが最も短い" },
+  ].map(({ column: key, title }) => {
+    const column = SUMMARY_COLUMNS.find((item) => item.key === key);
+    const ranked = rankBy(run, column);
+    // 比べられる言語が二つ未満なら、結論を出さずに理由を示す。
+    if (ranked.length < 2) {
+      return el("div", { class: "card verdict" }, [
+        el("p", { class: "verdict-title", text: title }),
+        el("p", { class: "verdict-empty", text: key === "init" ? "コールドスタートを含む計測がありません" : "比べられる値がありません" }),
+      ]);
+    }
+    const best = ranked[0];
+    const worst = ranked[ranked.length - 1];
+    return el("div", { class: "card verdict" }, [
+      el("p", { class: "verdict-title", text: title }),
+      el("p", { class: "verdict-winner" }, [el("span", { class: `series-key ${best.series}`, text: best.label })]),
+      el("p", { class: "verdict-value", text: column.format(best.value) }),
+      el("p", {
+        class: "verdict-note",
+        text: `最も不利な ${worst.label} は ${column.format(worst.value)}（${formatRatio(worst.value, best.value)}）`,
+      }),
+    ]);
+  });
+  return el("section", { class: "summary", "aria-labelledby": "verdict-title" }, [
+    el("div", { class: "section-head" }, el("h3", { id: "verdict-title", text: "結論" })),
+    el("div", { class: "verdicts" }, cards),
   ]);
 }
 
-function valueWithUnit(value, unit) {
-  if (!isNumber(value)) return [el("span", { class: "tile-unit", text: "未取得" })];
-  return [formatNumber(value), el("span", { class: "tile-unit", text: unit })];
-}
-
-function renderTiles(run) {
-  const implementations = run.implementations;
-  const list = implementationsOf(run);
-  const valuesOf = (read) => Object.fromEntries(list.map(({ key }) => [key, read(implementations[key])]));
-  const baseline = list.find(({ key }) => key === run.baseline);
-  // 基準以外の各言語について、基準との差の文を作る。readは対象言語の増減率を返す。
-  const differencesOf = (read, lowerWord, higherWord) =>
-    baseline
-      ? list
-          .filter(({ key }) => key !== baseline.key)
-          .map(({ key, label }) => describeDifference(read(key), lowerWord, higherWord, label, baseline.label))
-      : ["言語が一つだけのため比較できません"];
-  const costFormat = (value) =>
-    isNumber(value) ? formatCost(value) : [el("span", { class: "tile-unit", text: "未計算" })];
-
-  const totalCosts = valuesOf((values) => values?.cost?.estimated_cost_per_1m ?? null);
-  const computeCosts = valuesOf((values) => values?.cost?.estimated_compute_cost_per_1m ?? null);
-  const memory = valuesOf((values) => values?.metrics?.max_memory_used_mb?.p50 ?? null);
-  const latency = valuesOf((values) => values?.metrics?.latency_ms?.p50 ?? null);
-
-  const tiles = [
-    renderTile({
-      run,
-      label: "Lambda 料金（100万リクエストあたり）",
-      hint: "実際の請求に近い総額です。リクエスト料金 $0.20 は言語によらず同じです。",
-      values: totalCosts,
-      format: costFormat,
-      differences: differencesOf((key) => relativeDifference(totalCosts[baseline.key], totalCosts[key]), "安い", "高い"),
-    }),
-    renderTile({
-      run,
-      label: "うち実行時間分の料金（100万リクエストあたり）",
-      hint: "リクエスト料金を除いた部分です。言語による料金の差はここに表れます。",
-      values: computeCosts,
-      format: costFormat,
-      differences: differencesOf((key) => relativeDifference(computeCosts[baseline.key], computeCosts[key]), "安い", "高い"),
-    }),
-    renderTile({
-      run,
-      label: "使ったメモリ（中央値）",
-      hint: METRICS.max_memory_used_mb.insight,
-      values: memory,
-      format: (value) => valueWithUnit(value, "MB"),
-      differences: differencesOf((key) => run.differences?.[key]?.max_memory_used_mb?.p50, "少ない", "多い"),
-    }),
-    renderTile({
-      run,
-      label: "応答時間（中央値）",
-      hint: "手元の回線の影響を含みます。処理そのものの速さは下の「Lambda実行時間」で比べます。",
-      values: latency,
-      format: (value) => valueWithUnit(value, "ms"),
-      differences: differencesOf((key) => run.differences?.[key]?.latency_ms?.p50, "短い", "長い"),
-    }),
-  ];
-  return el("section", { class: "summary", "aria-labelledby": "summary-title" }, [
-    el("div", { class: "section-head" }, el("h3", { id: "summary-title", text: "結果の要点" })),
+// 言語を行、指標を列に並べた比較表。最も有利な値に★、それ以外に最良との比を添える。
+function renderSummaryTable(run) {
+  const bestByColumn = Object.fromEntries(SUMMARY_COLUMNS.map((column) => [column.key, rankBy(run, column)[0]?.value]));
+  const header = el("tr", {}, [
+    el("th", { class: "text", scope: "col", text: "言語" }),
+    ...SUMMARY_COLUMNS.map((column) => el("th", { scope: "col", text: column.label })),
+  ]);
+  const rows = implementationsOf(run).map(({ key, label, series }) => {
+    const values = run.implementations[key];
+    return el("tr", {}, [
+      el("th", { class: "text", scope: "row" }, el("span", { class: `series-key ${series}`, text: label })),
+      ...SUMMARY_COLUMNS.map((column) => {
+        const value = column.read(values);
+        const best = bestByColumn[column.key];
+        if (!isNumber(value)) return el("td", { class: "muted", text: column.key === "init" ? "起動なし" : "未計測" });
+        const isBest = value === best;
+        return el("td", { class: isBest ? "best" : "" }, [
+          el("span", { text: column.format(value) }),
+          el("span", { class: "cell-note", text: isBest ? "★ 最良" : formatRatio(value, best) }),
+        ]);
+      }),
+    ]);
+  });
+  return el("div", { class: "card" }, [
+    el("div", { class: "section-head" }, el("h3", { text: "言語ごとの比較" })),
     el("p", {
       class: "section-note",
-      text: `言語ごとの差を、料金・メモリ・速さの順にまとめています。差の文は ${baseline?.label ?? "先頭の言語"} を基準にしています。`,
+      text: "どの指標も小さいほど有利です。★は最も有利な言語、×は最も有利な値との比です。時間とメモリは中央値です。",
     }),
-    el("div", { class: "tiles" }, tiles),
+    el("div", { class: "table-scroll" }, el("table", { class: "summary-table" }, [el("thead", {}, header), el("tbody", {}, rows)])),
+    el(
+      "dl",
+      { class: "metric-guide" },
+      SUMMARY_COLUMNS.flatMap((column) => [el("dt", { text: column.label }), el("dd", { text: column.hint })]),
+    ),
   ]);
 }
 
@@ -581,24 +605,25 @@ function renderComparison(run) {
   return card;
 }
 
+// すべての指標の分布を、言語を列にした数値表で示す。言語が増えても縦に伸びない。
 function renderPercentileTable(run) {
   const scopeLabel = SCOPES.find((scope) => scope.key === state.scope).label;
+  const languages = implementationsOf(run);
   const header = el("tr", {}, [
-    el("th", { text: "指標" }),
-    el("th", { class: "text", text: "実装" }),
-    el("th", { text: "件数" }),
-    ...PERCENTILES.map(({ label }) => el("th", { text: label })),
+    el("th", { class: "text", scope: "col", text: "指標" }),
+    el("th", { class: "text", scope: "col", text: "位置" }),
+    ...languages.map(({ label, series }) => el("th", { scope: "col" }, el("span", { class: `series-key ${series}`, text: label }))),
   ]);
   const rows = [];
   for (const [metricKey, metric] of Object.entries(METRICS)) {
-    for (const { key, label } of implementationsOf(run)) {
-      const stats = run.implementations[key]?.[state.scope]?.[metricKey];
+    for (const percentile of PERCENTILES) {
       rows.push(
         el("tr", {}, [
-          el("td", { text: `${metric.label}（${metric.unit}）` }),
-          el("td", { class: "text", text: label }),
-          el("td", { text: (stats?.count ?? 0).toLocaleString("ja-JP") }),
-          ...PERCENTILES.map(({ key: percentile }) => el("td", { text: formatNumber(stats?.[percentile]) })),
+          el("td", { class: "text", text: percentile.key === "p50" ? `${metric.label}（${metric.unit}）` : "" }),
+          el("td", { class: "text", text: `${percentile.label}（${percentile.description}）` }),
+          ...languages.map(({ key }) =>
+            el("td", { text: formatNumber(run.implementations[key]?.[state.scope]?.[metricKey]?.[percentile.key]) }),
+          ),
         ]),
       );
     }
@@ -703,20 +728,37 @@ function renderDetail() {
   hideTooltip();
   const run = state.run;
   if (!run) return;
-  const workload = run.metadata.workload?.name ?? "ワークロード不明";
+  const metadata = run.metadata;
+  const workload = metadata.workload ?? {};
+  const conditions = [
+    workload.method && workload.path ? `${workload.method} ${workload.path}` : null,
+    formatDate(metadata.started_at),
+    metadata.architecture,
+    metadata.memory_mb ? `${metadata.memory_mb} MB` : null,
+    workload.iterations ? `各言語 ${workload.iterations} 回` : null,
+  ].filter(Boolean);
+  // 結論と比較表を先に、詳しいグラフと根拠のデータを後ろに置く。
   detail.replaceChildren(
-    el("div", { class: "detail-head" }, [
-      el("h2", { text: `${workload} の計測結果` }),
-      el("p", { text: `${formatDate(run.metadata.started_at)} 開始 · Run ID ${run.run_id}` }),
-    ]),
-    renderNotice(run),
-    renderTiles(run),
-    renderComparison(run),
-    renderPercentileTable(run),
-    renderSampleTable(run),
-    renderConditions(run),
-    // イメージ情報は未収集のrunもあるため、存在する場合だけ表示する。
-    ...[renderImageMetrics(run)].filter(Boolean),
+    ...[
+      el("div", { class: "detail-head" }, [
+        el("h2", { text: `${workload.name ?? "ワークロード不明"} の比較結果` }),
+        el("p", { text: conditions.join(" · ") }),
+      ]),
+      renderNotice(run),
+      run.unsupported?.length
+        ? el("p", {
+            class: "section-note",
+            text: `このワークロードは ${run.unsupported.join("・")} に未対応のため、計測していません。`,
+          })
+        : null,
+      renderVerdict(run),
+      renderSummaryTable(run),
+      renderComparison(run),
+      renderPercentileTable(run),
+      renderSampleTable(run),
+      renderConditions(run),
+      renderImageMetrics(run),
+    ].filter(Boolean),
   );
 }
 
@@ -756,16 +798,15 @@ function validateCount(value, limit) {
   return null;
 }
 
-function costEstimate(workload, iterations, warmup) {
+function costEstimate(workload, iterations, warmup, targets) {
   const basis = workload.cost_basis;
-  if (!basis) {
-    return "料金の見込み: 同じワークロードで比較に使える実測がないため、算出できません。";
+  const missing = targets.filter((key) => !isNumber(basis?.cost_per_request?.[key]));
+  // 選んだ言語のいずれかに同じワークロードの実測がなければ、見込みを出さない。
+  if (!basis || missing.length > 0) {
+    return "料金の見込み: 選んだ言語の一部に、同じワークロードの比較に使える実測がないため、算出できません。";
   }
   const perImplementation = iterations + warmup;
-  const total = Object.values(basis.cost_per_request).reduce(
-    (sum, cost) => sum + (cost ?? 0) * perImplementation,
-    0,
-  );
+  const total = targets.reduce((sum, key) => sum + basis.cost_per_request[key] * perImplementation, 0);
   return `Lambda 料金の見込み: 約 ${formatCost(total)}（${formatDate(basis.started_at)} の同じワークロードの実測から算出。API Gateway・DynamoDB・CloudWatch は含みません）`;
 }
 
@@ -815,20 +856,45 @@ function renderLaunchForm(options) {
     ]);
   });
 
+  // 計測する言語。既定は全言語で、比較のため二つ以上を選ぶ。
+  const languageInputs = settings.implementations.map(({ key, label }, index) =>
+    el("label", { class: "check" }, [
+      el("input", { type: "checkbox", name: "targets", value: key, checked: "" }),
+      el("span", { class: `series-key series-${(index % 6) + 1}`, text: label }),
+      el("span", { class: "check-note muted" }),
+    ]),
+  );
+  const languageError = el("p", { id: "launch-targets-error", class: "field-error", role: "alert" });
+  const selectedTargets = () =>
+    languageInputs.map((label) => label.querySelector("input")).filter((input) => input.checked).map((input) => input.value);
+
   const summary = el("p", { class: "launch-summary" });
   const estimate = el("p", { class: "field-help" });
   const submitError = el("p", { class: "field-error", role: "alert" });
   const submit = el("button", { type: "submit", class: "primary-button", text: "計測を開始" });
 
+  const workloadDescription = el("p", { class: "field-help" });
   const applyDefaults = () => {
     const workload = workloads.find((item) => item.name === workloadSelect.value);
     for (const field of COUNT_FIELDS) inputs[field.key].value = String(workload[field.key] ?? "");
+    workloadDescription.textContent = workload.description ?? "";
+    // ワークロードが対応していない言語は選べないようにし、「未対応」と添える。
+    for (const label of languageInputs) {
+      const input = label.querySelector("input");
+      const supported = !workload.implementations || workload.implementations.includes(input.value);
+      input.disabled = !supported;
+      input.checked = supported;
+      label.querySelector(".check-note").textContent = supported ? "" : "（未対応）";
+    }
     update();
   };
 
   // 入力のたびに検証と見込みを更新し、開始前に送信内容を確認できるようにする。
   const update = () => {
     let valid = settings.ready && !running;
+    const targets = selectedTargets();
+    languageError.textContent = targets.length < 2 ? "比べる言語を二つ以上選んでください。" : "";
+    if (targets.length < 2) valid = false;
     for (const field of COUNT_FIELDS) {
       const message = validateCount(inputs[field.key].value, limits[field.key]);
       errors[field.key].textContent = message ?? "";
@@ -844,13 +910,14 @@ function renderLaunchForm(options) {
     const iterations = Number(inputs.iterations.value);
     const warmup = Number(inputs.warmup.value);
     const perImplementation = iterations + warmup;
-    const languages = settings.implementations;
+    const languages = settings.implementations.filter(({ key }) => targets.includes(key));
     summary.textContent = `${languages.map(({ label }) => label).join("・")} にそれぞれ ${perImplementation.toLocaleString("ja-JP")} 回（ウォームアップ ${warmup.toLocaleString("ja-JP")} 回を含む）、合計 ${(perImplementation * languages.length).toLocaleString("ja-JP")} リクエストを送ります。`;
     const workload = workloads.find((item) => item.name === workloadSelect.value);
-    estimate.textContent = costEstimate(workload, iterations, warmup);
+    estimate.textContent = costEstimate(workload, iterations, warmup, targets);
   };
 
   workloadSelect.addEventListener("change", applyDefaults);
+  for (const label of languageInputs) label.querySelector("input").addEventListener("change", update);
   for (const field of COUNT_FIELDS) inputs[field.key].addEventListener("input", update);
 
   form.addEventListener("submit", async (event) => {
@@ -866,6 +933,7 @@ function renderLaunchForm(options) {
         iterations: Number(inputs.iterations.value),
         client_concurrency: Number(inputs.client_concurrency.value),
         warmup: Number(inputs.warmup.value),
+        targets: selectedTargets(),
       });
       setJob(job);
     } catch (error) {
@@ -879,7 +947,13 @@ function renderLaunchForm(options) {
     el("div", { class: "field" }, [
       el("label", { for: "launch-workload", text: "ワークロード" }),
       workloadSelect,
-      el("p", { class: "field-help", text: "spec/workloads.yaml の定義です。選ぶと回数の既定値が入ります。" }),
+      workloadDescription,
+      el("p", { class: "field-help", text: "選ぶと回数の既定値が入ります。" }),
+    ]),
+    el("fieldset", { class: "field" }, [
+      el("legend", { text: "計測する言語" }),
+      el("div", { class: "checks", "aria-describedby": "launch-targets-error" }, languageInputs),
+      languageError,
     ]),
     el("div", { class: "field-grid" }, fields),
     el("div", { class: "launch-confirm" }, [summary, estimate]),
@@ -1087,6 +1161,215 @@ async function openLaunch() {
   }
 }
 
+// --- 作りたいAPIの見込み ------------------------------------------------------
+
+// 入力が止まってから計算する待ち時間。入力のたびに計算を送らないようにする。
+const ESTIMATE_DEBOUNCE_MS = 300;
+
+function formatMonthlyCost(value) {
+  if (!isNumber(value)) return "未計算";
+  return `$${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function renderEstimateResult(result) {
+  const estimable = result.languages.filter((language) => language.estimable);
+  const ranked = [...estimable].sort((left, right) => left.monthly_cost - right.monthly_cost);
+  const best = ranked[0];
+  const series = Object.fromEntries(result.languages.map(({ key }, index) => [key, `series-${(index % 6) + 1}`]));
+  const header = el("tr", {}, [
+    el("th", { class: "text", scope: "col", text: "言語" }),
+    el("th", { scope: "col", text: "月額料金（見込み）" }),
+    el("th", { scope: "col", text: "うち実行時間分" }),
+    el("th", { scope: "col", text: "処理時間（普段・平均）" }),
+    el("th", { scope: "col", text: "コールドスタート時の追加" }),
+  ]);
+  const rows = [
+    ...ranked.map((language) =>
+      el("tr", {}, [
+        el("th", { class: "text", scope: "row" }, el("span", { class: `series-key ${series[language.key]}`, text: language.label })),
+        el("td", { class: language === best ? "best" : "" }, [
+          el("span", { text: formatMonthlyCost(language.monthly_cost) }),
+          el("span", { class: "cell-note", text: language === best ? "★ 最も安い" : formatRatio(language.monthly_cost, best.monthly_cost) }),
+        ]),
+        el("td", { text: formatMonthlyCost(language.monthly_compute_cost) }),
+        el("td", { text: formatValue(language.warm_duration_ms, "ms") }),
+        el("td", { text: isNumber(language.init_duration_ms) ? `+${formatValue(language.init_duration_ms, "ms")}` : "実測なし" }),
+      ]),
+    ),
+    // 実測が足りない言語は、見込みを出さずに理由と対処を示す。
+    ...result.languages
+      .filter((language) => !language.estimable)
+      .map((language) =>
+        el("tr", {}, [
+          el("th", { class: "text", scope: "row" }, el("span", { class: `series-key ${series[language.key]}`, text: language.label })),
+          el("td", {
+            colspan: "4",
+            class: "text muted",
+            text: `見込めません: ${language.missing_workloads.join("・")} の実測がありません（この言語を含めて計測すると見込めます）`,
+          }),
+        ]),
+      ),
+  ];
+
+  const notes = [
+    "Lambda の料金（リクエスト料金と実行時間分）だけの見込みです。API Gateway・DynamoDB・データ転送・Free Tier は含みません。",
+    `料金表: ${result.pricing.region} ${result.pricing.updated_at} 時点。実測の平均を構成割合で重み付けしています。`,
+  ];
+  const approximated = estimable.filter((language) => language.approximated_cold_workloads.length);
+  if (approximated.length) {
+    notes.push(
+      "コールドスタートの実測がないワークロードは、その言語の初期化時間（中央値）の分の料金を足して近似しています。",
+    );
+  }
+  const sources = estimable.map((language) =>
+    el("li", {
+      text: `${language.label}: ${language.sources.map((source) => `${source.workload}（${formatDate(source.started_at)}）`).join("、")}`,
+    }),
+  );
+
+  return [
+    el("div", { class: "table-scroll" }, el("table", { class: "summary-table" }, [el("thead", {}, header), el("tbody", {}, rows)])),
+    el("ul", { class: "estimate-notes" }, notes.map((text) => el("li", { text }))),
+    el("details", {}, [el("summary", { text: "根拠にした計測" }), el("ul", {}, sources)]),
+  ];
+}
+
+function renderEstimateForm(options) {
+  const { workloads, conditions } = options;
+  if (conditions.length === 0) {
+    return el("div", { class: "card" }, [
+      el("h3", { text: "見込みに使える計測がありません" }),
+      el("p", { class: "section-note", text: "「新しく計測する」で、見込みたい処理に近いワークロードを計測してください。" }),
+    ]);
+  }
+
+  const condition = el(
+    "select",
+    { id: "estimate-condition" },
+    conditions.map((item, index) =>
+      el("option", {
+        value: String(index),
+        text: `${item.architecture} · ${item.memory_mb} MB（計測 ${item.run_count} 件）`,
+      }),
+    ),
+  );
+  const shares = {};
+  const shareRows = workloads.map((workload, index) => {
+    // 初期値は最初のワークロードを100%にし、合計100%の状態から始める。
+    shares[workload.name] = el("input", {
+      type: "number",
+      inputmode: "numeric",
+      min: "0",
+      max: "100",
+      step: "1",
+      value: index === 0 ? "100" : "0",
+      "aria-label": `${workload.name} の割合`,
+    });
+    return el("tr", {}, [
+      el("td", { class: "text" }, [el("strong", { text: workload.name }), el("span", { class: "cell-note", text: workload.description ?? "" })]),
+      el("td", {}, el("div", { class: "field-input" }, [shares[workload.name], el("span", { class: "muted", text: "%" })])),
+    ]);
+  });
+  const total = el("p", { class: "launch-summary", role: "status" });
+  const monthly = el("input", { id: "estimate-monthly", type: "number", inputmode: "numeric", min: "1", step: "1", value: "1000000" });
+  const cold = el("input", { id: "estimate-cold", type: "number", inputmode: "decimal", min: "0", max: "100", step: "0.1", value: "1" });
+  const error = el("p", { class: "field-error", role: "alert" });
+  const output = el("div", { class: "estimate-output", "aria-live": "polite" });
+
+  let timer = null;
+  let sequence = 0;
+  const calculate = async () => {
+    const mix = Object.fromEntries(Object.entries(shares).map(([name, input]) => [name, Number(input.value || 0)]));
+    const sum = Object.values(mix).reduce((left, right) => left + right, 0);
+    total.textContent = `割合の合計: ${sum}%${sum === 100 ? "" : "（100% にしてください）"}`;
+    error.textContent = "";
+    // 合計が100%でない間は計算を送らず、直前の結果も消して誤読を防ぐ。
+    if (sum !== 100) {
+      output.replaceChildren();
+      return;
+    }
+    const selected = conditions[Number(condition.value)];
+    const current = ++sequence;
+    output.replaceChildren(el("p", { class: "muted", text: "計算しています…" }));
+    try {
+      const result = await fetchJson("/api/estimate", {
+        mix,
+        monthly_requests: Number(monthly.value),
+        cold_start_percent: Number(cold.value),
+        architecture: selected.architecture,
+        memory_mb: selected.memory_mb,
+      });
+      // 計算中に入力が変わっていたら、古い結果で表示を上書きしない。
+      if (current === sequence) output.replaceChildren(...renderEstimateResult(result));
+    } catch (failure) {
+      if (current === sequence) {
+        output.replaceChildren();
+        error.textContent = failure.message;
+      }
+    }
+  };
+  const schedule = () => {
+    clearTimeout(timer);
+    timer = setTimeout(calculate, ESTIMATE_DEBOUNCE_MS);
+  };
+  for (const input of [condition, monthly, cold, ...Object.values(shares)]) input.addEventListener("input", schedule);
+  queueMicrotask(calculate);
+
+  return el("div", { class: "card" }, [
+    el("div", { class: "section-head" }, el("h3", { text: "作りたいAPIの処理の構成" })),
+    el("p", {
+      class: "section-note",
+      text: "作りたいAPIのリクエストが、どの処理にどれくらいの割合で近いかを入力してください。計測済みの結果を割合で重み付けして見込みます。",
+    }),
+    el("div", { class: "table-scroll" }, el("table", { class: "estimate-mix" }, el("tbody", {}, shareRows))),
+    total,
+    el("div", { class: "field-grid" }, [
+      el("div", { class: "field" }, [
+        el("label", { for: "estimate-monthly", text: "月間リクエスト数" }),
+        monthly,
+        el("p", { class: "field-help", text: "1か月に受けるリクエストの数です。" }),
+      ]),
+      el("div", { class: "field" }, [
+        el("label", { for: "estimate-cold", text: "コールドスタートの割合" }),
+        el("div", { class: "field-input" }, [cold, el("span", { class: "muted", text: "%" })]),
+        el("p", {
+          class: "field-help",
+          text: "新しい実行環境の起動を伴うリクエストの割合です。目安: 常にアクセスがある 0.1%、ときどき 1〜5%、まれ 10%以上。",
+        }),
+      ]),
+      el("div", { class: "field" }, [
+        el("label", { for: "estimate-condition", text: "Lambda の条件" }),
+        condition,
+        el("p", { class: "field-help", text: "この条件で計測した結果だけを使います。" }),
+      ]),
+    ]),
+    error,
+    el("div", { class: "section-head" }, el("h3", { text: "言語ごとの見込み（安い順）" })),
+    output,
+  ]);
+}
+
+async function openEstimate() {
+  state.view = "estimate";
+  state.selectedId = null;
+  history.replaceState(null, "", "#estimate");
+  renderRunList();
+  renderJobBanner();
+  hideTooltip();
+  const head = el("div", { class: "detail-head" }, [
+    el("h2", { text: "作りたいAPIの料金を見込む" }),
+    el("p", { text: "計測済みのワークロードを組み合わせて、言語ごとの月額料金と処理時間を見込みます。実績ではなく見込みです。" }),
+  ]);
+  detail.replaceChildren(head, el("p", { class: "muted", text: "読み込み中…" }));
+  try {
+    const options = await fetchJson("/api/estimate/options");
+    if (state.view !== "estimate") return;
+    detail.replaceChildren(head, renderEstimateForm(options));
+  } catch (failure) {
+    renderError(detail, failure.message, openEstimate);
+  }
+}
+
 // --- 状態遷移 ----------------------------------------------------------------
 
 async function selectRun(runId) {
@@ -1127,7 +1410,7 @@ async function loadRuns(preferred = null, { keepView = false } = {}) {
     return;
   }
   renderRunList();
-  if (keepView && state.view === "launch") return;
+  if (keepView && state.view !== "run") return;
   if (state.runs.length === 0) {
     detail.replaceChildren(
       el("div", { class: "card" }, [
@@ -1148,6 +1431,7 @@ async function loadRuns(preferred = null, { keepView = false } = {}) {
 
 document.getElementById("reload").addEventListener("click", () => loadRuns(state.selectedId, { keepView: true }));
 document.getElementById("open-launch").addEventListener("click", openLaunch);
+document.getElementById("open-estimate").addEventListener("click", openEstimate);
 
 let resizeTimer;
 window.addEventListener("resize", () => {
@@ -1163,6 +1447,9 @@ fetchJson("/api/jobs/current")
 if (location.hash === "#launch") {
   loadRuns(null, { keepView: true });
   openLaunch();
+} else if (location.hash === "#estimate") {
+  loadRuns(null, { keepView: true });
+  openEstimate();
 } else {
   loadRuns();
 }

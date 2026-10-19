@@ -56,3 +56,7 @@ results/reports/*
 
 # make publish-images が書き出すデプロイ対象イメージ（環境ごとに異なる）
 *.auto.tfvars.json
+
+# Node.js
+node_modules/
+apps/typescript/dist/

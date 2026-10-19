@@ -24,6 +24,16 @@ class Workload:
     client_concurrency: int
     body: Any | None = None
     profile: str | None = None
+    # 画面で処理の内容を伝える一文。
+    description: str | None = None
+    # このワークロードを実装済みの言語（実装キー）。Noneなら実装一覧の全言語が対応している。
+    implementations: tuple[str, ...] | None = None
+
+    def supported(self, available: tuple[str, ...]) -> tuple[str, ...]:
+        """実装一覧の表示順のまま、このワークロードに対応する言語だけを返す。"""
+        if self.implementations is None:
+            return available
+        return tuple(key for key in available if key in self.implementations)
 
 
 def _positive_int(value: object, field: str, *, allow_zero: bool = False) -> int:
@@ -49,6 +59,18 @@ def _payload_path(config_path: Path, configured: str) -> Path:
         return candidate
     paths = (Path.cwd() / candidate, config_path.parent / candidate)
     return next((path for path in paths if path.is_file()), paths[0])
+
+
+def _implementations(raw: object, name: str) -> tuple[str, ...] | None:
+    """対応言語の指定を検証する。未指定なら全言語が対応しているものとしてNoneを返す。"""
+    if raw is None:
+        return None
+    # 実装キーの空でない一覧でなければ、どの言語で計測できるか決められない。
+    if not isinstance(raw, list) or not raw or not all(isinstance(key, str) for key in raw):
+        raise WorkloadError(
+            f"ワークロード {name} のimplementationsは実装キーの一覧で指定してください"
+        )
+    return tuple(raw)
 
 
 def load_workload(config_path: Path, name: str) -> Workload:
@@ -108,4 +130,6 @@ def load_workload(config_path: Path, name: str) -> Workload:
         client_concurrency=_positive_int(raw.get("client_concurrency", 1), "client_concurrency"),
         body=body,
         profile=raw.get("profile") or (body.get("profile") if isinstance(body, dict) else None),
+        description=raw.get("description"),
+        implementations=_implementations(raw.get("implementations"), name),
     )
