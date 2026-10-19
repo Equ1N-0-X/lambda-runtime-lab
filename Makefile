@@ -3,6 +3,7 @@ SHELL := /usr/bin/env bash
 
 PYTHON_DIR ?= apps/python
 RUST_DIR ?= apps/rust
+TYPESCRIPT_DIR ?= apps/typescript
 BENCHMARK_DIR ?= benchmark
 CONTRACT_DIR ?= tests/contract
 TERRAFORM_DIR ?= infrastructure/terraform
@@ -24,10 +25,13 @@ DYNAMODB_ENDPOINT_URL ?=
 TF_AUTO_APPROVE ?=
 UI_PORT ?= 8765
 
+# TypeScriptは依存が未導入ならlockファイルどおりに導入してからnpmスクリプトを実行する。
+TYPESCRIPT_NPM = (test -d $(TYPESCRIPT_DIR)/node_modules || npm --prefix $(TYPESCRIPT_DIR) ci --no-audit --no-fund) && npm --prefix $(TYPESCRIPT_DIR)
+
 # 実装ごとのイメージURIは make publish-images が書き出し、Terraformが自動で読み込む。
 IMAGES_FILE := $(TERRAFORM_DIR)/images.auto.tfvars.json
 
-.PHONY: help format format-check lint test test-python test-rust test-benchmark \
+.PHONY: help format format-check lint test test-python test-rust test-typescript test-benchmark \
 	test-contract-harness contract-test build build-python build-rust \
 	terraform-init terraform-validate bootstrap-ecr publish-images deploy seed benchmark collect report \
 	benchmark-matrix destroy ui
@@ -46,6 +50,7 @@ format:
 	uv run --project $(BENCHMARK_DIR) --extra dev ruff format $(BENCHMARK_DIR)
 	uv run --project $(CONTRACT_DIR) ruff format $(CONTRACT_DIR)
 	cd $(RUST_DIR) && cargo fmt
+	$(TYPESCRIPT_NPM) run format
 	terraform -chdir=$(TERRAFORM_DIR) fmt -recursive
 
 format-check:
@@ -54,6 +59,7 @@ format-check:
 	uv run --project $(BENCHMARK_DIR) --extra dev ruff format --check $(BENCHMARK_DIR)
 	uv run --project $(CONTRACT_DIR) ruff format --check $(CONTRACT_DIR)
 	cd $(RUST_DIR) && cargo fmt --check
+	$(TYPESCRIPT_NPM) run format:check
 	terraform -chdir=$(TERRAFORM_DIR) fmt -check -recursive
 
 lint: format-check
@@ -62,8 +68,9 @@ lint: format-check
 	uv run --project $(BENCHMARK_DIR) --extra dev ruff check $(BENCHMARK_DIR)
 	uv run --project $(CONTRACT_DIR) ruff check $(CONTRACT_DIR)
 	cd $(RUST_DIR) && cargo clippy --all-targets -- -D warnings
+	$(TYPESCRIPT_NPM) run typecheck
 
-test: test-python test-rust test-benchmark test-contract-harness
+test: test-python test-rust test-typescript test-benchmark test-contract-harness
 	# 実装別・計測ツール別・契約ハーネス別のテストをまとめて実行する。
 
 test-python:
@@ -72,6 +79,9 @@ test-python:
 
 test-rust:
 	cd $(RUST_DIR) && cargo test
+
+test-typescript:
+	$(TYPESCRIPT_NPM) test
 
 test-benchmark:
 	# benchmarkの開発依存を読み込み、同じPython環境からテストモジュールを起動する。
