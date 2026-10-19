@@ -62,6 +62,25 @@ jobs:
         working-directory: apps/rust
         run: cargo test
 
+  typescript:
+    name: TypeScript
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/typescript
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/typescript/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - name: Check format and types
+        run: npm run lint
+      - name: Run tests
+        run: npm test
+
   docker-arm64:
     name: Docker (linux/arm64)
     runs-on: ubuntu-latest
