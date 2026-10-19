@@ -138,6 +138,7 @@ def list_runs(*, results_dir: Path, pricing_path: Path) -> list[dict[str, Any]]:
                     "architecture": None,
                     "memory_mb": None,
                     "iterations": None,
+                    "languages": [],
                     "comparable": False,
                     "issues": [f"結果ファイルを読み込めません: {exc}"],
                 }
@@ -154,6 +155,8 @@ def list_runs(*, results_dir: Path, pricing_path: Path) -> list[dict[str, Any]]:
                 "architecture": metadata.get("architecture"),
                 "memory_mb": metadata.get("memory_mb"),
                 "iterations": workload.get("iterations"),
+                # 履歴で計測同士を見分けられるよう、計測した言語の表示名を表示順で返す。
+                "languages": list(run["labels"].values()),
                 "comparable": run["comparable"],
                 "issues": run["issues"],
             }
@@ -164,29 +167,27 @@ def list_runs(*, results_dir: Path, pricing_path: Path) -> list[dict[str, Any]]:
 
 
 def latest_costs_by_workload(*, results_dir: Path, pricing_path: Path) -> dict[str, Any]:
-    """ワークロードごとに、比較可能な最新runの1リクエストあたり推定料金を返す。
+    """ワークロードごとに、言語別の最新の実測から1リクエストあたり推定料金を返す。
 
-    計測開始前の料金の目安は、同じワークロードの実測から算出する。実測がなければ目安を出さない。
+    計測開始前の料金の目安は、同じワークロードの実測から算出する。言語を後から追加した場合も
+    目安を出せるよう、言語ごとに比較可能な最新runの値を使う。実測がない言語は含めない。
     """
     basis: dict[str, Any] = {}
-    # 一覧は新しい順なので、各ワークロードで最初に見つかった比較可能runを採用する。
+    # 一覧は新しい順なので、各ワークロード・言語で最初に見つかった値が最新になる。
     for summary in list_runs(results_dir=results_dir, pricing_path=pricing_path):
-        workload = summary["workload"]
         # 比較不能なrunは料金や条件が欠けるため使わない。
-        # 採用済みのワークロードは、それより古いrunなので飛ばす。
-        if not summary["comparable"] or workload in basis:
+        if not summary["comparable"]:
             continue
         run = load_run(summary["run_id"], results_dir=results_dir, pricing_path=pricing_path)
-        costs = {
-            name: (values.get("cost") or {}).get("estimated_cost_per_request")
-            for name, values in run["implementations"].items()
-        }
-        # いずれかの実装の料金が計算できていなければ、目安の根拠にしない。
-        if None in costs.values():
-            continue
-        basis[workload] = {
-            "run_id": summary["run_id"],
-            "started_at": summary["started_at"],
-            "cost_per_request": costs,
-        }
+        entry = basis.setdefault(
+            summary["workload"],
+            {"started_at": summary["started_at"], "cost_per_request": {}},
+        )
+        for name, values in run["implementations"].items():
+            cost = (values.get("cost") or {}).get("estimated_cost_per_request")
+            # 料金を計算できた言語のうち、まだ値がない（より新しい実測がない）ものだけ採用する。
+            if cost is not None and name not in entry["cost_per_request"]:
+                entry["cost_per_request"][name] = cost
+                # 目安の根拠として、採用した実測のうち最も古い日時を示す。
+                entry["started_at"] = summary["started_at"]
     return basis
