@@ -9,10 +9,6 @@ TERRAFORM_DIR ?= infrastructure/terraform
 
 PLATFORM ?= linux/arm64
 IMAGE_TAG ?= local
-PYTHON_IMAGE ?= lambda-runtime-lab-python:$(IMAGE_TAG)
-RUST_IMAGE ?= lambda-runtime-lab-rust:$(IMAGE_TAG)
-PYTHON_IMAGE_URI ?=
-RUST_IMAGE_URI ?=
 
 AWS_REGION ?= ap-northeast-1
 ENVIRONMENT ?= benchmark
@@ -20,19 +16,16 @@ ARCHITECTURE ?=
 LAMBDA_MEMORY_MB ?=
 WORKLOAD ?= aggregate-concurrent
 RUN_ID ?= auto
+# 計測する言語。all か、実装キーのカンマ区切り（例: python,rust）。
+TARGET ?= all
 PUBLISH_TAG ?=
-PYTHON_API_URL ?=
-RUST_API_URL ?=
 DYNAMODB_TABLE_NAME ?=
 DYNAMODB_ENDPOINT_URL ?=
-CONTRACT_TRANSPORT ?= direct
-PYTHON_CONTRACT_TRANSPORT ?=
-RUST_CONTRACT_TRANSPORT ?=
 TF_AUTO_APPROVE ?=
 UI_PORT ?= 8765
 
-TF_IMAGE_ARGS := $(if $(strip $(PYTHON_IMAGE_URI)),-var=python_image_uri=$(PYTHON_IMAGE_URI)) \
-	$(if $(strip $(RUST_IMAGE_URI)),-var=rust_image_uri=$(RUST_IMAGE_URI))
+# 実装ごとのイメージURIは make publish-images が書き出し、Terraformが自動で読み込む。
+IMAGES_FILE := $(TERRAFORM_DIR)/images.auto.tfvars.json
 
 .PHONY: help format format-check lint test test-python test-rust test-benchmark \
 	test-contract-harness contract-test build build-python build-rust \
@@ -43,7 +36,7 @@ help:
 	# 利用可能な操作を品質確認、ビルド、AWS操作の順に短く表示する。
 	@printf '%s\n' \
 		'Quality: format format-check lint test contract-test' \
-		'Build:   build build-python build-rust terraform-validate' \
+		'Build:   build build-python build-rust terraform-validate（言語を絞る: make build IMPLEMENTATIONS="python rust"）' \
 		'AWS:     bootstrap-ecr publish-images deploy seed benchmark collect report benchmark-matrix destroy' \
 		'View:    ui'
 
@@ -89,21 +82,17 @@ test-contract-harness:
 	uv run --project $(CONTRACT_DIR) python -m pytest $(CONTRACT_DIR) -m "not integration"
 
 contract-test:
-	# URL未指定ならローカル依存サービスを自動準備し、URL指定時は既存の外部接続先だけを検証する。
-	PYTHON_API_URL="$(PYTHON_API_URL)" \
-	RUST_API_URL="$(RUST_API_URL)" \
+	# <KEY>_API_URLが未指定なら、全言語のイメージをLambda RIEで起動して比較する。
+	# 指定時は既存の外部接続先だけを検証する（環境変数はそのまま引き継ぐ）。
 	DYNAMODB_TABLE_NAME="$(DYNAMODB_TABLE_NAME)" \
 	DYNAMODB_ENDPOINT_URL="$(DYNAMODB_ENDPOINT_URL)" \
-	RUST_IMAGE="$(RUST_IMAGE)" \
+	IMAGE_TAG="$(IMAGE_TAG)" \
 	AWS_REGION="$(AWS_REGION)" \
-	CONTRACT_TRANSPORT="$(CONTRACT_TRANSPORT)" \
-	PYTHON_CONTRACT_TRANSPORT="$(PYTHON_CONTRACT_TRANSPORT)" \
-	RUST_CONTRACT_TRANSPORT="$(RUST_CONTRACT_TRANSPORT)" \
 	bash scripts/run-contract-test.sh
 
-# 両イメージを同じスクリプトで作り、固定したOS専用ベースdigestを必ず共有させる。
+# 全言語のイメージを同じスクリプトで作り、固定したOS専用ベースdigestを必ず共有させる。
 build:
-	# 同じ固定ベースイメージでPython/Rustの両コンテナを作成し、比較条件を揃える。
+	# 同じ固定ベースイメージで全言語のコンテナを作成し、比較条件を揃える。
 	PLATFORM=$(PLATFORM) TAG=$(IMAGE_TAG) bash scripts/build-images.sh
 
 build-python:
@@ -131,15 +120,12 @@ publish-images:
 		bash scripts/publish-images.sh
 
 deploy:
-	# 両実装の不変イメージURIが指定された場合だけ、LambdaなどのAWSリソースを適用する。
-	@test -n "$(PYTHON_IMAGE_URI)" || (echo "PYTHON_IMAGE_URI の指定が必要です" >&2; exit 2)
-	@test -n "$(RUST_IMAGE_URI)" || (echo "RUST_IMAGE_URI の指定が必要です" >&2; exit 2)
+	# make publish-images が書き出した全言語の不変イメージURIがある場合だけ、AWSリソースを適用する。
+	@test -f "$(IMAGES_FILE)" || (echo "$(IMAGES_FILE) がありません。先に make publish-images を実行してください" >&2; exit 2)
 	terraform -chdir=$(TERRAFORM_DIR) init
 	terraform -chdir=$(TERRAFORM_DIR) apply $(TF_AUTO_APPROVE) \
 		-var=aws_region=$(AWS_REGION) \
-		-var=environment=$(ENVIRONMENT) \
-		-var=python_image_uri=$(PYTHON_IMAGE_URI) \
-		-var=rust_image_uri=$(RUST_IMAGE_URI)
+		-var=environment=$(ENVIRONMENT)
 
 seed:
 	# テーブル名が指定された場合だけ、比較用の決定的な初期データをDynamoDBへ投入する。
@@ -153,22 +139,18 @@ seed:
 		--region "$(AWS_REGION)"
 
 benchmark:
-	# 接続先と実際のLambda条件が指定された場合だけ、同じワークロードを両実装へ送信して結果を保存する。
-	@test -n "$(PYTHON_API_URL)" || (echo "PYTHON_API_URL の指定が必要です" >&2; exit 2)
-	@test -n "$(RUST_API_URL)" || (echo "RUST_API_URL の指定が必要です" >&2; exit 2)
+	# 実際のLambda条件が指定された場合だけ、同じワークロードを全言語へ送信して結果を保存する。
+	# 接続先は環境変数 <KEY>_API_URL を優先し、なければTerraformの出力から読む。
 	@test -n "$(ARCHITECTURE)" || (echo "ARCHITECTURE の指定が必要です" >&2; exit 2)
 	@test -n "$(LAMBDA_MEMORY_MB)" || (echo "LAMBDA_MEMORY_MB の指定が必要です" >&2; exit 2)
 	AWS_REGION="$(AWS_REGION)" \
-	PYTHON_API_URL="$(PYTHON_API_URL)" \
-	RUST_API_URL="$(RUST_API_URL)" \
-	PYTHON_API_ENDPOINT="$(PYTHON_API_URL)" \
-	RUST_API_ENDPOINT="$(RUST_API_URL)" \
 	uv run --project $(BENCHMARK_DIR) python -m benchmark_runner run \
-		--target both \
+		--target "$(TARGET)" \
 		--workload "$(WORKLOAD)" \
 		--architecture "$(ARCHITECTURE)" \
 		--memory-mb "$(LAMBDA_MEMORY_MB)" \
-		--run-id "$(RUN_ID)"
+		--run-id "$(RUN_ID)" \
+		--terraform-dir "$(TERRAFORM_DIR)"
 
 # Lambdaの実行時間、初期化時間、メモリ量はログから取得するため、レポート作成前に収集を行う。
 collect:
@@ -178,8 +160,7 @@ collect:
 	uv run --project $(BENCHMARK_DIR) python -m benchmark_runner collect \
 		--run-id "$(RUN_ID)" \
 		--region "$(AWS_REGION)" \
-		--python-log-group "/aws/lambda/$$(terraform -chdir=$(TERRAFORM_DIR) output -raw python_lambda_name)" \
-		--rust-log-group "/aws/lambda/$$(terraform -chdir=$(TERRAFORM_DIR) output -raw rust_lambda_name)"
+		--terraform-dir "$(TERRAFORM_DIR)"
 
 report:
 	# autoではない既存の実行IDを指定した場合だけ、保存済み測定値からレポートを作成する。
@@ -204,5 +185,4 @@ destroy:
 	terraform -chdir=$(TERRAFORM_DIR) init
 	terraform -chdir=$(TERRAFORM_DIR) destroy $(TF_AUTO_APPROVE) \
 		-var=aws_region=$(AWS_REGION) \
-		-var=environment=$(ENVIRONMENT) \
-		$(TF_IMAGE_ARGS)
+		-var=environment=$(ENVIRONMENT)

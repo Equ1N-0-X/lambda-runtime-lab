@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# メモリ量とワークロードの全組み合わせを、Python/Rustへ同一条件で実行・収集・報告する。
+# メモリ量とワークロードの全組み合わせを、比較対象の全言語へ同一条件で実行・収集・報告する。
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -31,35 +31,20 @@ for memory in ${MEMORIES}; do
   execute terraform -chdir="${TERRAFORM_DIR}" apply -auto-approve \
     -var="lambda_memory_mb=${memory}"
 
-  # ドライラン時は未作成のTerraform出力を参照できないため、後続コマンド用のプレースホルダーを使う。
-  # 実行時はTerraform出力からAPI URLとCloudWatchロググループ名を取得する。
-  if "${DRY_RUN}"; then
-    python_endpoint="<terraform:python_api_endpoint>"
-    rust_endpoint="<terraform:rust_api_endpoint>"
-    python_log_group="<terraform:python_lambda_name>"
-    rust_log_group="<terraform:rust_lambda_name>"
-  else
-    python_endpoint="$(terraform -chdir="${TERRAFORM_DIR}" output -raw python_api_endpoint)"
-    rust_endpoint="$(terraform -chdir="${TERRAFORM_DIR}" output -raw rust_api_endpoint)"
-    python_name="$(terraform -chdir="${TERRAFORM_DIR}" output -raw python_lambda_name)"
-    rust_name="$(terraform -chdir="${TERRAFORM_DIR}" output -raw rust_lambda_name)"
-    python_log_group="/aws/lambda/${python_name}"
-    rust_log_group="/aws/lambda/${rust_name}"
-  fi
-
+  # 接続先とロググループは、実装キーごとのTerraform出力から runner の引数へ変換する。
+  # ドライラン時は未作成のTerraform出力を参照できないため、--terraform-dir で実行時に解決させる。
   for workload in ${WORKLOADS}; do
-    # メモリ量・ワークロード・開始時刻を含む一意な実行IDを作り、両実装の計測を相関できるようにする。
+    # メモリ量・ワークロード・開始時刻を含む一意な実行IDを作り、全実装の計測を相関できるようにする。
     run_id="arm64-${memory}-${workload}-$(date -u +%Y%m%dT%H%M%SZ)"
-    execute "${runner[@]}" run --target both --workload "${workload}" \
+    execute "${runner[@]}" run --target all --workload "${workload}" \
       --run-id "${run_id}" --region "${REGION}" --architecture "${ARCHITECTURE}" \
-      --memory-mb "${memory}" --python-endpoint "${python_endpoint}" \
-      --rust-endpoint "${rust_endpoint}"
+      --memory-mb "${memory}" --terraform-dir "${TERRAFORM_DIR}"
     # 実行時だけCloudWatchへのログ反映を待ち、ドライランでは待機時間を発生させない。
     if ! "${DRY_RUN}"; then
       sleep "${LOG_WAIT_SECONDS}"
     fi
     execute "${runner[@]}" collect --run-id "${run_id}" --region "${REGION}" \
-      --python-log-group "${python_log_group}" --rust-log-group "${rust_log_group}"
+      --terraform-dir "${TERRAFORM_DIR}"
     execute "${runner[@]}" report --run-id "${run_id}"
   done
 done

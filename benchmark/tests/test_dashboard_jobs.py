@@ -11,6 +11,7 @@ import pytest
 from benchmark_runner.dashboard.jobs import JobConflict, JobManager, LaunchError
 from benchmark_runner.dashboard.server import create_server
 from benchmark_runner.dashboard.settings import LaunchSettings
+from benchmark_runner.implementations import Implementation
 
 SECRET_URL = "https://secret-api.example"
 
@@ -37,15 +38,21 @@ if step == "{{slow}}":
 """
 
 
+IMPLEMENTATIONS = (
+    Implementation("python", "Python", "apps/python"),
+    Implementation("rust", "Rust", "apps/rust"),
+    Implementation("java", "Java", "apps/java"),
+)
+
+
 def _settings(**overrides):
     values = {
-        "python_endpoint": SECRET_URL,
-        "rust_endpoint": SECRET_URL,
+        "implementations": IMPLEMENTATIONS,
+        "endpoints": {item.key: SECRET_URL for item in IMPLEMENTATIONS},
         "architecture": "arm64",
         "memory_mb": 512,
         "region": "ap-northeast-1",
-        "python_log_group": "/aws/lambda/python",
-        "rust_log_group": "/aws/lambda/rust",
+        "log_groups": {item.key: f"/aws/lambda/{item.key}" for item in IMPLEMENTATIONS},
         **overrides,
     }
     return LaunchSettings(**values)
@@ -102,11 +109,42 @@ def test_start_runs_all_steps_and_masks_api_urls(tmp_path):
     started = manager.start(_request())
     job = _wait_until_finished(manager)
 
-    assert started["total_requests"] == 14
+    # 言語を選ばなければ一覧の全言語（3つ）へ、ウォームアップ込みで7回ずつ送る。
+    assert started["targets"] == ["python", "rust", "java"]
+    assert started["total_requests"] == 21
     assert job["state"] == "succeeded"
     assert [line.split()[0] for line in job["output"]] == ["run", "collect", "report"]
     assert SECRET_URL not in json.dumps(job)
     assert "<API URL>" in job["output"][0]
+
+
+def test_selected_languages_are_measured_in_registry_order(tmp_path):
+    manager = _manager(tmp_path)
+
+    started = manager.start(_request(targets=["java", "python"]))
+    _wait_until_finished(manager)
+
+    assert started["targets"] == ["python", "java"]
+    assert started["total_requests"] == 14
+    commands = manager._commands(manager._job)
+    assert commands["run"][commands["run"].index("--target") + 1] == "python,java"
+    assert "rust=/aws/lambda/rust" not in " ".join(commands["collect"])
+    assert "java=/aws/lambda/java" in commands["collect"]
+
+
+@pytest.mark.parametrize(
+    ("targets", "message"),
+    [
+        (["python"], "二つ以上"),
+        (["python", "cobol"], "cobol"),
+        ("python,rust", "指定が正しくありません"),
+    ],
+)
+def test_invalid_language_selection_is_rejected(tmp_path, targets, message):
+    manager = _manager(tmp_path)
+
+    with pytest.raises(LaunchError, match=message):
+        manager.start(_request(targets=targets))
 
 
 def test_failed_step_stops_pipeline_and_reports_step(tmp_path):

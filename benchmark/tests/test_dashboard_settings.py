@@ -13,15 +13,13 @@ from benchmark_runner.dashboard.settings import (
 )
 
 OUTPUTS = {
-    "python_api_endpoint": "https://python.example",
-    "rust_api_endpoint": "https://rust.example",
-    "python_lambda_name": "lab-python",
-    "rust_lambda_name": "lab-rust",
+    "api_endpoints": {"python": "https://python.example", "rust": "https://rust.example"},
+    "lambda_names": {"python": "lab-python", "rust": "lab-rust"},
 }
 ARM_512 = FunctionConditions(architecture="arm64", memory_mb=512)
 
 
-def _resolver(*, environ=None, outputs=OUTPUTS, conditions=None, calls=None):
+def _resolver(*, environ=None, outputs=OUTPUTS, conditions=None, calls=None, check_revision=None):
     conditions = conditions or {"lab-python": ARM_512, "lab-rust": ARM_512}
 
     def read_outputs(_terraform_dir):
@@ -43,6 +41,7 @@ def _resolver(*, environ=None, outputs=OUTPUTS, conditions=None, calls=None):
         environ=environ or {},
         read_outputs=read_outputs,
         read_conditions=read_conditions,
+        check_revision=check_revision,
     )
 
 
@@ -52,11 +51,12 @@ def test_resolves_everything_without_environment_variables():
     settings = _resolver(calls=calls).resolve()
 
     assert settings.missing() == []
-    assert settings.python_endpoint == "https://python.example"
-    assert settings.rust_log_group == "/aws/lambda/lab-rust"
+    assert settings.endpoints["python"] == "https://python.example"
+    assert settings.log_groups["rust"] == "/aws/lambda/lab-rust"
     assert (settings.architecture, settings.memory_mb) == ("arm64", 512)
     assert calls == [("lab-python", "ap-northeast-1"), ("lab-rust", "ap-northeast-1")]
     assert "example" not in str(settings.public())
+    assert [item["key"] for item in settings.public()["implementations"]] == ["python", "rust"]
 
 
 def test_environment_endpoint_and_region_take_precedence():
@@ -65,8 +65,8 @@ def test_environment_endpoint_and_region_take_precedence():
 
     settings = _resolver(environ=environ, calls=calls).resolve()
 
-    assert settings.python_endpoint == "https://override.example"
-    assert settings.rust_endpoint == "https://rust.example"
+    assert settings.endpoints["python"] == "https://override.example"
+    assert settings.endpoints["rust"] == "https://rust.example"
     assert calls[0][1] == "us-east-1"
 
 
@@ -77,7 +77,7 @@ def test_terraform_failure_is_reported_as_a_single_actionable_problem():
     assert settings.missing() == ["Terraform の出力を読めません。"]
 
 
-def test_auth_failure_is_reported_once_for_both_functions():
+def test_auth_failure_is_reported_once_for_all_functions():
     failure = SettingsUnavailable("AWS の認証情報が見つからないか、期限が切れています。")
     conditions = {"lab-python": failure, "lab-rust": failure}
 
@@ -111,6 +111,44 @@ def test_matching_environment_conditions_are_accepted():
     environ = {"ARCHITECTURE": "arm64", "LAMBDA_MEMORY_MB": "512"}
 
     assert _resolver(environ=environ).resolve().missing() == []
+
+
+def test_implementation_missing_from_terraform_outputs_blocks_launch():
+    outputs = {
+        "api_endpoints": {"python": "https://python.example"},
+        "lambda_names": {"python": "lab-python"},
+    }
+
+    settings = _resolver(outputs=outputs).resolve()
+
+    assert settings.public()["ready"] is False
+    assert "Rust の Lambda がデプロイされていません" in settings.missing()[0]
+
+
+def test_stale_deployment_reported_by_revision_check_blocks_launch():
+    checked = []
+
+    def check_revision(**kwargs):
+        checked.append(kwargs["label"])
+        return (
+            "Rust のアプリはデプロイ後に変更されています。" if kwargs["label"] == "Rust" else None
+        )
+
+    settings = _resolver(check_revision=check_revision).resolve()
+
+    assert checked == ["Python", "Rust"]
+    assert settings.missing() == ["Rust のアプリはデプロイ後に変更されています。"]
+
+
+def test_revision_check_is_skipped_when_settings_already_have_problems():
+    def check_revision(**kwargs):
+        raise AssertionError("設定に問題がある間は版を確認しない")
+
+    conditions = {"lab-python": ARM_512, "lab-rust": FunctionConditions("arm64", 1024)}
+
+    settings = _resolver(conditions=conditions, check_revision=check_revision).resolve()
+
+    assert "設定が異なります" in settings.missing()[0]
 
 
 def test_read_lambda_conditions_explains_missing_credentials(monkeypatch):

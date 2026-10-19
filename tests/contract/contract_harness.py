@@ -1,4 +1,4 @@
-"""共有テストケースを読み、Python/Rust APIの応答を同じ契約と相互に照合する。"""
+"""共有テストケースを読み、比較対象の全言語のAPIの応答を同じ契約と照合する。"""
 
 from __future__ import annotations
 
@@ -13,6 +13,8 @@ from typing import Any
 from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
+
+import yaml
 
 JsonValue = None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
 
@@ -32,6 +34,16 @@ class ContractCase:
 class ApiResponse:
     status: int
     body: JsonValue
+
+
+@dataclass(frozen=True)
+class ContractTarget:
+    """契約を検証する一つの言語実装と、その接続先。"""
+
+    key: str
+    label: str
+    url: str
+    transport: str
 
 
 def load_cases(case_directory: Path) -> list[ContractCase]:
@@ -110,58 +122,50 @@ def normalized_json(value: JsonValue, ignored_fields: tuple[str, ...]) -> str:
     return json.dumps(normalized, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
 
-def assert_case_matches(
-    case: ContractCase,
-    python_response: ApiResponse,
-    rust_response: ApiResponse,
-) -> None:
-    """両実装のHTTP状態・本文・エラー形式が正規期待値と一致することを検証する。"""
-    assert python_response.status == case.expected_status, (
-        f"{case.name}: Python status {python_response.status}, expected {case.expected_status}"
-    )
-    assert rust_response.status == case.expected_status, (
-        f"{case.name}: Rust status {rust_response.status}, expected {case.expected_status}"
-    )
+def assert_case_matches(case: ContractCase, responses: dict[str, ApiResponse]) -> None:
+    """全実装のHTTP状態・本文・エラー形式が正規期待値と一致することを検証する。
 
+    responsesは表示名から応答への対応表。全実装が同じ正規期待値と一致すれば、
+    実装同士の応答も互いに一致する。
+    """
     expected = normalized_json(case.expected_body, case.ignored_response_fields)
-    python_body = normalized_json(python_response.body, case.ignored_response_fields)
-    rust_body = normalized_json(rust_response.body, case.ignored_response_fields)
-
-    assert python_body == expected, (
-        f"{case.name}: Python response does not match the canonical response\n"
-        f"expected: {expected}\nactual:   {python_body}"
-    )
-    assert rust_body == expected, (
-        f"{case.name}: Rust response does not match the canonical response\n"
-        f"expected: {expected}\nactual:   {rust_body}"
-    )
-    assert python_body == rust_body, (
-        f"{case.name}: Python and Rust response bodies differ\n"
-        f"python: {python_body}\nrust:   {rust_body}"
-    )
-
-    # 期待状態が400以上の場合だけ、本文一致に加えて共通エラー構造も検査する。
-    if case.expected_status >= 400:
-        _assert_error_schema(case.name, python_response.body, "Python")
-        _assert_error_schema(case.name, rust_response.body, "Rust")
-
-
-def configured_api_urls() -> tuple[str, str]:
-    """両実装のURLを環境変数から取得し、不足名をまとめて通知する。"""
-    python_url = os.getenv("PYTHON_API_URL", "").strip()
-    rust_url = os.getenv("RUST_API_URL", "").strip()
-    missing = [
-        name
-        for name, value in (
-            ("PYTHON_API_URL", python_url),
-            ("RUST_API_URL", rust_url),
+    for label, response in responses.items():
+        assert response.status == case.expected_status, (
+            f"{case.name}: {label} status {response.status}, expected {case.expected_status}"
         )
-        if not value
-    ]
-    # どちらかのURLが空なら片側だけの比較を行わず、不足環境変数を列挙して停止する。
+        actual = normalized_json(response.body, case.ignored_response_fields)
+        assert actual == expected, (
+            f"{case.name}: {label} response does not match the canonical response\n"
+            f"expected: {expected}\nactual:   {actual}"
+        )
+        # 期待状態が400以上の場合だけ、本文一致に加えて共通エラー構造も検査する。
+        if case.expected_status >= 400:
+            _assert_error_schema(case.name, response.body, label)
+
+
+def configured_targets(registry_path: Path) -> list[ContractTarget]:
+    """実装一覧の全言語について、接続先URLと呼び出し方式を環境変数から集める。
+
+    URLは <KEY>_API_URL、呼び出し方式は <KEY>_CONTRACT_TRANSPORT（既定は CONTRACT_TRANSPORT、
+    その既定は direct）で受け取る。
+    """
+    document = yaml.safe_load(registry_path.read_text(encoding="utf-8")) or {}
+    default_transport = os.getenv("CONTRACT_TRANSPORT", "direct").strip()
+    targets = []
+    missing = []
+    for key, definition in (document.get("implementations") or {}).items():
+        prefix = key.upper()
+        url = os.getenv(f"{prefix}_API_URL", "").strip()
+        # URLがない実装を集め、一部の言語だけを検証して成功扱いにしない。
+        if not url:
+            missing.append(f"{prefix}_API_URL")
+            continue
+        transport = os.getenv(f"{prefix}_CONTRACT_TRANSPORT", default_transport).strip()
+        targets.append(ContractTarget(key, str(definition.get("label", key)), url, transport))
+    # いずれかの実装のURLが空なら、不足環境変数を列挙して停止する。
     if missing:
         raise AssertionError(f"必須環境変数が設定されていません: {', '.join(missing)}")
-    return python_url, rust_url
+    return targets
 
 
 def _parse_case(file_path: Path, raw: dict[str, Any]) -> ContractCase:

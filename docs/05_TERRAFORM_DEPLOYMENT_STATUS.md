@@ -78,9 +78,8 @@ ECR を先に作成した理由は、Lambda を作成するには ECR 上のイ�
 次の作業は、DynamoDB へのシード投入後にベンチマークを実行することです。通常のイメージ更新では、以下の手順を使用します。
 
 1. `make bootstrap-ecr` で ECR リポジトリとイメージ取得ポリシーだけを作成する。
-2. `make publish-images` でローカルビルド・ECR プッシュを実行し、出力された digest URI を取得する。
-3. 出力された `PYTHON_IMAGE_URI` と `RUST_IMAGE_URI` の `export` 行を実行する。
-4. 出力された digest URI を用い、Terraform plan を確認してから `make deploy` を実行する。
+2. `make publish-images` でローカルビルド・ECR プッシュを実行し、digest URI を `images.auto.tfvars.json` へ書き出す。
+3. Terraform plan を確認してから `make deploy` を実行する。
 
 現在の API URL は、Python が `https://clwf5l9sol.execute-api.ap-northeast-1.amazonaws.com`、Rust が `https://b3wszko32b.execute-api.ap-northeast-1.amazonaws.com` です。
 

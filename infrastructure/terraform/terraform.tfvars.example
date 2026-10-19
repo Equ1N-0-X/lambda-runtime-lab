@@ -5,8 +5,6 @@ lambda_timeout_seconds = 30
 architecture          = "arm64"
 environment           = "dev"
 
-# Empty image URIs are accepted only for `terraform validate`.
-# Before a full `terraform plan` or `terraform apply`, create the ECR repositories,
-# push each image, and replace these values with the resulting tagged or digest URIs.
-python_image_uri = ""
-rust_image_uri   = ""
+# イメージURIは make publish-images が images.auto.tfvars.json へ書き出すため、ここには書かない。
+# 空のままでも terraform validate は通るが、plan/apply では spec/implementations.yaml の
+# 全実装のURIが必要になる。

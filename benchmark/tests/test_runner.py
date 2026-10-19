@@ -4,7 +4,9 @@ import asyncio
 import json
 
 import httpx
+import pytest
 
+from benchmark_runner.implementations import load_implementations, resolve_targets
 from benchmark_runner.runner import RunConfig, run_benchmark
 from benchmark_runner.workloads import Workload
 
@@ -30,7 +32,7 @@ def test_runner_warms_up_and_writes_measured_samples(tmp_path):
     )
     config = RunConfig(
         run_id="test-run",
-        target="python",
+        targets=("python",),
         endpoints={"python": "https://example.test"},
         region="ap-northeast-1",
         results_dir=tmp_path,
@@ -57,7 +59,7 @@ def test_dry_run_requires_no_endpoint_or_network(tmp_path):
     workload = Workload("health", "GET", "/health", 0, 1, 1)
     config = RunConfig(
         run_id="dry-run",
-        target="both",
+        targets=("python", "rust"),
         endpoints={},
         region="ap-northeast-1",
         results_dir=tmp_path,
@@ -68,3 +70,19 @@ def test_dry_run_requires_no_endpoint_or_network(tmp_path):
 
     assert plan["targets"] == ["python", "rust"]
     assert not (tmp_path / "raw").exists()
+
+
+def test_resolve_targets_follows_registry_order_and_rejects_unknown_keys():
+    available = ("python", "rust", "typescript", "java")
+
+    assert resolve_targets("all", available) == available
+    assert resolve_targets("java, python", available) == ("python", "java")
+    with pytest.raises(ValueError, match="cobol"):
+        resolve_targets("python,cobol", available)
+
+
+def test_registry_lists_implementations_in_display_order():
+    keys = [implementation.key for implementation in load_implementations()]
+
+    assert keys[:2] == ["python", "rust"]
+    assert len(keys) == len(set(keys))

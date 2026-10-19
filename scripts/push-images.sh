@@ -1,18 +1,31 @@
 #!/usr/bin/env bash
-# ローカルのPython/Rustイメージを、対応するECRリポジトリへ認証・タグ付けして登録する。
+# ローカルの各言語のイメージを、対応するECRリポジトリへ認証・タグ付けして登録する。
+# 登録先は実装キーごとの環境変数 <KEY大文字>_ECR_REPOSITORY_URL で受け取る。
 set -euo pipefail
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=lib/implementations.sh
+source "${ROOT}/scripts/lib/implementations.sh"
 REGION="${AWS_REGION:-ap-northeast-1}"
 TAG="${TAG:-benchmark}"
-PYTHON_REPOSITORY="${PYTHON_ECR_REPOSITORY_URL:-}"
-RUST_REPOSITORY="${RUST_ECR_REPOSITORY_URL:-}"
 DRY_RUN=false
 PUSH_QUIET="${PUSH_QUIET:-false}"
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=true
 
-# 実行時は両方の登録先を必須とし、ドライラン時だけプレースホルダーによる手順確認を許可する。
-if ! "${DRY_RUN}" && { [[ -z "${PYTHON_REPOSITORY}" ]] || [[ -z "${RUST_REPOSITORY}" ]]; }; then
-  echo "PYTHON_ECR_REPOSITORY_URL と RUST_ECR_REPOSITORY_URL の指定が必要です" >&2
+repository_for() {
+  local variable_name
+  variable_name="$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')_ECR_REPOSITORY_URL"
+  printf '%s' "${!variable_name:-}"
+}
+
+keys="$(implementation_keys)"
+missing=()
+for implementation in ${keys}; do
+  # 登録先がない実装を集め、実行時は一つでも欠ければ一部だけ登録する状態を作らない。
+  [[ -n "$(repository_for "${implementation}")" ]] || missing+=("$(printf '%s' "${implementation}" | tr '[:lower:]' '[:upper:]')_ECR_REPOSITORY_URL")
+done
+if ! "${DRY_RUN}" && [[ ${#missing[@]} -gt 0 ]]; then
+  echo "${missing[*]} の指定が必要です" >&2
   exit 2
 fi
 
@@ -21,7 +34,7 @@ push_image() {
   local implementation="$1"
   local repository="$2"
   local local_image="lambda-runtime-lab-${implementation}:${TAG}"
-  local destination="${repository:-<${implementation^^}_ECR_REPOSITORY_URL>}:${TAG}"
+  local destination="${repository:-<${implementation}_ECR_REPOSITORY_URL>}:${TAG}"
   local registry="${repository%%/*}"
 
   # ドライラン時は認証やpushを行わず、秘密値を表示しない形で予定コマンドだけを出力する。
@@ -44,5 +57,6 @@ push_image() {
   fi
 }
 
-push_image python "${PYTHON_REPOSITORY}"
-push_image rust "${RUST_REPOSITORY}"
+for implementation in ${keys}; do
+  push_image "${implementation}" "$(repository_for "${implementation}")"
+done

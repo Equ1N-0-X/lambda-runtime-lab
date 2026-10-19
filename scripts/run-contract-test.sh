@@ -1,68 +1,59 @@
 #!/usr/bin/env bash
-# ローカル既定URL向けに、DynamoDB・Python API・Rust Lambda RIEを準備して契約テストを実行する。
-# 自身が起動したプロセスとコンテナだけを終了時に片付け、利用者が先に起動したサービスは維持する。
+# 比較対象の全言語について、DynamoDB Localと各言語のLambdaイメージ（Lambda RIE経由）を準備して
+# 契約テストを実行する。言語の一覧は spec/implementations.yaml から読む。
+#
+# 全言語をデプロイするのと同じイメージで検証するため、どの言語もLambda RIEで起動する。
+# <KEY>_API_URL がどれか一つでも指定されていれば、起動を行わず指定先だけを検証する。
+# 自身が起動したコンテナだけを終了時に片付け、利用者が先に起動したサービスは維持する。
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PYTHON_API_URL="${PYTHON_API_URL:-}"
-RUST_API_URL="${RUST_API_URL:-}"
+# shellcheck source=lib/implementations.sh
+source "${ROOT}/scripts/lib/implementations.sh"
 DYNAMODB_TABLE_NAME="${DYNAMODB_TABLE_NAME:-}"
 DYNAMODB_ENDPOINT_URL="${DYNAMODB_ENDPOINT_URL:-}"
 AWS_REGION="${AWS_REGION:-us-east-1}"
-CONTRACT_TRANSPORT="${CONTRACT_TRANSPORT:-direct}"
-PYTHON_CONTRACT_TRANSPORT="${PYTHON_CONTRACT_TRANSPORT:-}"
-RUST_CONTRACT_TRANSPORT="${RUST_CONTRACT_TRANSPORT:-}"
-RUST_IMAGE="${RUST_IMAGE:-lambda-runtime-lab-rust:local}"
+IMAGE_TAG="${IMAGE_TAG:-local}"
+# 言語ごとのRIEは、この番号から一覧の順に一つずつ割り当てたポートで待ち受ける。
+FIRST_PORT="${CONTRACT_FIRST_PORT:-9101}"
 DYNAMODB_CONTAINER="lambda-runtime-lab-contract-dynamodb"
-RUST_CONTAINER="lambda-runtime-lab-contract-rust"
-RUST_HEALTH_EVENT='{"version":"2.0","routeKey":"$default","rawPath":"/health","rawQueryString":"","headers":{},"requestContext":{"accountId":"123456789012","apiId":"local","domainName":"localhost","domainPrefix":"local","http":{"method":"GET","path":"/health","protocol":"HTTP/1.1","sourceIp":"127.0.0.1","userAgent":"contract-test"},"requestId":"health-check","routeKey":"$default","stage":"$default","time":"01/Jan/2026:00:00:00 +0000","timeEpoch":1767225600000},"body":null,"isBase64Encoded":false}'
-PYTHON_LOG=""
-PYTHON_PID=""
+HEALTH_EVENT='{"version":"2.0","routeKey":"$default","rawPath":"/health","rawQueryString":"","headers":{},"requestContext":{"accountId":"123456789012","apiId":"local","domainName":"localhost","domainPrefix":"local","http":{"method":"GET","path":"/health","protocol":"HTTP/1.1","sourceIp":"127.0.0.1","userAgent":"contract-test"},"requestId":"health-check","routeKey":"$default","stage":"$default","time":"01/Jan/2026:00:00:00 +0000","timeEpoch":1767225600000},"body":null,"isBase64Encoded":false}'
+KEYS="$(implementation_keys)"
 STARTED_DYNAMODB=false
-STARTED_RUST=false
+STARTED_CONTAINERS=()
 
-use_local_environment() {
-  # 値未指定または標準ローカル値だけなら環境を所有し、AWSや任意URLへの意図しない書き込みや停止を防ぐ。
-  [[ -z "${PYTHON_API_URL}" || "${PYTHON_API_URL}" == "http://127.0.0.1:9001" ]] \
-    && [[ -z "${RUST_API_URL}" || "${RUST_API_URL}" == "http://127.0.0.1:9002" ]] \
-    && [[ -z "${DYNAMODB_TABLE_NAME}" || "${DYNAMODB_TABLE_NAME}" == "lambda-runtime-lab-contract" ]] \
-    && [[ -z "${DYNAMODB_ENDPOINT_URL}" || "${DYNAMODB_ENDPOINT_URL}" == "http://127.0.0.1:8000" ]]
+upper() {
+  printf '%s' "$1" | tr '[:lower:]' '[:upper:]'
 }
 
-configure_target() {
-  # 標準ローカル値ならRIE経由のRust呼び出しを選び、それ以外の指定時はCONTRACT_TRANSPORTの既定を維持する。
-  if use_local_environment; then
-    PYTHON_API_URL="http://127.0.0.1:9001"
-    RUST_API_URL="http://127.0.0.1:9002"
-    DYNAMODB_TABLE_NAME="lambda-runtime-lab-contract"
-    DYNAMODB_ENDPOINT_URL="http://127.0.0.1:8000"
-    PYTHON_CONTRACT_TRANSPORT="${PYTHON_CONTRACT_TRANSPORT:-${CONTRACT_TRANSPORT}}"
-    RUST_CONTRACT_TRANSPORT="${RUST_CONTRACT_TRANSPORT:-lambda-rie}"
-  else
-    PYTHON_CONTRACT_TRANSPORT="${PYTHON_CONTRACT_TRANSPORT:-${CONTRACT_TRANSPORT}}"
-    RUST_CONTRACT_TRANSPORT="${RUST_CONTRACT_TRANSPORT:-${CONTRACT_TRANSPORT}}"
-  fi
+url_variable() {
+  printf '%s_API_URL' "$(upper "$1")"
+}
+
+use_local_environment() {
+  # どの言語のURLも、DynamoDBも標準ローカル値以外が指定されていなければ環境を所有する。
+  # AWSや任意URLへの意図しない書き込みや停止を防ぐ。
+  local implementation variable
+  for implementation in ${KEYS}; do
+    variable="$(url_variable "${implementation}")"
+    [[ -z "${!variable:-}" ]] || return 1
+  done
+  [[ -z "${DYNAMODB_TABLE_NAME}" || "${DYNAMODB_TABLE_NAME}" == "lambda-runtime-lab-contract" ]] \
+    && [[ -z "${DYNAMODB_ENDPOINT_URL}" || "${DYNAMODB_ENDPOINT_URL}" == "http://127.0.0.1:8000" ]]
 }
 
 cleanup() {
   local exit_status=$?
-
-  # このスクリプトが起動したPythonだけを終了し、利用者が起動済みの9001番を停止しない。
-  if [[ -n "${PYTHON_PID}" ]] && kill -0 "${PYTHON_PID}" 2>/dev/null; then
-    kill "${PYTHON_PID}" || true
-    wait "${PYTHON_PID}" 2>/dev/null || true
-  fi
+  local container
 
   # 起動責任がこのスクリプトにあるコンテナだけを削除し、既存コンテナの状態は変更しない。
-  if [[ "${STARTED_RUST}" == true ]]; then
-    docker rm --force "${RUST_CONTAINER}" >/dev/null 2>&1 || true
-  fi
+  # macOS標準のbash 3.2では空配列の展開が未定義変数扱いになるため、要素がある場合だけ展開する。
+  for container in ${STARTED_CONTAINERS[@]+"${STARTED_CONTAINERS[@]}"}; do
+    docker rm --force "${container}" >/dev/null 2>&1 || true
+  done
   if [[ "${STARTED_DYNAMODB}" == true ]]; then
     docker rm --force "${DYNAMODB_CONTAINER}" >/dev/null 2>&1 || true
-  fi
-  if [[ -n "${PYTHON_LOG}" ]]; then
-    rm -f "${PYTHON_LOG}"
   fi
 
   exit "${exit_status}"
@@ -70,11 +61,11 @@ cleanup() {
 
 show_failure_context() {
   # 起動待機が尽きた場合は、サービス別ログを表示して接続拒否だけで原因を隠さない。
-  if [[ -n "${PYTHON_LOG}" ]] && [[ -f "${PYTHON_LOG}" ]]; then
-    echo "Python APIログ:" >&2
-    cat "${PYTHON_LOG}" >&2
-  fi
-  docker logs "${RUST_CONTAINER}" 2>&1 || true
+  local container
+  for container in ${STARTED_CONTAINERS[@]+"${STARTED_CONTAINERS[@]}"}; do
+    echo "${container} のログ:" >&2
+    docker logs "${container}" 2>&1 || true
+  done
   docker logs "${DYNAMODB_CONTAINER}" 2>&1 || true
 }
 
@@ -102,51 +93,37 @@ wait_for_dynamodb() {
   return 1
 }
 
-wait_for_python() {
-  local attempt
-  for attempt in $(seq 1 30); do
-    # /healthが200の場合だけ、DynamoDBを使う契約要求を送れるPython APIとして扱う。
-    if curl --connect-timeout 1 --max-time 3 --fail --silent "${PYTHON_API_URL}/health" >/dev/null; then
-      return 0
-    fi
-    sleep 1
-  done
-  show_failure_context
-  echo "Python APIの起動を確認できませんでした: ${PYTHON_API_URL}" >&2
-  return 1
-}
-
-rust_is_ready() {
+runtime_is_ready() {
+  local url="$1"
   local response
   # RIE invoke APIのレスポンスを確認し、HTTPポートが開いているだけでは起動完了とみなさない。
-  response="$(curl --connect-timeout 1 --max-time 3 --silent --request POST --header 'Content-Type: application/json' \
-    --data "${RUST_HEALTH_EVENT}" "${RUST_API_URL}/2015-03-31/functions/function/invocations" || true)"
-  jq --exit-status '.statusCode == 200' >/dev/null <<<"${response}"
+  response="$(curl --connect-timeout 1 --max-time 5 --silent --request POST \
+    --header 'Content-Type: application/json' --data "${HEALTH_EVENT}" \
+    "${url}/2015-03-31/functions/function/invocations" || true)"
+  jq --exit-status '.statusCode == 200' >/dev/null 2>&1 <<<"${response}"
 }
 
-wait_for_rust() {
+wait_for_runtime() {
+  local label="$1"
+  local url="$2"
   local attempt
-  for attempt in $(seq 1 30); do
-    # RIE invoke APIがLambdaプロキシの200を返した場合だけ、Rustランタイムを利用可能と判定する。
-    if rust_is_ready; then
+  # 起動の遅い言語（JVMなど）も待てるよう、最大60秒まで確認を繰り返す。
+  for attempt in $(seq 1 60); do
+    if runtime_is_ready "${url}"; then
       return 0
     fi
     sleep 1
   done
   show_failure_context
-  echo "Rust Lambda RIEの起動を確認できませんでした: ${RUST_API_URL}" >&2
+  echo "${label} の Lambda RIE の起動を確認できませんでした: ${url}" >&2
   return 1
 }
 
 start_dynamodb_if_needed() {
-  # 既定URLでDynamoDBが未起動なら専用コンテナを起動し、それ以外のURLは利用者管理の接続先として扱う。
+  # 既定URLでDynamoDBが未起動なら専用コンテナを起動する。
   if AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_REGION="${AWS_REGION}" \
     aws dynamodb list-tables --endpoint-url "${DYNAMODB_ENDPOINT_URL}" >/dev/null 2>&1; then
     return 0
-  fi
-  if [[ "${DYNAMODB_ENDPOINT_URL}" != "http://127.0.0.1:8000" ]]; then
-    echo "DynamoDBへ接続できません: ${DYNAMODB_ENDPOINT_URL}" >&2
-    exit 1
   fi
 
   docker run --detach --rm --name "${DYNAMODB_CONTAINER}" --publish 127.0.0.1:8000:8000 \
@@ -173,54 +150,41 @@ prepare_fixtures() {
       --table "${DYNAMODB_TABLE_NAME}" --endpoint-url "${DYNAMODB_ENDPOINT_URL}" --region "${AWS_REGION}"
 }
 
-start_python_if_needed() {
-  # 既定URLのPython APIが未起動なら、この実行専用のバックグラウンドプロセスとして開始する。
-  if curl --connect-timeout 1 --max-time 3 --fail --silent "${PYTHON_API_URL}/health" >/dev/null; then
-    return 0
-  fi
-  if [[ "${PYTHON_API_URL}" != "http://127.0.0.1:9001" ]]; then
-    echo "Python APIへ接続できません: ${PYTHON_API_URL}" >&2
-    exit 1
-  fi
+start_runtime() {
+  # 一つの言語のイメージを、本来の起動コマンドのままLambda RIEの下で起動する。
+  local implementation="$1"
+  local port="$2"
+  local image="lambda-runtime-lab-${implementation}:${IMAGE_TAG}"
+  local container="lambda-runtime-lab-contract-${implementation}"
+  local url="http://127.0.0.1:${port}"
+  local command_line
 
-  PYTHON_LOG="$(mktemp -t lambda-runtime-lab-contract-python.XXXXXX.log)"
-  AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_REGION="${AWS_REGION}" \
-    AWS_ENDPOINT_URL_DYNAMODB="${DYNAMODB_ENDPOINT_URL}" DYNAMODB_TABLE_NAME="${DYNAMODB_TABLE_NAME}" \
-    uv run --project "${ROOT}/apps/python" --with uvicorn \
-      uvicorn app.main:app --app-dir "${ROOT}/apps/python/src" --host 127.0.0.1 --port 9001 \
-      >"${PYTHON_LOG}" 2>&1 &
-  PYTHON_PID=$!
-  wait_for_python
-}
+  # イメージがなければ、この言語だけをビルドしてから起動する。
+  if ! docker image inspect "${image}" >/dev/null 2>&1; then
+    make -C "${ROOT}" build IMPLEMENTATIONS="${implementation}" IMAGE_TAG="${IMAGE_TAG}"
+  fi
+  # イメージ本来のENTRYPOINTとCMDをRIEの引数に渡し、Lambdaと同じ起動経路を再現する。
+  command_line="$(docker image inspect "${image}" \
+    --format '{{range .Config.Entrypoint}}{{.}} {{end}}{{range .Config.Cmd}}{{.}} {{end}}')"
 
-start_rust_if_needed() {
-  # 既定URLのRIEが未起動ならイメージを確認してから開始し、外部URLは利用者管理として起動しない。
-  if rust_is_ready >/dev/null 2>&1; then
-    return 0
-  fi
-  if [[ "${RUST_API_URL}" != "http://127.0.0.1:9002" ]]; then
-    echo "Rust Lambda RIEへ接続できません: ${RUST_API_URL}" >&2
-    exit 1
-  fi
-  if ! docker image inspect "${RUST_IMAGE}" >/dev/null 2>&1; then
-    make -C "${ROOT}" build-rust
-  fi
-
+  docker rm --force "${container}" >/dev/null 2>&1 || true
+  local host_options=()
   # Linux Dockerではhost.docker.internalを明示解決し、macOS/WindowsではDocker Desktopの標準名を使う。
   if [[ "$(uname -s)" == Linux ]]; then
-    docker run --detach --rm --name "${RUST_CONTAINER}" --publish 127.0.0.1:9002:8080 \
-      --add-host host.docker.internal:host-gateway \
-      --env AWS_ACCESS_KEY_ID=test --env AWS_SECRET_ACCESS_KEY=test --env AWS_REGION="${AWS_REGION}" \
-      --env AWS_ENDPOINT_URL_DYNAMODB=http://host.docker.internal:8000 \
-      --env DYNAMODB_TABLE_NAME="${DYNAMODB_TABLE_NAME}" "${RUST_IMAGE}" >/dev/null
-  else
-    docker run --detach --rm --name "${RUST_CONTAINER}" --publish 127.0.0.1:9002:8080 \
-      --env AWS_ACCESS_KEY_ID=test --env AWS_SECRET_ACCESS_KEY=test --env AWS_REGION="${AWS_REGION}" \
-      --env AWS_ENDPOINT_URL_DYNAMODB=http://host.docker.internal:8000 \
-      --env DYNAMODB_TABLE_NAME="${DYNAMODB_TABLE_NAME}" "${RUST_IMAGE}" >/dev/null
+    host_options=(--add-host host.docker.internal:host-gateway)
   fi
-  STARTED_RUST=true
-  wait_for_rust
+  # shellcheck disable=SC2086 # 起動コマンドは空白区切りの引数として渡す。
+  docker run --detach --rm --name "${container}" --publish "127.0.0.1:${port}:8080" \
+    ${host_options[@]+"${host_options[@]}"} \
+    --env AWS_ACCESS_KEY_ID=test --env AWS_SECRET_ACCESS_KEY=test --env AWS_REGION="${AWS_REGION}" \
+    --env AWS_ENDPOINT_URL_DYNAMODB=http://host.docker.internal:8000 \
+    --env DYNAMODB_TABLE_NAME="${DYNAMODB_TABLE_NAME}" \
+    --entrypoint /usr/local/bin/aws-lambda-rie "${image}" ${command_line} >/dev/null
+  STARTED_CONTAINERS+=("${container}")
+  wait_for_runtime "${implementation}" "${url}"
+
+  export "$(url_variable "${implementation}")=${url}"
+  export "$(upper "${implementation}")_CONTRACT_TRANSPORT=lambda-rie"
 }
 
 main() {
@@ -232,20 +196,20 @@ main() {
     require_command aws
     require_command docker
     require_command jq
-    configure_target
+    DYNAMODB_TABLE_NAME="lambda-runtime-lab-contract"
+    DYNAMODB_ENDPOINT_URL="http://127.0.0.1:8000"
     start_dynamodb_if_needed
     prepare_fixtures
-    start_python_if_needed
-    start_rust_if_needed
-  else
-    configure_target
+    local port="${FIRST_PORT}"
+    local implementation
+    for implementation in ${KEYS}; do
+      start_runtime "${implementation}" "${port}"
+      port=$((port + 1))
+    done
   fi
 
-  PYTHON_API_URL="${PYTHON_API_URL}" RUST_API_URL="${RUST_API_URL}" \
-    PYTHON_CONTRACT_TRANSPORT="${PYTHON_CONTRACT_TRANSPORT}" \
-    RUST_CONTRACT_TRANSPORT="${RUST_CONTRACT_TRANSPORT}" \
-    uv run --project "${ROOT}/tests/contract" python -m pytest \
-      "${ROOT}/tests/contract/test_contract.py" -m integration
+  uv run --project "${ROOT}/tests/contract" python -m pytest \
+    "${ROOT}/tests/contract/test_contract.py" -m integration
 }
 
 trap cleanup EXIT
