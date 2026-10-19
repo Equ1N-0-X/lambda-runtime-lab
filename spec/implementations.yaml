@@ -29,3 +29,10 @@ implementations:
       runtime_size_bytes: /var/lang
       runtime_interface_size_bytes: /var/runtime
       application_bundle_size_bytes: /var/task
+  java:
+    label: Java
+    app_dir: apps/java
+    artifact_paths:
+      runtime_size_bytes: /var/lang
+      runtime_interface_size_bytes: /var/runtime
+      application_with_dependencies_size_bytes: /var/task
