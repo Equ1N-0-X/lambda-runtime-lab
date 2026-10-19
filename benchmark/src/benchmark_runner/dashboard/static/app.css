@@ -878,3 +878,28 @@ code {
 .field .check {
   font-weight: 400;
 }
+
+/* 作りたいAPIの見込み */
+.wide-button {
+  width: 100%;
+  margin-top: 8px;
+}
+
+.estimate-mix td {
+  vertical-align: middle;
+}
+
+.estimate-mix input {
+  width: 80px;
+}
+
+.estimate-notes {
+  margin: 12px 0;
+  padding-left: 20px;
+  font-size: 13px;
+  color: var(--ink-secondary);
+}
+
+.estimate-output {
+  min-height: 48px;
+}
