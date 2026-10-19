@@ -1,4 +1,4 @@
-# Python/RustそれぞれにIAM認証付きHTTP APIを作り、対応するLambdaへ全経路を転送する。
+# 言語ごとにIAM認証付きHTTP APIを作り、対応するLambdaへ全経路を転送する。
 resource "aws_apigatewayv2_api" "runtime" {
   for_each = local.runtimes
 

@@ -1,10 +1,14 @@
-// 計測結果の一覧と、選択したrunのPython/Rust比較を表示する。
+// 計測結果の一覧と、選択したrunの言語間の比較を表示する。
 // 値はすべてサーバーのbuild_report()が計算したものを使い、画面側では再計算しない。
 
-const IMPLEMENTATIONS = [
-  { key: "python", label: "Python" },
-  { key: "rust", label: "Rust" },
-];
+// 計測した言語を、サーバーが返した表示順（実装一覧の順）で返す。色は表示順で割り当てる。
+function implementationsOf(run) {
+  return Object.keys(run.implementations).map((key, index) => ({
+    key,
+    label: run.labels?.[key] ?? key,
+    series: `series-${(index % 6) + 1}`,
+  }));
+}
 
 // 指標ごとの表示名・何を表すか・何が分かるか・単位と、Rustが小さいときの言い方。
 // いずれも小さいほど有利な指標。
@@ -169,13 +173,13 @@ function formatOptional(value, suffix = "") {
   return value === null || value === undefined || value === "" ? "未記録" : `${value}${suffix}`;
 }
 
-// Pythonを基準にしたRustの増減率を、比較の向きが分かる文にする。
-function describeDifference(difference, lowerWord, higherWord) {
-  if (!isNumber(difference)) return "比較できません（どちらかの値がありません）";
-  if (Math.abs(difference) < SAME_THRESHOLD_PERCENT) return "Rust と Python はほぼ同じ";
+// 基準の言語に対する増減率を、比較の向きが分かる文にする。
+function describeDifference(difference, lowerWord, higherWord, label, baselineLabel) {
+  if (!isNumber(difference)) return `${label}: 比較できません（値がありません）`;
+  if (Math.abs(difference) < SAME_THRESHOLD_PERCENT) return `${label} は ${baselineLabel} とほぼ同じ`;
   const amount = Math.abs(difference).toFixed(1);
   const word = difference < 0 ? lowerWord : higherWord;
-  return `Rust は Python より ${amount}% ${word}`;
+  return `${label} は ${baselineLabel} より ${amount}% ${word}`;
 }
 
 function relativeDifference(reference, comparison) {
@@ -268,17 +272,17 @@ function renderNotice(run) {
   ]);
 }
 
-function renderTile({ label, hint, values, format, difference }) {
-  const rows = IMPLEMENTATIONS.map(({ key, label: name }) =>
+function renderTile({ run, label, hint, values, format, differences }) {
+  const rows = implementationsOf(run).map(({ key, label: name, series }) =>
     el("div", { class: "tile-row" }, [
-      el("span", { class: `series-key series-${key}`, text: name }),
+      el("span", { class: `series-key ${series}`, text: name }),
       el("span", { class: "tile-value" }, format(values[key])),
     ]),
   );
   return el("div", { class: "card tile" }, [
     el("p", { class: "tile-label", text: label }),
     ...rows,
-    el("p", { class: "tile-delta", text: difference }),
+    ...differences.map((text) => el("p", { class: "tile-delta", text })),
     el("p", { class: "tile-hint", text: hint }),
   ]);
 }
@@ -290,7 +294,16 @@ function valueWithUnit(value, unit) {
 
 function renderTiles(run) {
   const implementations = run.implementations;
-  const valuesOf = (read) => Object.fromEntries(IMPLEMENTATIONS.map(({ key }) => [key, read(implementations[key])]));
+  const list = implementationsOf(run);
+  const valuesOf = (read) => Object.fromEntries(list.map(({ key }) => [key, read(implementations[key])]));
+  const baseline = list.find(({ key }) => key === run.baseline);
+  // 基準以外の各言語について、基準との差の文を作る。readは対象言語の増減率を返す。
+  const differencesOf = (read, lowerWord, higherWord) =>
+    baseline
+      ? list
+          .filter(({ key }) => key !== baseline.key)
+          .map(({ key, label }) => describeDifference(read(key), lowerWord, higherWord, label, baseline.label))
+      : ["言語が一つだけのため比較できません"];
   const costFormat = (value) =>
     isNumber(value) ? formatCost(value) : [el("span", { class: "tile-unit", text: "未計算" })];
 
@@ -301,39 +314,43 @@ function renderTiles(run) {
 
   const tiles = [
     renderTile({
+      run,
       label: "Lambda 料金（100万リクエストあたり）",
       hint: "実際の請求に近い総額です。リクエスト料金 $0.20 は言語によらず同じです。",
       values: totalCosts,
       format: costFormat,
-      difference: describeDifference(relativeDifference(totalCosts.python, totalCosts.rust), "安い", "高い"),
+      differences: differencesOf((key) => relativeDifference(totalCosts[baseline.key], totalCosts[key]), "安い", "高い"),
     }),
     renderTile({
+      run,
       label: "うち実行時間分の料金（100万リクエストあたり）",
       hint: "リクエスト料金を除いた部分です。言語による料金の差はここに表れます。",
       values: computeCosts,
       format: costFormat,
-      difference: describeDifference(relativeDifference(computeCosts.python, computeCosts.rust), "安い", "高い"),
+      differences: differencesOf((key) => relativeDifference(computeCosts[baseline.key], computeCosts[key]), "安い", "高い"),
     }),
     renderTile({
+      run,
       label: "使ったメモリ（中央値）",
       hint: METRICS.max_memory_used_mb.insight,
       values: memory,
       format: (value) => valueWithUnit(value, "MB"),
-      difference: describeDifference(run.differences?.max_memory_used_mb?.p50, "少ない", "多い"),
+      differences: differencesOf((key) => run.differences?.[key]?.max_memory_used_mb?.p50, "少ない", "多い"),
     }),
     renderTile({
+      run,
       label: "応答時間（中央値）",
       hint: "手元の回線の影響を含みます。処理そのものの速さは下の「Lambda実行時間」で比べます。",
       values: latency,
       format: (value) => valueWithUnit(value, "ms"),
-      difference: describeDifference(run.differences?.latency_ms?.p50, "短い", "長い"),
+      differences: differencesOf((key) => run.differences?.[key]?.latency_ms?.p50, "短い", "長い"),
     }),
   ];
   return el("section", { class: "summary", "aria-labelledby": "summary-title" }, [
     el("div", { class: "section-head" }, el("h3", { id: "summary-title", text: "結果の要点" })),
     el("p", {
       class: "section-note",
-      text: "Python と Rust の差を、料金・メモリ・速さの順にまとめています。差の文は Python を基準にしています。",
+      text: `言語ごとの差を、料金・メモリ・速さの順にまとめています。差の文は ${baseline?.label ?? "先頭の言語"} を基準にしています。`,
     }),
     el("div", { class: "tiles" }, tiles),
   ]);
@@ -354,11 +371,11 @@ function segmented(options, selected, onSelect, label) {
   );
 }
 
-function legend() {
+function legend(run) {
   return el(
     "div",
     { class: "legend", "aria-label": "凡例" },
-    IMPLEMENTATIONS.map(({ key, label }) => el("span", { class: `series-key series-${key}`, text: label })),
+    implementationsOf(run).map(({ label, series }) => el("span", { class: `series-key ${series}`, text: label })),
   );
 }
 
@@ -404,8 +421,9 @@ function renderChart(container, run) {
   const metric = METRICS[state.metric];
   const scopeLabel = SCOPES.find((scope) => scope.key === state.scope).label;
   const statsFor = (key) => run.implementations[key]?.[state.scope]?.[state.metric];
+  const list = implementationsOf(run);
   const values = PERCENTILES.flatMap(({ key: percentile }) =>
-    IMPLEMENTATIONS.map(({ key }) => statsFor(key)?.[percentile]),
+    list.map(({ key }) => statsFor(key)?.[percentile]),
   ).filter(isNumber);
 
   const width = Math.max(container.clientWidth, 280);
@@ -413,7 +431,7 @@ function renderChart(container, run) {
   const barHeight = 18;
   const barGap = 2;
   const groupGap = 20;
-  const groupHeight = IMPLEMENTATIONS.length * barHeight + (IMPLEMENTATIONS.length - 1) * barGap;
+  const groupHeight = list.length * barHeight + (list.length - 1) * barGap;
   const plotHeight = PERCENTILES.length * groupHeight + (PERCENTILES.length - 1) * groupGap;
   const height = margin.top + plotHeight + margin.bottom;
   const plotWidth = width - margin.left - margin.right;
@@ -470,7 +488,7 @@ function renderChart(container, run) {
         text: percentile.label,
       }),
     );
-    IMPLEMENTATIONS.forEach(({ key, label }, index) => {
+    list.forEach(({ key, label, series }, index) => {
       const y = groupTop + index * (barHeight + barGap);
       const value = statsFor(key)?.[percentile.key];
       const caption = `${label} · ${percentile.label}（${percentile.description}）· ${scopeLabel}`;
@@ -492,7 +510,7 @@ function renderChart(container, run) {
       if (isNumber(value)) {
         const x1 = Math.max(scale(value), margin.left + 1);
         group.append(
-          svg("path", { d: barPath(margin.left, x1, y, barHeight), fill: `var(--${key})` }),
+          svg("path", { d: barPath(margin.left, x1, y, barHeight), fill: `var(--${series})` }),
           svg("text", { x: x1 + 6, y: y + barHeight / 2 + 4, text: formatNumber(value) }),
         );
       } else {
@@ -514,16 +532,16 @@ function renderComparison(run) {
   const metric = METRICS[state.metric];
   const scope = SCOPES.find(({ key }) => key === state.scope);
   const chart = el("div", { class: "chart" });
-  const counts = IMPLEMENTATIONS.map(({ key, label }) => {
+  const counts = implementationsOf(run).map(({ key, label }) => {
     const count = run.implementations[key]?.[state.scope]?.[state.metric]?.count ?? 0;
     return `${label} ${count.toLocaleString("ja-JP")} 件`;
   }).join(" / ");
 
   const card = el("div", { class: "card", id: "comparison" }, [
-    el("div", { class: "section-head" }, [el("h3", { text: "指標ごとの詳しい比較" }), legend()]),
+    el("div", { class: "section-head" }, [el("h3", { text: "指標ごとの詳しい比較" }), legend(run)]),
     el("p", {
       class: "section-note",
-      text: "指標と対象の計測を選ぶと、Python と Rust を P50・P95・P99 の3つの位置で比べます。棒が短いほど有利です。",
+      text: "指標と対象の計測を選ぶと、各言語を P50・P95・P99 の3つの位置で比べます。棒が短いほど有利です。",
     }),
     el("div", { class: "controls" }, [
       segmented(
@@ -573,7 +591,7 @@ function renderPercentileTable(run) {
   ]);
   const rows = [];
   for (const [metricKey, metric] of Object.entries(METRICS)) {
-    for (const { key, label } of IMPLEMENTATIONS) {
+    for (const { key, label } of implementationsOf(run)) {
       const stats = run.implementations[key]?.[state.scope]?.[metricKey];
       rows.push(
         el("tr", {}, [
@@ -600,7 +618,7 @@ function renderSampleTable(run) {
     el("th", { text: "ログと未結合" }),
     el("th", { text: "エラー率" }),
   ]);
-  const rows = IMPLEMENTATIONS.filter(({ key }) => run.implementations[key]).map(({ key, label }) => {
+  const rows = implementationsOf(run).map(({ key, label }) => {
     const values = run.implementations[key];
     const errorRate = isNumber(values.error_rate) ? `${(values.error_rate * 100).toFixed(2)}%` : "未取得";
     return el("tr", {}, [
@@ -716,7 +734,7 @@ function renderError(target, message, retry) {
 // --- 計測の開始 ------------------------------------------------------------
 
 const COUNT_FIELDS = [
-  { key: "iterations", label: "反復回数（各実装）", unit: "回", help: "Python と Rust にそれぞれ送る計測用のリクエスト数です。" },
+  { key: "iterations", label: "反復回数（各実装）", unit: "回", help: "各言語にそれぞれ送る計測用のリクエスト数です。" },
   { key: "client_concurrency", label: "同時実行数", unit: "", help: "同時に送るリクエスト数です。" },
   { key: "warmup", label: "ウォームアップ（各実装）", unit: "回", help: "計測前に送る、結果に含めないリクエスト数です。" },
 ];
@@ -744,8 +762,8 @@ function costEstimate(workload, iterations, warmup) {
     return "料金の見込み: 同じワークロードで比較に使える実測がないため、算出できません。";
   }
   const perImplementation = iterations + warmup;
-  const total = IMPLEMENTATIONS.reduce(
-    (sum, { key }) => sum + (basis.cost_per_request[key] ?? 0) * perImplementation,
+  const total = Object.values(basis.cost_per_request).reduce(
+    (sum, cost) => sum + (cost ?? 0) * perImplementation,
     0,
   );
   return `Lambda 料金の見込み: 約 ${formatCost(total)}（${formatDate(basis.started_at)} の同じワークロードの実測から算出。API Gateway・DynamoDB・CloudWatch は含みません）`;
@@ -826,7 +844,8 @@ function renderLaunchForm(options) {
     const iterations = Number(inputs.iterations.value);
     const warmup = Number(inputs.warmup.value);
     const perImplementation = iterations + warmup;
-    summary.textContent = `Python と Rust にそれぞれ ${perImplementation.toLocaleString("ja-JP")} 回（ウォームアップ ${warmup.toLocaleString("ja-JP")} 回を含む）、合計 ${(perImplementation * 2).toLocaleString("ja-JP")} リクエストを送ります。`;
+    const languages = settings.implementations;
+    summary.textContent = `${languages.map(({ label }) => label).join("・")} にそれぞれ ${perImplementation.toLocaleString("ja-JP")} 回（ウォームアップ ${warmup.toLocaleString("ja-JP")} 回を含む）、合計 ${(perImplementation * languages.length).toLocaleString("ja-JP")} リクエストを送ります。`;
     const workload = workloads.find((item) => item.name === workloadSelect.value);
     estimate.textContent = costEstimate(workload, iterations, warmup);
   };
@@ -983,7 +1002,7 @@ function renderLaunch() {
   const children = [
     el("div", { class: "detail-head" }, [
       el("h2", { text: "新しく計測する" }),
-      el("p", { text: "AWS 上の Python と Rust の Lambda に同じリクエストを送り、結果を比較できる形で保存します。" }),
+      el("p", { text: "AWS 上の各言語の Lambda に同じリクエストを送り、結果を比較できる形で保存します。" }),
     ]),
   ];
   if (state.job && isJobRelevant(state.job)) children.push(renderJobPanel(state.job));

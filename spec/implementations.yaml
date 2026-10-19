@@ -1,0 +1,24 @@
+# 比較対象の言語実装の正本。
+# 計測・集計・画面・Terraform・ビルド/公開スクリプト・Contract Testはこの一覧から対象を決める。
+# 並び順は画面と表の表示順で、先頭の実装を差分の基準にする。
+#
+# key: 識別子。環境変数名（<KEY大文字>_API_URL など）、AWSリソース名、結果ファイルで使う。
+#      小文字英字で始まる小文字英数字だけを使う。
+# label: 画面とレポートに出す表示名。
+# app_dir: Dockerfileを含むアプリのディレクトリ（リポジトリ直下からの相対パス）。
+# artifact_paths: イメージ指標として容量を測るコンテナ内のパス（指標名: パス）。言語ごとに
+#                 成果物の構成が異なるため、ここで定義する（scripts/collect-image-metrics.sh）。
+version: 1
+implementations:
+  python:
+    label: Python
+    app_dir: apps/python
+    artifact_paths:
+      runtime_size_bytes: /var/lang
+      site_packages_size_bytes: /opt/python
+      application_source_size_bytes: /var/task
+  rust:
+    label: Rust
+    app_dir: apps/rust
+    artifact_paths:
+      release_binary_size_bytes: /var/runtime/bootstrap

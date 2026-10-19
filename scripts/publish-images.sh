@@ -1,12 +1,18 @@
 #!/usr/bin/env bash
-# 両実装のイメージを同じタグでビルド・ECR登録し、Lambdaへ渡すdigest固定URIを表示する。
+# 全言語のイメージを同じタグでビルド・ECR登録し、Lambdaへ渡すdigest固定URIを
+# Terraformが自動で読み込む images.auto.tfvars.json へ書き出す。
+#
+# タグには公開時のGitコミット（-g<sha>）を含め、アプリに未コミットの変更があれば -dirty を付ける。
+# 計測前の版の確認（benchmark_runner.deployment）は、このタグからデプロイ済みの版を読み取る。
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=lib/implementations.sh
+source "${ROOT}/scripts/lib/implementations.sh"
 TERRAFORM_DIR="${TERRAFORM_DIR:-${ROOT}/infrastructure/terraform}"
 REGION="${AWS_REGION:-ap-northeast-1}"
-TAG="${TAG:-benchmark-$(date -u +%Y%m%dT%H%M%SZ)}"
 PLATFORM="${PLATFORM:-linux/arm64}"
+IMAGES_FILE="${IMAGES_FILE:-${TERRAFORM_DIR}/images.auto.tfvars.json}"
 DRY_RUN=false
 
 # 第一引数が--dry-runなら外部変更を行わず、未知の引数があれば誤操作防止のため拒否する。
@@ -17,6 +23,24 @@ elif [[ $# -ne 0 ]]; then
   exit 2
 fi
 
+KEYS="$(implementation_keys)"
+
+source_revision_suffix() {
+  # 公開するコードのコミットをタグに残し、アプリに未コミットの変更があればその旨も残す。
+  local revision app_dirs=()
+  revision="$(git -C "${ROOT}" rev-parse --short=12 HEAD)"
+  for implementation in ${KEYS}; do
+    app_dirs+=("$(implementation_app_dir "${implementation}")")
+  done
+  if [[ -n "$(git -C "${ROOT}" status --porcelain -- "${app_dirs[@]}")" ]]; then
+    printf -- '-g%s-dirty' "${revision}"
+  else
+    printf -- '-g%s' "${revision}"
+  fi
+}
+
+TAG="${TAG:-benchmark-$(date -u +%Y%m%dT%H%M%SZ)$(source_revision_suffix)}"
+
 # タグがECRの許可文字と長さを満たさない場合は、ビルド・登録前に拒否する。
 if [[ ! "${TAG}" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
   echo "TAGには有効なECRイメージタグを指定してください" >&2
@@ -24,23 +48,19 @@ if [[ ! "${TAG}" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
 fi
 
 repository_url() {
-  # 実装名を対応する環境変数へ変換し、明示値、ドライラン用値、Terraform出力の順でURLを決める。
+  # 実装キーに対応する環境変数、ドライラン用値、Terraform出力の順でECRリポジトリURLを決める。
   local implementation="$1"
   local variable_name
-  case "${implementation}" in
-    python) variable_name="PYTHON_ECR_REPOSITORY_URL" ;;
-    rust) variable_name="RUST_ECR_REPOSITORY_URL" ;;
-    *) echo "不明な実装名です: ${implementation}" >&2; exit 2 ;;
-  esac
+  variable_name="$(printf '%s' "${implementation}" | tr '[:lower:]' '[:upper:]')_ECR_REPOSITORY_URL"
   local configured_url="${!variable_name:-}"
 
-  # 環境変数にURLがあれば優先し、ドライランなら仮値、実行時はTerraform出力を取得する。
   if [[ -n "${configured_url}" ]]; then
     printf '%s\n' "${configured_url}"
   elif "${DRY_RUN}"; then
-    printf '<terraform:%s_ecr_repository_url>\n' "${implementation}"
+    printf '<terraform:ecr_repository_urls.%s>\n' "${implementation}"
   else
-    terraform -chdir="${TERRAFORM_DIR}" output -raw "${implementation}_ecr_repository_url"
+    terraform -chdir="${TERRAFORM_DIR}" output -json ecr_repository_urls |
+      jq -r --arg key "${implementation}" '.[$key] // empty'
   fi
 }
 
@@ -72,7 +92,7 @@ image_digest() {
     ' <<<"${image}" | head -n 1)"
   fi
 
-  # 最終digestがsha256形式でなければ対象イメージを一意に固定できないため、デプロイ案内を出さない。
+  # 最終digestがsha256形式でなければ対象イメージを一意に固定できないため、デプロイ対象を書き出さない。
   [[ "${digest}" == sha256:* ]] || {
     echo "${repository}:${TAG} にlinux/${expected_architecture}のイメージが見つかりません" >&2
     exit 2
@@ -80,39 +100,51 @@ image_digest() {
   printf '%s\n' "${digest}"
 }
 
-python_repository="$(repository_url python)"
-rust_repository="$(repository_url rust)"
+# 全実装の登録先を先に確定し、一つでも欠ければビルドを始めない。
+declare -a repository_env=()
+for implementation in ${KEYS}; do
+  repository="$(repository_url "${implementation}")"
+  # ECRリポジトリがなければ、実装を一覧に足した後のbootstrap-ecrが済んでいない。
+  if [[ -z "${repository}" ]]; then
+    echo "${implementation} のECRリポジトリがありません。先に make bootstrap-ecr を実行してください。" >&2
+    exit 2
+  fi
+  repository_env+=("$(printf '%s' "${implementation}" | tr '[:lower:]' '[:upper:]')_ECR_REPOSITORY_URL=${repository}")
+done
 
+echo "イメージタグ: ${TAG}"
 # ドライランはビルド・pushの予定だけを表示し、実行時は両処理を順に行う。
 if "${DRY_RUN}"; then
   TAG="${TAG}" bash "${ROOT}/scripts/build-images.sh" --dry-run
-  AWS_REGION="${REGION}" \
-  TAG="${TAG}" \
-  PYTHON_ECR_REPOSITORY_URL="${python_repository}" \
-  RUST_ECR_REPOSITORY_URL="${rust_repository}" \
-  bash "${ROOT}/scripts/push-images.sh" --dry-run
+  env AWS_REGION="${REGION}" TAG="${TAG}" "${repository_env[@]}" \
+    bash "${ROOT}/scripts/push-images.sh" --dry-run
 else
   TAG="${TAG}" bash "${ROOT}/scripts/build-images.sh"
-  AWS_REGION="${REGION}" \
-  TAG="${TAG}" \
-  PUSH_QUIET="${PUSH_QUIET:-false}" \
-  PYTHON_ECR_REPOSITORY_URL="${python_repository}" \
-  RUST_ECR_REPOSITORY_URL="${rust_repository}" \
-  bash "${ROOT}/scripts/push-images.sh"
+  env AWS_REGION="${REGION}" TAG="${TAG}" PUSH_QUIET="${PUSH_QUIET:-false}" "${repository_env[@]}" \
+    bash "${ROOT}/scripts/push-images.sh"
 fi
 
-# ドライランではdigestの仮値を使い、実行時はECRから両実装の実digestを確認する。
+# 実装キーごとのdigest固定URIを集め、Terraformの変数 image_uris として書き出す。
+image_uris="{}"
+for entry in "${repository_env[@]}"; do
+  repository="${entry#*=}"
+  variable_name="${entry%%=*}"
+  implementation="$(printf '%s' "${variable_name%_ECR_REPOSITORY_URL}" | tr '[:upper:]' '[:lower:]')"
+  # ドライランではdigestの仮値を使い、実行時はECRから実digestを確認する。
+  if "${DRY_RUN}"; then
+    digest="<sha256:${implementation}-image-digest>"
+  else
+    digest="$(image_digest "${repository}")"
+  fi
+  image_uris="$(jq --arg key "${implementation}" --arg uri "${repository}@${digest}" \
+    '. + {($key): $uri}' <<<"${image_uris}")"
+done
+
 if "${DRY_RUN}"; then
-  python_digest='<sha256:python-image-digest>'
-  rust_digest='<sha256:rust-image-digest>'
+  printf 'ドライラン: %s へ書き出す内容\n' "${IMAGES_FILE}"
+  jq '{image_uris: .}' <<<"${image_uris}"
 else
-  python_digest="$(image_digest "${python_repository}")"
-  rust_digest="$(image_digest "${rust_repository}")"
-  [[ "${python_digest}" == sha256:* ]] || { echo "Pythonイメージのdigestが見つかりません" >&2; exit 2; }
-  [[ "${rust_digest}" == sha256:* ]] || { echo "Rustイメージのdigestが見つかりません" >&2; exit 2; }
+  jq '{image_uris: .}' <<<"${image_uris}" >"${IMAGES_FILE}"
+  printf '\nデプロイ対象のイメージを %s へ書き出しました。\n' "${IMAGES_FILE}"
 fi
-
-printf '\n次のコマンドで Lambda と API Gateway をデプロイできます。\n'
-printf 'export PYTHON_IMAGE_URI=%q\n' "${python_repository}@${python_digest}"
-printf 'export RUST_IMAGE_URI=%q\n' "${rust_repository}@${rust_digest}"
-printf 'make deploy\n'
+printf '次のコマンドで Lambda と API Gateway をデプロイできます。\nmake deploy\n'

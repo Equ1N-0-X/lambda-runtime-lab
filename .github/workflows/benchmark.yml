@@ -16,12 +16,8 @@ on:
           - items
           - aggregate-sequential
           - aggregate-concurrent
-      python_image_uri:
-        description: Immutable Python ECR image URI
-        required: true
-        type: string
-      rust_image_uri:
-        description: Immutable Rust ECR image URI
+      image_uris:
+        description: 'Immutable ECR digest URI per implementation key as JSON, e.g. {"python":"...@sha256:...","rust":"...@sha256:..."}'
         required: true
         type: string
       aws_region:
@@ -50,8 +46,10 @@ jobs:
     environment: benchmark
     env:
       AWS_REGION: ${{ inputs.aws_region }}
-      PYTHON_IMAGE_URI: ${{ inputs.python_image_uri }}
-      RUST_IMAGE_URI: ${{ inputs.rust_image_uri }}
+      IMAGE_URIS: ${{ inputs.image_uris }}
+      # Terraformの既定値と同じ条件で計測し、結果に記録する。
+      ARCHITECTURE: arm64
+      LAMBDA_MEMORY_MB: "512"
       WORKLOAD: ${{ inputs.workload }}
       RUN_ID: gha-${{ github.run_id }}-${{ github.run_attempt }}
       AWS_ROLE_TO_ASSUME: ${{ secrets.AWS_ROLE_TO_ASSUME }}
@@ -63,10 +61,16 @@ jobs:
             echo "Configure AWS_ROLE_TO_ASSUME in the benchmark environment." >&2
             exit 2
           fi
-          if [[ "$PYTHON_IMAGE_URI" != *@sha256:* || "$RUST_IMAGE_URI" != *@sha256:* ]]; then
-            echo "Both image inputs must be immutable ECR digest URIs." >&2
-            exit 2
-          fi
+          # spec/implementations.yaml の全実装に、digest固定のURIが指定されている場合だけ続ける。
+          keys="$(yq -r '.implementations | keys | .[]' spec/implementations.yaml)"
+          for key in $keys; do
+            uri="$(jq -r --arg key "$key" '.[$key] // ""' <<<"$IMAGE_URIS")"
+            if [[ "$uri" != *@sha256:* ]]; then
+              echo "image_uris.$key must be an immutable ECR digest URI." >&2
+              exit 2
+            fi
+          done
+          jq '{image_uris: .}' <<<"$IMAGE_URIS" > infrastructure/terraform/images.auto.tfvars.json
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ env.AWS_ROLE_TO_ASSUME }}
@@ -82,13 +86,10 @@ jobs:
         run: uv sync --project benchmark --frozen --extra dev
       - name: Deploy controlled environment
         run: make deploy TF_AUTO_APPROVE=-auto-approve
+      # 接続先とロググループは make benchmark・make collect がTerraformの出力から読む。
       - name: Read Terraform outputs
         run: |
-          {
-            echo "PYTHON_API_URL=$(terraform -chdir=infrastructure/terraform output -raw python_api_endpoint)"
-            echo "RUST_API_URL=$(terraform -chdir=infrastructure/terraform output -raw rust_api_endpoint)"
-            echo "DYNAMODB_TABLE_NAME=$(terraform -chdir=infrastructure/terraform output -raw dynamodb_table_name)"
-          } >> "$GITHUB_ENV"
+          echo "DYNAMODB_TABLE_NAME=$(terraform -chdir=infrastructure/terraform output -raw dynamodb_table_name)" >> "$GITHUB_ENV"
       - name: Seed deterministic data
         run: make seed
       - name: Run benchmark

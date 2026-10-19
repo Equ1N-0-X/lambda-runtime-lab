@@ -18,7 +18,16 @@ import boto3
 from benchmark_runner.cloudwatch import collect_run
 from benchmark_runner.dashboard.jobs import JobManager
 from benchmark_runner.dashboard.server import LISTEN_HOST, create_server
-from benchmark_runner.dashboard.settings import SettingsResolver
+from benchmark_runner.dashboard.settings import (
+    SettingsResolver,
+    SettingsUnavailable,
+    read_terraform_outputs,
+)
+from benchmark_runner.implementations import (
+    DEFAULT_REGISTRY,
+    load_implementations,
+    resolve_targets,
+)
 from benchmark_runner.report import generate_report
 from benchmark_runner.runner import RunConfig, run_benchmark
 from benchmark_runner.workloads import WorkloadError, load_workload
@@ -53,18 +62,73 @@ def _json_payload(value: str) -> object:
         raise argparse.ArgumentTypeError(f"JSON payloadが不正です: {exc}") from exc
 
 
+def _key_value(value: str) -> tuple[str, str]:
+    """実装キーと値を「key=value」の形で受け取り、組にして返す。"""
+    key, separator, rest = value.partition("=")
+    # 区切りがない、またはキーか値が空なら、どの実装の値か特定できない。
+    if not separator or not key or not rest:
+        raise argparse.ArgumentTypeError(f"実装キー=値 の形で指定してください: {value}")
+    return key, rest
+
+
+def _per_implementation(
+    pairs: list[tuple[str, str]] | None,
+    *,
+    env_suffixes: tuple[str, ...],
+    keys: tuple[str, ...],
+    fallback: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """実装ごとの値を、引数、環境変数（<KEY>_<接尾辞>）、Terraform出力の順に集める。"""
+    explicit = dict(pairs or [])
+    unknown = sorted(set(explicit) - set(keys))
+    # 一覧にない実装キーは誤記の可能性が高いため、値を黙って捨てずに止める。
+    if unknown:
+        raise ValueError(f"実装一覧にないキーが指定されています: {', '.join(unknown)}")
+    values = {}
+    for key in keys:
+        candidates = [
+            explicit.get(key),
+            *(os.getenv(f"{key.upper()}_{suffix}") for suffix in env_suffixes),
+            (fallback or {}).get(key),
+        ]
+        value = next((candidate for candidate in candidates if candidate), None)
+        # 値がない実装は対応表へ入れず、利用側で不足として扱えるようにする。
+        if value:
+            values[key] = value
+    return values
+
+
+def _terraform_output(terraform_dir: Path | None, name: str) -> dict[str, str]:
+    """--terraform-dir が指定された場合だけ、実装キーごとのTerraform出力を読む。"""
+    # 指定がなければ、引数と環境変数だけで値を決める（ローカルAPIの計測など）。
+    if terraform_dir is None:
+        return {}
+    return read_terraform_outputs(terraform_dir).get(name) or {}
+
+
 def build_parser() -> argparse.ArgumentParser:
-    """三つの操作と、それぞれに必要な接続先・実行条件・出力先を定義する。"""
+    """各操作と、それぞれに必要な接続先・実行条件・出力先を定義する。"""
     parser = argparse.ArgumentParser(prog="benchmark-runner")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     run = subparsers.add_parser("run", help="ベンチマークワークロードを実行する")
-    run.add_argument("--target", choices=("python", "rust", "both"), default="both")
+    run.add_argument(
+        "--target", default="all", help="all、または実装キーのカンマ区切り（例: python,rust）"
+    )
     run.add_argument("--workload", required=True)
     run.add_argument("--workload-file", type=Path, default=ROOT / "spec/workloads.yaml")
     run.add_argument("--run-id", default="auto")
-    run.add_argument("--python-endpoint", default=os.getenv("PYTHON_API_ENDPOINT"))
-    run.add_argument("--rust-endpoint", default=os.getenv("RUST_API_ENDPOINT"))
+    run.add_argument(
+        "--endpoint",
+        type=_key_value,
+        action="append",
+        help="実装キー=APIのURL。未指定の実装は環境変数 <KEY>_API_ENDPOINT・<KEY>_API_URL を使う",
+    )
+    run.add_argument(
+        "--terraform-dir",
+        type=Path,
+        help="引数・環境変数にない接続先を、このTerraformの出力（api_endpoints）から読む",
+    )
     run.add_argument("--region", default=os.getenv("AWS_REGION", "ap-northeast-1"))
     run.add_argument("--results-dir", type=Path, default=ROOT / "results")
     run.add_argument("--iterations", type=int)
@@ -82,8 +146,17 @@ def build_parser() -> argparse.ArgumentParser:
     collect.add_argument("--run-id", required=True)
     collect.add_argument("--results-dir", type=Path, default=ROOT / "results")
     collect.add_argument("--region", default=os.getenv("AWS_REGION", "ap-northeast-1"))
-    collect.add_argument("--python-log-group", default=os.getenv("PYTHON_LOG_GROUP"))
-    collect.add_argument("--rust-log-group", default=os.getenv("RUST_LOG_GROUP"))
+    collect.add_argument(
+        "--log-group",
+        type=_key_value,
+        action="append",
+        help="実装キー=ロググループ名。未指定の実装は環境変数 <KEY>_LOG_GROUP を使う",
+    )
+    collect.add_argument(
+        "--terraform-dir",
+        type=Path,
+        help="引数・環境変数にないロググループを、このTerraformの出力（lambda_names）から求める",
+    )
     collect.add_argument("--strategy", choices=("auto", "insights", "filter"), default="auto")
     collect.add_argument("--dry-run", action="store_true")
 
@@ -91,6 +164,11 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--run-id", required=True)
     report.add_argument("--results-dir", type=Path, default=ROOT / "results")
     report.add_argument("--pricing", type=Path, default=ROOT / "spec/pricing.yaml")
+
+    implementations = subparsers.add_parser(
+        "implementations", help="比較対象の実装一覧を表示する（スクリプトから使う）"
+    )
+    implementations.add_argument("--format", choices=("keys", "tsv", "json"), default="keys")
 
     ui = subparsers.add_parser("ui", help="計測結果の閲覧と計測開始の画面を手元で起動する")
     ui.add_argument("--port", type=int, default=8765)
@@ -123,13 +201,16 @@ def _run_command(args: argparse.Namespace) -> int:
 
     # run-idがautoなら新しいUUIDを生成し、明示値なら複数工程で共有できるようそのまま使う。
     run_id = str(uuid.uuid4()) if args.run_id == "auto" else args.run_id
+    keys = tuple(implementation.key for implementation in load_implementations())
     config = RunConfig(
         run_id=run_id,
-        target=args.target,
-        endpoints={
-            "python": args.python_endpoint,
-            "rust": args.rust_endpoint,
-        },
+        targets=resolve_targets(args.target, keys),
+        endpoints=_per_implementation(
+            args.endpoint,
+            env_suffixes=("API_ENDPOINT", "API_URL"),
+            keys=keys,
+            fallback=_terraform_output(args.terraform_dir, "api_endpoints"),
+        ),
         region=args.region,
         results_dir=args.results_dir,
         timeout_seconds=args.timeout,
@@ -146,15 +227,15 @@ def _run_command(args: argparse.Namespace) -> int:
 
 def _collect_command(args: argparse.Namespace) -> int:
     """設定済み実装のロググループを収集対象にし、保存済み測定と相関する。"""
-    log_groups = {
-        name: value
-        for name, value in (
-            ("python", args.python_log_group),
-            ("rust", args.rust_log_group),
-        )
-        if value
+    keys = tuple(implementation.key for implementation in load_implementations())
+    deployed = {
+        key: f"/aws/lambda/{name}"
+        for key, name in _terraform_output(args.terraform_dir, "lambda_names").items()
     }
-    # Python/Rustのどちらのロググループもない場合は収集できないため、AWS呼び出し前に停止する。
+    log_groups = _per_implementation(
+        args.log_group, env_suffixes=("LOG_GROUP",), keys=keys, fallback=deployed
+    )
+    # どの実装のロググループもない場合は収集できないため、AWS呼び出し前に停止する。
     if not log_groups:
         raise ValueError("CloudWatchロググループを一つ以上設定してください")
     client = boto3.client("logs", region_name=args.region)
@@ -178,6 +259,32 @@ def _report_command(args: argparse.Namespace) -> int:
         pricing_path=args.pricing,
     )
     print(json.dumps({"markdown": str(markdown), "csv": str(csv_path)}, indent=2))
+    return 0
+
+
+def _implementations_command(args: argparse.Namespace) -> int:
+    """実装一覧を、シェルで扱いやすい行形式、または全項目のJSONで出力する。"""
+    implementations = load_implementations(DEFAULT_REGISTRY)
+    # keysはforループ用に一行一キー、tsvはキーとアプリのディレクトリの組、jsonは全項目を出す。
+    if args.format == "keys":
+        print("\n".join(implementation.key for implementation in implementations))
+    elif args.format == "tsv":
+        print("\n".join(f"{item.key}\t{item.app_dir}" for item in implementations))
+    else:
+        print(
+            json.dumps(
+                [
+                    {
+                        "key": item.key,
+                        "label": item.label,
+                        "app_dir": item.app_dir,
+                        "artifact_paths": item.artifact_paths,
+                    }
+                    for item in implementations
+                ],
+                ensure_ascii=False,
+            )
+        )
     return 0
 
 
@@ -214,14 +321,17 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
-        # runなら計測、collectならログ収集、uiなら閲覧画面、それ以外のreportなら報告作成を実行する。
+        # runなら計測、collectならログ収集、uiなら閲覧画面、implementationsなら実装一覧、
+        # それ以外のreportなら報告作成を実行する。
         if args.command == "run":
             return _run_command(args)
         if args.command == "collect":
             return _collect_command(args)
         if args.command == "ui":
             return _ui_command(args)
+        if args.command == "implementations":
+            return _implementations_command(args)
         return _report_command(args)
-    except (OSError, ValueError, WorkloadError) as exc:
+    except (OSError, ValueError, WorkloadError, SettingsUnavailable) as exc:
         print(f"エラー: {exc}", file=sys.stderr)
         return 2

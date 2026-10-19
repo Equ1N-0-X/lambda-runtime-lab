@@ -42,6 +42,30 @@ def test_publish_images_dry_run_builds_pushes_and_prints_digest_uris():
 
     assert "docker buildx build" in output
     assert "docker push" in output
-    assert f"PYTHON_IMAGE_URI={PYTHON_REPOSITORY}@" in output
-    assert f"RUST_IMAGE_URI={RUST_REPOSITORY}@" in output
+    # 実装一覧の全言語について、digest固定URIをTerraformの変数として書き出す。
+    assert '"image_uris"' in output
+    assert f'"python": "{PYTHON_REPOSITORY}@' in output
+    assert f'"rust": "{RUST_REPOSITORY}@' in output
     assert "make deploy" in output
+
+
+def test_publish_images_default_tag_records_source_commit():
+    env = {key: value for key, value in os.environ.items() if key != "TAG"} | {
+        "AWS_REGION": "ap-northeast-1",
+        "PYTHON_ECR_REPOSITORY_URL": PYTHON_REPOSITORY,
+        "RUST_ECR_REPOSITORY_URL": RUST_REPOSITORY,
+    }
+    result = subprocess.run(
+        ["bash", "scripts/publish-images.sh", "--dry-run"],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+    revision = subprocess.run(
+        ["git", "rev-parse", "--short=12", "HEAD"], cwd=ROOT, capture_output=True, text=True
+    ).stdout.strip()
+
+    # 計測前の版の確認がタグからコミットを読み取れるよう、-g<コミット> を含める。
+    assert f"-g{revision}" in result.stdout

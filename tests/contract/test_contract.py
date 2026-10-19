@@ -1,13 +1,12 @@
-"""稼働中のPython/Rust APIへ全正規ケースを送り、公開契約が一致することを検証する。"""
+"""稼働中の全言語のAPIへ全正規ケースを送り、公開契約が一致することを検証する。"""
 
-import os
 from pathlib import Path
 
 import pytest
 
 from contract_harness import (
     assert_case_matches,
-    configured_api_urls,
+    configured_targets,
     invoke,
     load_cases,
 )
@@ -16,14 +15,10 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.mark.integration
-def test_python_and_rust_implement_canonical_contract() -> None:
-    python_url, rust_url = configured_api_urls()
-    default_transport = os.getenv("CONTRACT_TRANSPORT", "direct").strip()
-    python_transport = os.getenv("PYTHON_CONTRACT_TRANSPORT", default_transport).strip()
-    rust_transport = os.getenv("RUST_CONTRACT_TRANSPORT", default_transport).strip()
+def test_all_implementations_follow_canonical_contract() -> None:
+    targets = configured_targets(REPOSITORY_ROOT / "spec" / "implementations.yaml")
     cases = load_cases(REPOSITORY_ROOT / "spec" / "testcases")
 
     for case in cases:
-        python_response = invoke(python_url, case, python_transport)
-        rust_response = invoke(rust_url, case, rust_transport)
-        assert_case_matches(case, python_response, rust_response)
+        responses = {target.label: invoke(target.url, case, target.transport) for target in targets}
+        assert_case_matches(case, responses)

@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# 固定した同一のOS専用ベースイメージから、Python/RustのLambdaイメージを作成する。
+# 固定した同一のOS専用ベースイメージから、比較対象の全言語のLambdaイメージを作成する。
 #
-# ベースdigestを一度だけ解決して両ビルドへ渡し、al2023タグの世代差がイメージサイズや
+# ベースdigestを一度だけ解決して全ビルドへ渡し、al2023タグの世代差がイメージサイズや
 # コールドスタート比較へ混入しないようにする。
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=lib/implementations.sh
+source "${ROOT}/scripts/lib/implementations.sh"
 PLATFORM="${PLATFORM:-linux/arm64}"
 TAG="${TAG:-benchmark}"
 RUN_ID="${RUN_ID:-image-build-$(date -u +%Y%m%dT%H%M%SZ)}"
@@ -27,7 +29,7 @@ resolve_final_base() {
   digest="$(docker buildx imagetools inspect \
     "${FINAL_BASE_REPOSITORY}:${FINAL_BASE_TAG}" \
     --format '{{.Manifest.Digest}}')"
-  # digestが空なら比較条件を固定できないため、どちらのイメージもビルドせず終了する。
+  # digestが空なら比較条件を固定できないため、どのイメージもビルドせず終了する。
   [[ -n "${digest}" ]] || { echo "ベースイメージのdigestを解決できません" >&2; exit 1; }
   echo "${FINAL_BASE_REPOSITORY}@${digest}"
 }
@@ -37,8 +39,12 @@ build_image() {
   local implementation="$1"
   local final_base="$2"
   local image="lambda-runtime-lab-${implementation}:${TAG}"
-  local dockerfile="${ROOT}/apps/${implementation}/Dockerfile"
-  local context="${ROOT}/apps/${implementation}"
+  local app_dir
+  app_dir="$(implementation_app_dir "${implementation}")"
+  # 一覧にない実装名なら、どのディレクトリをビルドするか決められない。
+  [[ -n "${app_dir}" ]] || { echo "実装一覧にない実装です: ${implementation}" >&2; exit 2; }
+  local dockerfile="${ROOT}/${app_dir}/Dockerfile"
+  local context="${ROOT}/${app_dir}"
   local output="${ROOT}/results/raw/${RUN_ID}/${implementation}-build.json"
   # Lambdaは単一イメージマニフェストを受け付けるため、証明書付きOCI indexを作らず、
   # pushしたタグをそのままLambdaイメージURIに使えるようprovenanceを無効化する。
@@ -88,7 +94,7 @@ path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="ut
 PY
 }
 
-# ドライランではネットワーク解決せず表示用参照を使い、実行時だけdigestを解決して両ビルドへ渡す。
+# ドライランではネットワーク解決せず表示用参照を使い、実行時だけdigestを解決して全ビルドへ渡す。
 if "${DRY_RUN}"; then
   FINAL_BASE_RESOLVED="${FINAL_BASE:-${FINAL_BASE_REPOSITORY}:${FINAL_BASE_TAG}}"
 else
@@ -96,6 +102,6 @@ else
   echo "共通ベースイメージ: ${FINAL_BASE_RESOLVED}"
 fi
 
-for implementation in ${IMPLEMENTATIONS:-python rust}; do
+for implementation in $(implementation_keys); do
   build_image "${implementation}" "${FINAL_BASE_RESOLVED}"
 done

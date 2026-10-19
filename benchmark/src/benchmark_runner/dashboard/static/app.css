@@ -10,8 +10,12 @@
   --border: rgba(11, 11, 11, 0.1);
   --hover: rgba(11, 11, 11, 0.05);
   --selected: #e8f0fb;
-  --python: #2a78d6;
-  --rust: #eb6834;
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1a9e6f;
+  --series-4: #8a5cd6;
+  --series-5: #c2558a;
+  --series-6: #8a7a1a;
   --good: #0ca30c;
   --good-ink: #006300;
   --warning: #fab219;
@@ -34,8 +38,12 @@
     --border: rgba(255, 255, 255, 0.1);
     --hover: rgba(255, 255, 255, 0.06);
     --selected: #1d2a3b;
-    --python: #3987e5;
-    --rust: #d95926;
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #2bb383;
+    --series-4: #9d74e6;
+    --series-5: #d96a9e;
+    --series-6: #b3a23a;
     --good-ink: #0ca30c;
     --accent: #1c5cab;
     --critical-ink: #ff8a80;
@@ -54,8 +62,12 @@
   --border: rgba(255, 255, 255, 0.1);
   --hover: rgba(255, 255, 255, 0.06);
   --selected: #1d2a3b;
-  --python: #3987e5;
-  --rust: #d95926;
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #2bb383;
+  --series-4: #9d74e6;
+  --series-5: #d96a9e;
+  --series-6: #b3a23a;
   --good-ink: #0ca30c;
   --accent: #1c5cab;
   --critical-ink: #ff8a80;
@@ -198,7 +210,7 @@ h3 {
 
 button:focus-visible,
 .bar-hit:focus-visible {
-  outline: 2px solid var(--python);
+  outline: 2px solid var(--accent, var(--series-1));
   outline-offset: 2px;
 }
 
@@ -376,12 +388,28 @@ button:focus-visible,
   background: var(--key-color);
 }
 
-.series-python {
-  --key-color: var(--python);
+.series-1 {
+  --key-color: var(--series-1);
 }
 
-.series-rust {
-  --key-color: var(--rust);
+.series-2 {
+  --key-color: var(--series-2);
+}
+
+.series-3 {
+  --key-color: var(--series-3);
+}
+
+.series-4 {
+  --key-color: var(--series-4);
+}
+
+.series-5 {
+  --key-color: var(--series-5);
+}
+
+.series-6 {
+  --key-color: var(--series-6);
 }
 
 .section-head {
@@ -605,7 +633,7 @@ code {
   padding: 8px 16px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-left: 4px solid var(--python);
+  border-left: 4px solid var(--accent, var(--series-1));
   border-radius: 8px;
   font-size: 14px;
 }
@@ -620,7 +648,7 @@ code {
 
 .badge-running::before {
   content: "●";
-  color: var(--python);
+  color: var(--accent, var(--series-1));
 }
 
 .badge-error {
@@ -633,7 +661,7 @@ code {
 }
 
 .job-running {
-  border-left-color: var(--python);
+  border-left-color: var(--accent, var(--series-1));
 }
 
 .job-succeeded {
@@ -672,7 +700,7 @@ code {
 
 .job-step-current .job-step-mark::before {
   content: "●";
-  color: var(--python);
+  color: var(--accent, var(--series-1));
 }
 
 .job-step-failed .job-step-mark::before {

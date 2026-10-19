@@ -5,6 +5,7 @@ requires-python = ">=3.12"
 dependencies = [
   "boto3>=1.40,<2",
   "pytest>=8.3,<9",
+  "pyyaml>=6,<7",
 ]
 
 [dependency-groups]
@@ -15,7 +16,7 @@ dev = [
 [tool.pytest.ini_options]
 addopts = "-ra"
 markers = [
-  "integration: sends canonical requests to running Python and Rust APIs",
+  "integration: sends canonical requests to the running APIs of every implementation",
 ]
 
 [tool.ruff]
