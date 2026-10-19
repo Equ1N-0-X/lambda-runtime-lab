@@ -171,3 +171,25 @@ def test_load_fixture_items_merges_identical_items(tmp_path: Path) -> None:
     assert load_fixture_items(tmp_path) == [
         {"id": "item-001", "value": 123, "payload": "payload-001"}
     ]
+
+
+def test_case_files_can_limit_implementations(tmp_path: Path) -> None:
+    (tmp_path / "new.json").write_text(
+        json.dumps(
+            {
+                "implementations": ["python", "rust"],
+                "cases": [
+                    {
+                        "request": {"method": "GET", "path": "/health"},
+                        "expected": {"status": 200, "body": {"status": "ok"}},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    case = load_cases(tmp_path)[0]
+
+    assert case.applies_to("python")
+    assert not case.applies_to("java")

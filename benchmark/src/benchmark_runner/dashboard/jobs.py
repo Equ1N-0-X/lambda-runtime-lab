@@ -51,18 +51,21 @@ class JobConflict(LaunchError):
 
 
 def load_workloads(workload_file: Path) -> list[dict[str, Any]]:
-    """ワークロード定義から、画面の選択肢と既定値に必要な項目だけを取り出す。"""
+    """ワークロード定義から、画面の選択肢と既定値、対応言語に必要な項目だけを取り出す。"""
     document = yaml.safe_load(workload_file.read_text(encoding="utf-8")) or {}
     workloads = []
     for name, definition in (document.get("workloads") or {}).items():
         workloads.append(
             {
                 "name": name,
+                "description": definition.get("description"),
                 "method": definition.get("method"),
                 "path": definition.get("path"),
                 "iterations": definition.get("iterations"),
                 "client_concurrency": definition.get("client_concurrency"),
                 "warmup": definition.get("warmup"),
+                # Noneは全言語が対応していることを表す。
+                "implementations": definition.get("implementations"),
             }
         )
     return workloads
@@ -81,9 +84,19 @@ def _validated_count(values: dict[str, Any], name: str) -> int:
     return value
 
 
-def _validated_targets(values: dict[str, Any], settings: LaunchSettings) -> tuple[str, ...]:
-    """計測する実装の指定を検証し、実装一覧の表示順に並べて返す。未指定なら全実装。"""
-    available = tuple(implementation.key for implementation in settings.implementations)
+def _validated_targets(
+    values: dict[str, Any], settings: LaunchSettings, supported: list[str] | None
+) -> tuple[str, ...]:
+    """計測する実装の指定を検証し、実装一覧の表示順に並べて返す。
+
+    未指定ならワークロードに対応する全実装を計測する。
+    """
+    available = tuple(
+        implementation.key
+        for implementation in settings.implementations
+        # ワークロードが対応言語を限定していれば、その言語だけを選択肢にする。
+        if supported is None or implementation.key in supported
+    )
     requested = values.get("targets")
     # 指定がなければ、一覧の全実装を計測する。
     if requested is None:
@@ -92,9 +105,11 @@ def _validated_targets(values: dict[str, Any], settings: LaunchSettings) -> tupl
     if not isinstance(requested, list) or not all(isinstance(key, str) for key in requested):
         raise LaunchError("計測する言語の指定が正しくありません。")
     unknown = [key for key in requested if key not in available]
-    # 一覧にない言語は、接続先もロググループもないため計測できない。
+    # 一覧にない言語やワークロード未対応の言語は計測できない。
     if unknown:
-        raise LaunchError(f"計測できない言語が指定されています: {', '.join(unknown)}")
+        raise LaunchError(
+            f"このワークロードで計測できない言語が指定されています: {', '.join(unknown)}"
+        )
     targets = tuple(key for key in available if key in requested)
     # 比較には二つ以上の言語が必要なため、一つ以下なら開始しない。
     if len(targets) < 2:
@@ -186,13 +201,13 @@ class JobManager:
         # 接続先や比較条件が欠けたまま計測すると比較に使えないrunになるため、開始しない。
         if missing:
             raise LaunchError("計測に必要な設定がそろっていません: " + " ".join(missing))
-        names = {workload["name"] for workload in load_workloads(self.workload_file)}
+        definitions = {item["name"]: item for item in load_workloads(self.workload_file)}
         workload = request.get("workload")
         # 定義にないワークロード名は、CLIへ渡す前に入力エラーとして返す。
-        if workload not in names:
+        if workload not in definitions:
             raise LaunchError("ワークロードを一覧から選んでください。")
         counts = {name: _validated_count(request, name) for name in LIMITS}
-        targets = _validated_targets(request, settings)
+        targets = _validated_targets(request, settings, definitions[workload]["implementations"])
 
         with self._lock:
             # 実行中の計測があれば、DynamoDBとLambdaへの負荷が重ならないよう拒否する。

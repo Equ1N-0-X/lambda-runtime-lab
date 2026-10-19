@@ -120,7 +120,7 @@ ECRの「最新タグ」とLambdaの参照digestは別物です。pushだけで�
 3. `make contract-test` で全言語の応答が正本と一致することを確認する。
 4. `make bootstrap-ecr` → `make publish-images` → `make deploy` の順に実行する。
 
-`make bootstrap-ecr` で新しい言語のECRリポジトリができるまでは、`make publish-images` は登録先がないため停止します。
+`make bootstrap-ecr` で新しい言語のECRリポジトリができるまでは、`make publish-images` は登録先がないため停止します。実装で守ることは [ワークロードと言語の追加手順](08_ワークロードと言語の追加手順.md) を参照してください。
 
 ## デプロイ済み構成の確認
 

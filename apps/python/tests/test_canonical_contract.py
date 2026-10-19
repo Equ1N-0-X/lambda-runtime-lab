@@ -25,7 +25,13 @@ def _testcase_files() -> list[Path]:
 
 
 def _documents() -> list[dict[str, Any]]:
-    return [json.loads(path.read_text(encoding="utf-8")) for path in _testcase_files()]
+    documents = [json.loads(path.read_text(encoding="utf-8")) for path in _testcase_files()]
+    # 一部の言語だけで実装済みのケースファイルは、Pythonが対象に含まれる場合だけ使う。
+    return [
+        document
+        for document in documents
+        if "python" in document.get("implementations", ["python"])
+    ]
 
 
 def _fixture_items() -> dict[str, Item]:

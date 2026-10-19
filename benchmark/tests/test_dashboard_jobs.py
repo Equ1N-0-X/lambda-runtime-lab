@@ -24,6 +24,13 @@ workloads:
     warmup: 2
     iterations: 5
     client_concurrency: 1
+  partial:
+    method: GET
+    path: /health
+    warmup: 0
+    iterations: 1
+    client_concurrency: 1
+    implementations: [python, rust]
 """
 
 # 実際のCLIの代わりに、工程名を出力して指定どおりに成功・失敗・待機する偽のコマンド。
@@ -145,6 +152,17 @@ def test_invalid_language_selection_is_rejected(tmp_path, targets, message):
 
     with pytest.raises(LaunchError, match=message):
         manager.start(_request(targets=targets))
+
+
+def test_workload_limited_to_some_languages_measures_only_those(tmp_path):
+    manager = _manager(tmp_path)
+
+    started = manager.start(_request(workload="partial", iterations=1, warmup=0))
+    _wait_until_finished(manager)
+
+    assert started["targets"] == ["python", "rust"]
+    with pytest.raises(LaunchError, match="java"):
+        manager.start(_request(workload="partial", targets=["python", "java"]))
 
 
 def test_failed_step_stops_pipeline_and_reports_step(tmp_path):

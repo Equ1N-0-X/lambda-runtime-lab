@@ -35,6 +35,8 @@ class RunConfig:
     architecture: str | None = None
     memory_mb: int | None = None
     git_revision: str | None = None
+    # ワークロードが未対応のため計測しない実装のキー。結果で「未対応」と欠損を区別するために残す。
+    unsupported_targets: tuple[str, ...] = ()
     transport: httpx.AsyncBaseTransport | None = None
 
 
@@ -78,6 +80,7 @@ def build_plan(config: RunConfig, workload: Workload) -> dict[str, Any]:
     return {
         "run_id": config.run_id,
         "targets": list(targets),
+        "unsupported_targets": list(config.unsupported_targets),
         "endpoints": {name: config.endpoints.get(name) for name in targets},
         "region": config.region,
         "workload": asdict(workload),

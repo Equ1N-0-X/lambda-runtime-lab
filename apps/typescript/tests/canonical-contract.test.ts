@@ -13,6 +13,7 @@ import { InMemoryItemRepository, type Item } from "../src/repository.js";
 const TESTCASES = join(import.meta.dirname, "../../../spec/testcases");
 
 interface CaseDocument {
+  implementations?: string[];
   fixtures?: { items?: Item[] };
   cases: {
     name: string;
@@ -24,7 +25,9 @@ interface CaseDocument {
 const documents: CaseDocument[] = readdirSync(TESTCASES)
   .filter((name) => name.endsWith(".json"))
   .sort()
-  .map((name) => JSON.parse(readFileSync(join(TESTCASES, name), "utf8")) as CaseDocument);
+  .map((name) => JSON.parse(readFileSync(join(TESTCASES, name), "utf8")) as CaseDocument)
+  // 一部の言語だけで実装済みのケースファイルは、TypeScriptが対象に含まれる場合だけ使う。
+  .filter((document) => document.implementations?.includes("typescript") ?? true);
 
 test("every canonical case matches", async () => {
   // 構造化ログは検証対象ではないため、テスト出力へ混ぜない。

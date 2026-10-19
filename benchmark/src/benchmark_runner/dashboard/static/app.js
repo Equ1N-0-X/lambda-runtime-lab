@@ -745,6 +745,12 @@ function renderDetail() {
         el("p", { text: conditions.join(" · ") }),
       ]),
       renderNotice(run),
+      run.unsupported?.length
+        ? el("p", {
+            class: "section-note",
+            text: `このワークロードは ${run.unsupported.join("・")} に未対応のため、計測していません。`,
+          })
+        : null,
       renderVerdict(run),
       renderSummaryTable(run),
       renderComparison(run),
@@ -855,6 +861,7 @@ function renderLaunchForm(options) {
     el("label", { class: "check" }, [
       el("input", { type: "checkbox", name: "targets", value: key, checked: "" }),
       el("span", { class: `series-key series-${(index % 6) + 1}`, text: label }),
+      el("span", { class: "check-note muted" }),
     ]),
   );
   const languageError = el("p", { id: "launch-targets-error", class: "field-error", role: "alert" });
@@ -866,9 +873,19 @@ function renderLaunchForm(options) {
   const submitError = el("p", { class: "field-error", role: "alert" });
   const submit = el("button", { type: "submit", class: "primary-button", text: "計測を開始" });
 
+  const workloadDescription = el("p", { class: "field-help" });
   const applyDefaults = () => {
     const workload = workloads.find((item) => item.name === workloadSelect.value);
     for (const field of COUNT_FIELDS) inputs[field.key].value = String(workload[field.key] ?? "");
+    workloadDescription.textContent = workload.description ?? "";
+    // ワークロードが対応していない言語は選べないようにし、「未対応」と添える。
+    for (const label of languageInputs) {
+      const input = label.querySelector("input");
+      const supported = !workload.implementations || workload.implementations.includes(input.value);
+      input.disabled = !supported;
+      input.checked = supported;
+      label.querySelector(".check-note").textContent = supported ? "" : "（未対応）";
+    }
     update();
   };
 
@@ -930,7 +947,8 @@ function renderLaunchForm(options) {
     el("div", { class: "field" }, [
       el("label", { for: "launch-workload", text: "ワークロード" }),
       workloadSelect,
-      el("p", { class: "field-help", text: "計測する処理の種類です。選ぶと回数の既定値が入ります。" }),
+      workloadDescription,
+      el("p", { class: "field-help", text: "選ぶと回数の既定値が入ります。" }),
     ]),
     el("fieldset", { class: "field" }, [
       el("legend", { text: "計測する言語" }),
