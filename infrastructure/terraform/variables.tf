@@ -24,9 +24,9 @@ variable "project_name" {
   }
 }
 
-# 両Lambdaへ同じ値を設定し、メモリ条件を揃える。
+# 全言語のLambdaへ同じ値を設定し、メモリ条件を揃える。
 variable "lambda_memory_mb" {
-  description = "PythonとRustのLambdaへ同じ値を割り当てるメモリ量。"
+  description = "全言語のLambdaへ同じ値を割り当てるメモリ量。"
   type        = number
   default     = 512
 
@@ -37,9 +37,9 @@ variable "lambda_memory_mb" {
   }
 }
 
-# 両Lambdaへ同じ値を設定し、タイムアウト条件を揃える。
+# 全言語のLambdaへ同じ値を設定し、タイムアウト条件を揃える。
 variable "lambda_timeout_seconds" {
-  description = "PythonとRustのLambdaへ同じ値を設定するタイムアウト秒数。"
+  description = "全言語のLambdaへ同じ値を設定するタイムアウト秒数。"
   type        = number
   default     = 30
 
@@ -50,9 +50,9 @@ variable "lambda_timeout_seconds" {
   }
 }
 
-# 両Lambdaとコンテナビルドで共有するCPUアーキテクチャを選ぶ。
+# 全言語のLambdaとコンテナビルドで共有するCPUアーキテクチャを選ぶ。
 variable "architecture" {
-  description = "両方のLambda関数で使用する命令セットアーキテクチャ。"
+  description = "全言語のLambda関数で使用する命令セットアーキテクチャ。"
   type        = string
   default     = "arm64"
 
@@ -63,27 +63,20 @@ variable "architecture" {
   }
 }
 
-variable "python_image_uri" {
-  description = "Python Lambda用ECRイメージURI。validateでは空を許可し、plan/applyでは管理対象ECRのURIを要求する。"
-  type        = string
-  default     = ""
+# 実装キー（spec/implementations.yaml）ごとのECRイメージURI。
+# scripts/publish-images.sh が images.auto.tfvars.json へ書き出し、make deploy が自動で読み込む。
+variable "image_uris" {
+  description = "実装キーからLambda用ECRイメージURIへの対応表。validateでは空を許可し、plan/applyでは全実装の管理対象ECRのURIを要求する。"
+  type        = map(string)
+  default     = {}
 
   validation {
-    # validate用の空文字、または完全なprivate ECRタグ・sha256 digest URIだけを許可する。
-    condition     = var.python_image_uri == "" || can(regex("^[0-9]{12}\\.dkr\\.ecr\\.[a-z0-9-]+\\.amazonaws\\.com(\\.cn)?/[a-z0-9][a-z0-9._/-]*(:[A-Za-z0-9_][A-Za-z0-9._-]{0,127}|@sha256:[0-9a-f]{64})$", var.python_image_uri))
-    error_message = "python_image_uriは空、またはタグかsha256 digest付きprivate ECR URIで指定してください。"
-  }
-}
-
-variable "rust_image_uri" {
-  description = "Rust Lambda用ECRイメージURI。validateでは空を許可し、plan/applyでは管理対象ECRのURIを要求する。"
-  type        = string
-  default     = ""
-
-  validation {
-    # validate用の空文字、または完全なprivate ECRタグ・sha256 digest URIだけを許可する。
-    condition     = var.rust_image_uri == "" || can(regex("^[0-9]{12}\\.dkr\\.ecr\\.[a-z0-9-]+\\.amazonaws\\.com(\\.cn)?/[a-z0-9][a-z0-9._/-]*(:[A-Za-z0-9_][A-Za-z0-9._-]{0,127}|@sha256:[0-9a-f]{64})$", var.rust_image_uri))
-    error_message = "rust_image_uriは空、またはタグかsha256 digest付きprivate ECR URIで指定してください。"
+    # 各値がタグかsha256 digest付きの完全なprivate ECR URIである場合だけ許可する。
+    condition = alltrue([
+      for uri in values(var.image_uris) :
+      can(regex("^[0-9]{12}\\.dkr\\.ecr\\.[a-z0-9-]+\\.amazonaws\\.com(\\.cn)?/[a-z0-9][a-z0-9._/-]*(:[A-Za-z0-9_][A-Za-z0-9._-]{0,127}|@sha256:[0-9a-f]{64})$", uri))
+    ])
+    error_message = "image_urisの各値は、タグかsha256 digest付きprivate ECR URIで指定してください。"
   }
 }
 

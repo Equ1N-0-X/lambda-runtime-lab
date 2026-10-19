@@ -10,23 +10,20 @@ locals {
     Workload    = "lambda-runtime-benchmark"
   }
 
-  # Python/Rustで変えてよい識別子とイメージURIだけを実装別に定義する。
+  # 比較対象の言語は spec/implementations.yaml を正本とし、ここで重複定義しない。
+  implementations = yamldecode(file("${path.module}/../../spec/implementations.yaml")).implementations
+
+  # 言語ごとに変えてよい識別子とイメージURIだけを実装別に定義する。
   runtimes = {
-    python = {
-      image_uri       = var.python_image_uri
-      repository_name = "${local.name_prefix}-python"
-      lambda_name     = "${local.name_prefix}-python"
-      api_name        = "${local.name_prefix}-python"
-    }
-    rust = {
-      image_uri       = var.rust_image_uri
-      repository_name = "${local.name_prefix}-rust"
-      lambda_name     = "${local.name_prefix}-rust"
-      api_name        = "${local.name_prefix}-rust"
+    for key, _ in local.implementations : key => {
+      image_uri       = lookup(var.image_uris, key, "")
+      repository_name = "${local.name_prefix}-${key}"
+      lambda_name     = "${local.name_prefix}-${key}"
+      api_name        = "${local.name_prefix}-${key}"
     }
   }
 
-  # 比較の公平性に関わるLambda設定とログ水準は両実装で共有する。
+  # 比較の公平性に関わるLambda設定とログ水準は全実装で共有する。
   common_lambda_settings = {
     memory_size   = var.lambda_memory_mb
     timeout       = var.lambda_timeout_seconds

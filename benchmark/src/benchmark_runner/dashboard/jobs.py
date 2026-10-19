@@ -81,12 +81,35 @@ def _validated_count(values: dict[str, Any], name: str) -> int:
     return value
 
 
+def _validated_targets(values: dict[str, Any], settings: LaunchSettings) -> tuple[str, ...]:
+    """計測する実装の指定を検証し、実装一覧の表示順に並べて返す。未指定なら全実装。"""
+    available = tuple(implementation.key for implementation in settings.implementations)
+    requested = values.get("targets")
+    # 指定がなければ、一覧の全実装を計測する。
+    if requested is None:
+        return available
+    # 文字列の配列以外は、画面以外から送られた不正な入力として拒否する。
+    if not isinstance(requested, list) or not all(isinstance(key, str) for key in requested):
+        raise LaunchError("計測する言語の指定が正しくありません。")
+    unknown = [key for key in requested if key not in available]
+    # 一覧にない言語は、接続先もロググループもないため計測できない。
+    if unknown:
+        raise LaunchError(f"計測できない言語が指定されています: {', '.join(unknown)}")
+    targets = tuple(key for key in available if key in requested)
+    # 比較には二つ以上の言語が必要なため、一つ以下なら開始しない。
+    if len(targets) < 2:
+        raise LaunchError("比べる言語を二つ以上選んでください。")
+    return targets
+
+
 @dataclass
 class Job:
     """一回分の計測依頼と、その進行状態。"""
 
     run_id: str
     workload: str
+    # 計測する実装のキー（実装一覧の表示順）。
+    targets: tuple[str, ...]
     iterations: int
     client_concurrency: int
     warmup: int
@@ -105,10 +128,11 @@ class Job:
         return {
             "run_id": self.run_id,
             "workload": self.workload,
+            "targets": list(self.targets),
             "iterations": self.iterations,
             "client_concurrency": self.client_concurrency,
             "warmup": self.warmup,
-            "total_requests": 2 * (self.iterations + self.warmup),
+            "total_requests": len(self.targets) * (self.iterations + self.warmup),
             "state": self.state,
             "step": self.step,
             "steps": [{"key": key, "label": label} for key, label in STEPS],
@@ -121,7 +145,7 @@ class Job:
 class JobManager:
     """計測を同時に一件だけ実行し、その状態を画面へ提供する。
 
-    PythonとRustは同じDynamoDBを使うため、計測が重なると互いの結果を歪める。
+    各言語の実装は同じDynamoDBを使うため、計測が重なると互いの結果を歪める。
     そのため実行中は新しい計測を受け付けない。
     """
 
@@ -168,6 +192,7 @@ class JobManager:
         if workload not in names:
             raise LaunchError("ワークロードを一覧から選んでください。")
         counts = {name: _validated_count(request, name) for name in LIMITS}
+        targets = _validated_targets(request, settings)
 
         with self._lock:
             # 実行中の計測があれば、DynamoDBとLambdaへの負荷が重ならないよう拒否する。
@@ -175,7 +200,11 @@ class JobManager:
                 raise JobConflict("別の計測が実行中です。終わるまでお待ちください。")
             self._cancel.clear()
             self._job = Job(
-                run_id=str(uuid.uuid4()), workload=workload, settings=settings, **counts
+                run_id=str(uuid.uuid4()),
+                workload=workload,
+                targets=targets,
+                settings=settings,
+                **counts,
             )
             job = self._job
         threading.Thread(target=self._execute, args=(job,), daemon=True).start()
@@ -199,7 +228,7 @@ class JobManager:
             "run": [
                 "run",
                 "--target",
-                "both",
+                ",".join(job.targets),
                 "--workload",
                 job.workload,
                 "--workload-file",
@@ -226,10 +255,11 @@ class JobManager:
                 job.run_id,
                 "--region",
                 settings.region,
-                "--python-log-group",
-                str(settings.python_log_group),
-                "--rust-log-group",
-                str(settings.rust_log_group),
+                *[
+                    argument
+                    for key in job.targets
+                    for argument in ("--log-group", f"{key}={settings.log_groups[key]}")
+                ],
                 *results,
             ],
             "report": [
@@ -271,8 +301,10 @@ class JobManager:
         logger.info("計測工程を開始します: run_id=%s step=%s", job.run_id, job.step)
         env = {
             **os.environ,
-            "PYTHON_API_ENDPOINT": job.settings.python_endpoint or "",
-            "RUST_API_ENDPOINT": job.settings.rust_endpoint or "",
+            **{
+                f"{key.upper()}_API_ENDPOINT": job.settings.endpoints.get(key) or ""
+                for key in job.targets
+            },
         }
         with self._lock:
             # 起動直前に中止されていれば、子プロセスを作らずに終える。

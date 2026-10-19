@@ -15,23 +15,22 @@ if [[ -z "${RUN_ID}" ]]; then
   exit 2
 fi
 
-python3 - "${ROOT}" "${RUN_ID}" "${TAG}" "${REGION}" "${DRY_RUN}" <<'PY'
+# 対象の実装と、実装ごとに容量を測るコンテナ内のパスは実装一覧（spec/implementations.yaml）から読む。
+IMPLEMENTATIONS_JSON="$(uv run --quiet --project "${ROOT}/benchmark" \
+  python -m benchmark_runner implementations --format json 2>/dev/null)"
+
+python3 - "${ROOT}" "${RUN_ID}" "${TAG}" "${REGION}" "${DRY_RUN}" "${IMPLEMENTATIONS_JSON}" <<'PY'
 import json
 import os
 import subprocess
 import sys
 from pathlib import Path
 
-root, run_id, tag, region, dry_run = sys.argv[1:]
+root, run_id, tag, region, dry_run, implementations_json = sys.argv[1:]
 output = Path(root) / "results" / "raw" / run_id / "image-metrics.json"
-images = {
-    "python": f"lambda-runtime-lab-python:{tag}",
-    "rust": f"lambda-runtime-lab-rust:{tag}",
-}
-repositories = {
-    "python": os.getenv("PYTHON_ECR_REPOSITORY_URL"),
-    "rust": os.getenv("RUST_ECR_REPOSITORY_URL"),
-}
+implementations = {item["key"]: item for item in json.loads(implementations_json)}
+images = {key: f"lambda-runtime-lab-{key}:{tag}" for key in implementations}
+repositories = {key: os.getenv(f"{key.upper()}_ECR_REPOSITORY_URL") for key in implementations}
 
 # ドライランではDocker・ECRへアクセスせず、収集対象と出力先の計画だけを表示する。
 if dry_run == "true":
@@ -82,19 +81,11 @@ for implementation, image in images.items():
     # 同じ実行IDのビルド記録がある場合だけ結合し、ない場合は未収集としてNoneを維持する。
     if build_path.is_file():
         item["build"] = json.loads(build_path.read_text(encoding="utf-8"))
-    # Pythonはランタイム・依存・アプリを分け、Rustは配布バイナリのサイズを測定する。
-    if implementation == "python":
-        item["artifacts"] = {
-            "runtime_size_bytes": container_size(image, "/var/lang"),
-            "site_packages_size_bytes": container_size(
-                image, "/opt/python"
-            ),
-            "application_source_size_bytes": container_size(image, "/var/task"),
-        }
-    else:
-        item["artifacts"] = {
-            "release_binary_size_bytes": container_size(image, "/var/runtime/bootstrap")
-        }
+    # 言語ごとに成果物の構成が異なるため、実装一覧で定義したパスごとに容量を測る。
+    item["artifacts"] = {
+        name: container_size(image, path)
+        for name, path in implementations[implementation]["artifact_paths"].items()
+    }
 
     repository = repositories[implementation]
     # ECRリポジトリURLが設定されている場合だけ、登録済みdigestと圧縮サイズを追加する。

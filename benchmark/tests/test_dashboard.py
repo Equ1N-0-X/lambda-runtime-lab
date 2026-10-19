@@ -63,7 +63,9 @@ def test_load_run_marks_complete_run_comparable_and_hides_endpoints(tmp_path):
     assert run["issues"] == []
     assert "endpoints" not in run["metadata"]
     assert "secret.example" not in json.dumps(run)
-    assert run["differences"]["latency_ms"]["p50"] == pytest.approx(0.0)
+    assert run["baseline"] == "python"
+    assert run["labels"] == {"python": "Python", "rust": "Rust"}
+    assert run["differences"]["rust"]["latency_ms"]["p50"] == pytest.approx(0.0)
 
 
 def test_load_run_lists_reasons_when_conditions_or_logs_are_missing(tmp_path):
@@ -79,7 +81,7 @@ def test_load_run_lists_reasons_when_conditions_or_logs_are_missing(tmp_path):
 
     assert run["comparable"] is False
     issues = "\n".join(run["issues"])
-    assert "片方しか計測していない" in issues
+    assert "言語が一つだけ" in issues
     assert "アーキテクチャまたはメモリ設定が記録されていません" in issues
     assert "ログを収集していません" in issues
     assert run["differences"] is None

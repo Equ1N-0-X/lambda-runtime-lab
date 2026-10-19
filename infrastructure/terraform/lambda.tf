@@ -1,4 +1,4 @@
-# Python/Rustを同じメモリ・タイムアウト・アーキテクチャ・環境変数で作成する。
+# 全言語を同じメモリ・タイムアウト・アーキテクチャ・環境変数で作成する。
 resource "aws_lambda_function" "runtime" {
   for_each = local.runtimes
 
@@ -38,7 +38,7 @@ resource "aws_lambda_function" "runtime" {
           startswith(each.value.image_uri, "${aws_ecr_repository.runtime[each.key].repository_url}@")
         )
       )
-      error_message = "${each.key}_image_uriにはTerraform管理の${each.key} ECRリポジトリにあるタグまたはdigest付きURIを指定してください。"
+      error_message = "image_uris[\"${each.key}\"]にはTerraform管理の${each.key} ECRリポジトリにあるタグまたはdigest付きURIを指定してください（make publish-images で用意できます）。"
     }
   }
 }

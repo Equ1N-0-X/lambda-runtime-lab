@@ -102,7 +102,7 @@ def parse_structured_log(message: str) -> dict[str, Any] | None:
     )
     request_index_value = value.get("benchmark_request_index")
     try:
-        # Python/RustのJSON表現差を吸収し、測定は正数、ウォームアップは負数へ正規化する。
+        # 言語ごとのJSON表現差（数値か文字列か）を吸収し、測定は正数、ウォームアップは負数にする。
         request_index = int(request_index_value)
     except (TypeError, ValueError):
         request_index = None

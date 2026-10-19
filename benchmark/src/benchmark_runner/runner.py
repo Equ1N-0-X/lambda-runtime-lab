@@ -1,4 +1,4 @@
-"""ワークロードをPython/Rust APIへ同条件で送信し、測定値と実行メタデータを保存する。"""
+"""ワークロードを比較対象の各言語のAPIへ同条件で送信し、測定値と実行メタデータを保存する。"""
 
 from __future__ import annotations
 
@@ -24,7 +24,8 @@ RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 @dataclass(frozen=True)
 class RunConfig:
     run_id: str
-    target: str
+    # 計測する実装のキー。実装一覧の表示順に並べ、この順で計測する。
+    targets: tuple[str, ...]
     endpoints: dict[str, str]
     region: str
     results_dir: Path
@@ -40,19 +41,6 @@ class RunConfig:
 def utc_now() -> str:
     """実行環境のタイムゾーンに依存しないISO 8601 UTC時刻を返す。"""
     return datetime.now(UTC).isoformat()
-
-
-def selected_targets(target: str) -> tuple[str, ...]:
-    """bothは両実装へ展開し、個別指定は一実装だけへ正規化する。"""
-
-    # targetがbothなら比較対象をPythonとRustの固定順で返す。
-    if target == "both":
-        return ("python", "rust")
-
-    # targetが既知の実装名ならその一件だけを返し、それ以外は設定ミスとして拒否する。
-    if target in {"python", "rust"}:
-        return (target,)
-    raise ValueError("target は python、rust、both のいずれかで指定してください")
 
 
 def validate_run_id(run_id: str) -> None:
@@ -76,7 +64,10 @@ def _request_body(workload: Workload) -> bytes | None:
 
 def build_plan(config: RunConfig, workload: Workload) -> dict[str, Any]:
     """実行前に対象と接続先を検証し、保存可能な実行計画へ変換する。"""
-    targets = selected_targets(config.target)
+    targets = config.targets
+    # 計測対象が一つもなければ、保存しても比較できない空の結果になるため開始しない。
+    if not targets:
+        raise ValueError("計測する実装を一つ以上指定してください")
     # ドライランでない場合だけ、選択した全実装に接続先が設定されていることを要求する。
     if not config.dry_run:
         missing = [name for name in targets if not config.endpoints.get(name)]
@@ -86,7 +77,6 @@ def build_plan(config: RunConfig, workload: Workload) -> dict[str, Any]:
             raise ValueError(f"接続先が設定されていません: {', '.join(missing)}")
     return {
         "run_id": config.run_id,
-        "target": config.target,
         "targets": list(targets),
         "endpoints": {name: config.endpoints.get(name) for name in targets},
         "region": config.region,
@@ -236,7 +226,7 @@ def _write_jsonl(path: Path, records: list[dict[str, Any]]) -> None:
 
 
 async def run_benchmark(config: RunConfig, workload: Workload) -> dict[str, Any]:
-    """実行計画を確定し、両実装の測定と再現用メタデータを同じ実行ディレクトリへ保存する。"""
+    """実行計画を確定し、各実装の測定と再現用メタデータを同じ実行ディレクトリへ保存する。"""
     validate_run_id(config.run_id)
     plan = build_plan(config, workload)
     # ドライランではディレクトリ作成やHTTP送信を行わず、検証済み計画だけを返す。
@@ -263,7 +253,7 @@ async def run_benchmark(config: RunConfig, workload: Workload) -> dict[str, Any]
     async with httpx.AsyncClient(
         timeout=config.timeout_seconds, transport=config.transport
     ) as client:
-        for implementation in selected_targets(config.target):
+        for implementation in config.targets:
             records.extend(
                 await _execute_target(
                     client=client,

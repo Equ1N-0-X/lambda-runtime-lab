@@ -7,13 +7,15 @@
 ```mermaid
 flowchart LR
   A[1. ECRを用意] --> B[2. イメージをbuild/push]
-  B --> C[3. digest URIを取得]
+  B --> C[3. digest URIを images.auto.tfvars.json へ書き出し]
   C --> D[4. Terraform plan]
   D --> E[5. Terraform apply]
   E --> F[Lambdaが新digestを参照]
 ```
 
 `make publish-images` は **ECRへpushするだけ** です。Lambdaを新イメージへ切り替えるのは、必ず後続の `make deploy` です。
+
+比較対象の言語は `spec/implementations.yaml` が正本です。ビルド・push・Terraform・計測はすべてこの一覧から対象を決めるため、言語ごとのURIや変数を手で渡す必要はありません。
 
 | 操作 | 変わるもの | AWS書き込み |
 | --- | --- | --- |
@@ -41,8 +43,8 @@ aws sts get-caller-identity
 | アカウント | 対象のAWSアカウント |
 | リージョン | `ap-northeast-1`（`.env` の `AWS_REGION`） |
 | 環境名 | `benchmark`（`.env` の `ENVIRONMENT`） |
-| API / テーブル | `.env` の `PYTHON_API_URL` / `RUST_API_URL` / `DYNAMODB_TABLE_NAME` |
-| 計測条件 | 両Lambdaの実設定と `.env` の `ARCHITECTURE` / `LAMBDA_MEMORY_MB` が一致 |
+| テーブル | `.env` の `DYNAMODB_TABLE_NAME`（APIの接続先はTerraformの出力から自動で読む） |
+| 計測条件 | 全言語のLambdaの実設定と `.env` の `ARCHITECTURE` / `LAMBDA_MEMORY_MB` が一致 |
 
 | ファイル | 用途 |
 | --- | --- |
@@ -63,98 +65,91 @@ sequenceDiagram
   participant D as Docker
   participant L as Lambda
   T->>E: ECRのみ作成
-  D->>E: Python/Rustイメージをpush
-  T->>L: digest URIを指定して作成
+  D->>E: 全言語のイメージをpush
+  T->>L: images.auto.tfvars.json のdigest URIで作成
 ```
 
 | 手順 | コマンド | 目的・確認点 |
 | ---: | --- | --- |
 | 1 | `make bootstrap-ecr` | ECRだけを作成する。Lambdaはまだ作られない。 |
-| 2 | `make publish-images` | arm64イメージをbuildしてECRへpushする。出力の2つの`export`行を控える。 |
-| 3 | 出力された `export PYTHON_IMAGE_URI=...` と `export RUST_IMAGE_URI=...` を実行 | Lambdaに固定するdigestを指定する。 |
-| 4 | 下記の`terraform plan` | 作成・更新予定と対象digestを確認する。 |
-| 5 | `make deploy` | Terraform apply。Lambda、API Gateway、DynamoDB、IAM、CloudWatchを作成する。 |
+| 2 | `make publish-images` | 全言語のarm64イメージをbuildしてECRへpushし、digest固定URIを `infrastructure/terraform/images.auto.tfvars.json` へ書き出す。 |
+| 3 | 下記の`terraform plan` | 作成・更新予定と対象digestを確認する。 |
+| 4 | `make deploy` | Terraform apply。Lambda、API Gateway、DynamoDB、IAM、CloudWatchを作成する。 |
 
 ```bash
 terraform -chdir=infrastructure/terraform plan \
   -var="aws_region=$AWS_REGION" \
-  -var="environment=$ENVIRONMENT" \
-  -var="python_image_uri=$PYTHON_IMAGE_URI" \
-  -var="rust_image_uri=$RUST_IMAGE_URI"
+  -var="environment=$ENVIRONMENT"
 
 make deploy
 ```
 
-`plan` を確認してから `make deploy` を実行します。`TF_AUTO_APPROVE` は通常設定しません。
+`images.auto.tfvars.json` はTerraformが自動で読み込むため、`-var` でイメージURIを渡す必要はありません（環境ごとに異なるためGit管理しません）。`plan` を確認してから `make deploy` を実行します。`TF_AUTO_APPROVE` は通常設定しません。
 
 ## コード更新をLambdaへ反映
 
 ```mermaid
 flowchart TD
-  A[make publish-images] --> B{新しいdigest URIを取得}
-  B --> C[export 2つのIMAGE_URI]
-  C --> D[terraform plan]
-  D -->|対象digestが新しい| E[make deploy]
-  E --> F[LambdaのImageUriを確認]
+  A[make publish-images] --> B[images.auto.tfvars.json を更新]
+  B --> C[terraform plan]
+  C -->|対象digestが新しい| D[make deploy]
+  D --> E[LambdaのImageUriを確認]
 ```
 
 ```bash
 make publish-images
-# 表示された2つの export ..._IMAGE_URI=... をこのシェルで実行する
-
 terraform -chdir=infrastructure/terraform plan \
   -var="aws_region=$AWS_REGION" \
-  -var="environment=$ENVIRONMENT" \
-  -var="python_image_uri=$PYTHON_IMAGE_URI" \
-  -var="rust_image_uri=$RUST_IMAGE_URI"
-
+  -var="environment=$ENVIRONMENT"
 make deploy
 ```
 
+イメージのタグには公開時のGitコミット（`-g<コミット>`）が入り、アプリに未コミットの変更があれば `-dirty` が付きます。画面から計測を始めるときは、このタグからデプロイ済みの版を読み取り、デプロイ後にアプリが変更されていれば計測を止めて再デプロイを促します。計測前に変更をコミットし、`make publish-images` と `make deploy` を実行してください。
+
 | 成功条件 | 確認コマンド |
 | --- | --- |
-| Lambdaが新digestを参照 | `aws lambda get-function --function-name lambda-runtime-lab-benchmark-python --query 'Code.ImageUri' --output text` |
-| Rustも同様 | 上記の関数名を `lambda-runtime-lab-benchmark-rust` に変更 |
-| 構成差分なし | 現在の2つのImageUriを環境変数に設定して `terraform plan` が `No changes` |
+| Lambdaが新digestを参照 | `aws lambda get-function --function-name lambda-runtime-lab-benchmark-<実装キー> --query 'Code.ImageUri' --output text` |
+| 構成差分なし | `terraform plan` が `No changes` |
 
 ECRの「最新タグ」とLambdaの参照digestは別物です。pushだけではLambdaは更新されません。
+
+## 言語を追加する
+
+1. `apps/<実装キー>` にアプリと `Dockerfile` を用意する（共通の `FINAL_BASE` を使う）。
+2. `spec/implementations.yaml` に実装キー・表示名・`app_dir` を追加する。
+3. `make contract-test` で全言語の応答が正本と一致することを確認する。
+4. `make bootstrap-ecr` → `make publish-images` → `make deploy` の順に実行する。
+
+`make bootstrap-ecr` で新しい言語のECRリポジトリができるまでは、`make publish-images` は登録先がないため停止します。
 
 ## デプロイ済み構成の確認
 
 ```bash
-export PYTHON_IMAGE_URI="$(aws lambda get-function \
-  --function-name lambda-runtime-lab-benchmark-python \
-  --query 'Code.ImageUri' --output text)"
-export RUST_IMAGE_URI="$(aws lambda get-function \
-  --function-name lambda-runtime-lab-benchmark-rust \
-  --query 'Code.ImageUri' --output text)"
-
 terraform -chdir=infrastructure/terraform plan \
   -var="aws_region=$AWS_REGION" \
-  -var="environment=$ENVIRONMENT" \
-  -var="python_image_uri=$PYTHON_IMAGE_URI" \
-  -var="rust_image_uri=$RUST_IMAGE_URI"
+  -var="environment=$ENVIRONMENT"
 ```
 
-`No changes` は、AWS実リソースとTerraform定義が一致していることを示します。この確認だけではリソースは変更されません。
+`images.auto.tfvars.json` が最後に公開したイメージを指している場合、`No changes` は、AWS実リソースとTerraform定義が一致していることを示します。この確認だけではリソースは変更されません。
 
 ## データ投入と計測
 
-先に `source ./.env.export.sh` 済みなら、URL やテーブル名を毎回付けなくて構いません。
+先に `source ./.env.export.sh` 済みなら、テーブル名を毎回付けなくて構いません。画面から計測する場合は `make ui` を使います（接続先と条件は自動で読み取ります）。
 
 | 操作 | コマンド | 結果 |
 | --- | --- | --- |
 | seed | `make seed` | 決定的なテストデータを投入（`DYNAMODB_TABLE_NAME` は `.env`） |
-| 小規模計測 | `WORKLOAD=health make benchmark` | 生データを保存（API URL は `.env`） |
+| 小規模計測 | `WORKLOAD=health make benchmark` | 全言語へ同じ要求を送り、生データを保存（接続先はTerraformの出力） |
+| 言語を絞る | `WORKLOAD=health TARGET=python,rust make benchmark` | 指定した言語だけを計測 |
 | 収集 | `RUN_ID=<run-id> make collect` | CloudWatch値を収集 |
 | レポート | `RUN_ID=<run-id> make report` | Markdown/CSVレポートを生成 |
 
 生成後は [ベンチマークレポート利用ガイド](07_BENCHMARK_REPORT_GUIDE.md) に従い、
 `Unclassified=0`、条件、欠損の有無を確認してから比較結果を使用します。
 
-API URLとテーブル名は `terraform -chdir=infrastructure/terraform output` で確認し、`.env` へ反映します。APIは `AWS_IAM` 認可のため、署名付き呼び出し権限が必要です。
+APIは `AWS_IAM` 認可のため、署名付き呼び出し権限が必要です。別の接続先を計測する場合は、環境変数 `<実装キー大文字>_API_URL`（例: `PYTHON_API_URL`）で上書きできます。
 
-`ARCHITECTURE` と `LAMBDA_MEMORY_MB` は、両Lambdaに対する
+`ARCHITECTURE` と `LAMBDA_MEMORY_MB` は、全言語のLambdaに対する
 `aws lambda get-function-configuration` の `Architectures[0]` と `MemorySize` が一致することを
 確認して `.env` へ設定します。未指定の場合は条件不明のレポートを防ぐため、`make benchmark` が
 計測前に停止します。
@@ -163,8 +158,8 @@ API URLとテーブル名は `terraform -chdir=infrastructure/terraform output` 
 
 | 状況 | 操作 |
 | --- | --- |
-| 新イメージを戻す | 直前に記録した2つのdigest URIを `PYTHON_IMAGE_URI` / `RUST_IMAGE_URI` に設定し、`plan` を確認後に `make deploy` |
-| 全削除 | 現在の2つのImageUriを設定して `make destroy`。ECRは `force_delete` のため保存済みイメージも削除される。 |
+| 新イメージを戻す | 直前の `images.auto.tfvars.json`（または各Lambdaの `Code.ImageUri`）に戻し、`plan` を確認後に `make deploy` |
+| 全削除 | `make destroy`。ECRは `force_delete` のため保存済みイメージも削除される。 |
 
 削除前に、必要なベンチマーク結果と使用中のdigest URIを保存してください。
 
@@ -178,23 +173,16 @@ API URLとテーブル名は `terraform -chdir=infrastructure/terraform output` 
 | `export AWS_PROFILE=...` | 後続のAWS CLI・Terraformが使う認証プロファイルを選ぶ | `AWS_PROFILE` | AWS CLIのプロファイル名 | `~/.aws/config` 等。`.env` に書いてもよい。 |
 | `AWS_REGION` / `ENVIRONMENT` | 対象リージョンと環境名 | 値は `.env` またはシェル | Terraform変数とリソース命名に使う | `.env` の既定は `ap-northeast-1` / `benchmark`。 |
 | `aws sts get-caller-identity` | 現在の認証先アカウント・IAM主体を表示する | なし | プロファイルとリージョンは上記の環境変数を利用 | `AWS_PROFILE` と `AWS_REGION`。書き込みはしない。 |
-| `make bootstrap-ecr` | ECRリポジトリとLambdaのイメージ取得ポリシーだけを作成する | `AWS_REGION`、`ENVIRONMENT` | 対象リージョンと命名環境 | 上記の環境変数。初回だけ必要。 |
-| `make publish-images` | Python/Rustのarm64イメージをbuildしてECRへpushし、digest URIを表示する | `AWS_REGION`、任意の`PUBLISH_TAG` | 対象リージョン、ECRタグ | `AWS_REGION` は上記。`PUBLISH_TAG` を省略するとUTC時刻ベースの一意タグをスクリプトが生成する。 |
-| `export PYTHON_IMAGE_URI=...` | Python Lambdaが参照するコンテナdigestを指定する | `PYTHON_IMAGE_URI` | Python ECRの `repository@sha256:...` | 新規更新時は `make publish-images` の出力。現状確認時は `aws lambda get-function` の `Code.ImageUri`。 |
-| `export RUST_IMAGE_URI=...` | Rust Lambdaが参照するコンテナdigestを指定する | `RUST_IMAGE_URI` | Rust ECRの `repository@sha256:...` | 新規更新時は `make publish-images` の出力。現状確認時は `aws lambda get-function` の `Code.ImageUri`。 |
+| `make bootstrap-ecr` | 全言語のECRリポジトリとLambdaのイメージ取得ポリシーだけを作成する | `AWS_REGION`、`ENVIRONMENT` | 対象リージョンと命名環境 | 上記の環境変数。初回と言語追加時に必要。 |
+| `make publish-images` | 全言語のarm64イメージをbuildしてECRへpushし、digest固定URIを `images.auto.tfvars.json` へ書き出す | `AWS_REGION`、任意の`PUBLISH_TAG` | 対象リージョン、ECRタグ | `PUBLISH_TAG` を省略するとUTC時刻とGitコミットを含む一意タグをスクリプトが生成する。 |
 | `terraform -chdir=infrastructure/terraform plan ...` | 実リソースとの差分とLambda更新対象digestを表示する | `-chdir` | Terraform設定の場所 | リポジトリ内の `infrastructure/terraform`。 |
 | 同上 | 同上 | `-var=aws_region=$AWS_REGION` | Terraformの `aws_region` 変数 | `AWS_REGION`。既定値は `ap-northeast-1`。 |
 | 同上 | 同上 | `-var=environment=$ENVIRONMENT` | Terraformの `environment` 変数 | `ENVIRONMENT`。既定値は `dev` のため、必ず `benchmark` を渡す。 |
-| 同上 | 同上 | `-var=python_image_uri=$PYTHON_IMAGE_URI` | Python Lambdaへ設定する不変digest URI | `make publish-images` 出力、または現在のPython Lambda設定。 |
-| 同上 | 同上 | `-var=rust_image_uri=$RUST_IMAGE_URI` | Rust Lambdaへ設定する不変digest URI | `make publish-images` 出力、または現在のRust Lambda設定。 |
-| `make deploy` | Terraform applyで、指定digestをLambdaへ反映する | `AWS_REGION`、`ENVIRONMENT`、`PYTHON_IMAGE_URI`、`RUST_IMAGE_URI` | 上記4値をTerraformへ渡す | 上記の環境変数。通常は `TF_AUTO_APPROVE` を設定せず、apply確認を行う。 |
-| `aws lambda get-function --function-name ... --query 'Code.ImageUri' --output text` | Lambdaが実際に参照しているdigestを取得する | `--function-name` | 確認するLambda名 | Terraform出力 `python_lambda_name` / `rust_lambda_name`。現在は `lambda-runtime-lab-benchmark-python` / `-rust`。 |
-| 同上 | 同上 | `--query 'Code.ImageUri'` | AWS応答からイメージURIだけを抽出するJMESPath式 | AWS CLIの出力形式。URIを `*_IMAGE_URI` へ再利用する。 |
-| 同上 | 同上 | `--output text` | 抽出値をシェル代入しやすいテキスト形式にする | AWS CLIの出力形式。 |
+| `make deploy` | Terraform applyで、`images.auto.tfvars.json` のdigestを全言語のLambdaへ反映する | `AWS_REGION`、`ENVIRONMENT` | Terraformへ渡す値 | 上記の環境変数。通常は `TF_AUTO_APPROVE` を設定せず、apply確認を行う。 |
+| `aws lambda get-function --function-name ... --query 'Code.ImageUri' --output text` | Lambdaが実際に参照しているdigestを取得する | `--function-name` | 確認するLambda名 | Terraform出力 `lambda_names`。現在は `lambda-runtime-lab-benchmark-<実装キー>`。 |
 | `make seed` | ベンチマーク用の決定的データをDynamoDBへ投入する | `DYNAMODB_TABLE_NAME` | seed先のDynamoDBテーブル名 | `.env`（`source ./.env.export.sh` 済み）またはコマンド引数。値の正本は `terraform output -raw dynamodb_table_name`。 |
-| `WORKLOAD=health make benchmark` | 2つのIAM認可APIへ同じワークロードを実行し、生データを保存する | `PYTHON_API_URL`、`RUST_API_URL` | Python/Rust APIのエンドポイント | `.env`（`source ./.env.export.sh` 済み）またはコマンド引数。値の正本は Terraform出力 `python_api_endpoint` / `rust_api_endpoint`。 |
-| 同上 | 同上 | `WORKLOAD=health` | 実行する比較ワークロード | `spec/workloads.yaml`。最小確認では `health`、全候補は同ファイルに定義。 |
+| `WORKLOAD=health make benchmark` | 全言語のIAM認可APIへ同じワークロードを実行し、生データを保存する | `WORKLOAD`、任意の`TARGET` | 実行する比較ワークロード、計測する言語（`all` か実装キーのカンマ区切り） | `spec/workloads.yaml`、`spec/implementations.yaml`。接続先はTerraform出力 `api_endpoints`。 |
 | `RUN_ID=... make collect` | CloudWatchログから指定実行の計測値を収集する | `RUN_ID` | 収集対象のベンチマーク実行ID | `make benchmark` の実行結果に記録されたID。`auto` は指定不可。 |
 | `RUN_ID=... make report` | 収集済みデータからMarkdown/CSVレポートを生成する | `RUN_ID` | レポート対象のベンチマーク実行ID | `make collect` に使ったIDと同じ値。 |
-| `terraform -chdir=infrastructure/terraform output` | デプロイ済みAPI、Lambda、DynamoDB、ECRの値を表示する | `-chdir` | Terraform設定とstateの場所 | リポジトリ内の `infrastructure/terraform`。個別値には `-raw <output名>` を追加する。 |
-| `make destroy` | Terraform管理リソースを削除する | `AWS_REGION`、`ENVIRONMENT`、`PYTHON_IMAGE_URI`、`RUST_IMAGE_URI` | 作成時と同じTerraform入力。ECR削除時にはイメージも対象 | デプロイ済みLambdaの `Code.ImageUri` と上記の環境変数。`TF_AUTO_APPROVE` は通常設定しない。 |
+| `terraform -chdir=infrastructure/terraform output` | デプロイ済みAPI、Lambda、DynamoDB、ECRの値を表示する | `-chdir` | Terraform設定とstateの場所 | リポジトリ内の `infrastructure/terraform`。言語ごとの値は `api_endpoints`・`lambda_names`・`ecr_repository_urls` の対応表。 |
+| `make destroy` | Terraform管理リソースを削除する | `AWS_REGION`、`ENVIRONMENT` | 作成時と同じTerraform入力。ECR削除時にはイメージも対象 | 上記の環境変数。`TF_AUTO_APPROVE` は通常設定しない。 |

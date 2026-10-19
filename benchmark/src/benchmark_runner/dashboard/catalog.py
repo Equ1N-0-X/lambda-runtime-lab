@@ -63,7 +63,7 @@ def _unlinked_cause(run_dir: Path) -> str:
 
 
 def _issues(report: dict[str, Any], *, collected: bool, run_dir: Path) -> list[str]:
-    """Python/Rustを同じ条件で比較できない理由を、利用者が対処できる文言で列挙する。"""
+    """各実装を同じ条件で比較できない理由を、利用者が対処できる文言で列挙する。"""
     metadata = report["metadata"]
     implementations = report["implementations"]
     issues: list[str] = []
@@ -71,9 +71,9 @@ def _issues(report: dict[str, Any], *, collected: bool, run_dir: Path) -> list[s
     # ドライランは実際のAPIを呼んでいないため、どの数値も性能比較に使えない。
     if metadata.get("dry_run"):
         issues.append("ドライランの結果です。実際のAPIは呼び出していません。")
-    # 片方の実装しかなければ、差分を計算できない。
-    if not {"python", "rust"} <= implementations.keys():
-        issues.append("PythonとRustの片方しか計測していないため、比較できません。")
+    # 実装が一つしかなければ、比べる相手がいないため差分を計算できない。
+    if len(implementations) < 2:
+        issues.append("計測した言語が一つだけのため、比較できません。")
     # アーキテクチャかメモリが記録されていなければ、条件の再現とコスト計算ができない。
     if metadata.get("architecture") is None or metadata.get("memory_mb") is None:
         issues.append(
@@ -181,7 +181,7 @@ def latest_costs_by_workload(*, results_dir: Path, pricing_path: Path) -> dict[s
             name: (values.get("cost") or {}).get("estimated_cost_per_request")
             for name, values in run["implementations"].items()
         }
-        # どちらかの料金が計算できていなければ、目安の根拠にしない。
+        # いずれかの実装の料金が計算できていなければ、目安の根拠にしない。
         if None in costs.values():
             continue
         basis[workload] = {

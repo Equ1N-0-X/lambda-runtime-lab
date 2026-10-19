@@ -655,9 +655,10 @@ CLI例:
 
 ```bash
 python -m benchmark_runner run \
-  --target both \
+  --target all \
   --workload aggregate-concurrent \
-  --run-id auto
+  --run-id auto \
+  --terraform-dir infrastructure/terraform
 ```
 
 ### 12.1 Runner責務
@@ -819,13 +820,14 @@ READMEでは複数runを基に人間が考察を記載できるようにする�
 - `lambda_memory_mb`
 - `lambda_timeout_seconds`
 - `architecture`
-- `python_image_uri`
-- `rust_image_uri`
+- `image_uris`（実装キーからイメージURIへの対応表。`make publish-images` が `images.auto.tfvars.json` へ書き出す）
 - `environment`
+
+比較対象の言語は `spec/implementations.yaml` を正本とし、Terraformは `yamldecode` で読み込む。
 
 ### 17.2 Lambda
 
-Python/Rustで次を同一にする。
+全言語で次を同一にする。
 
 - Memory
 - Timeout
@@ -838,7 +840,7 @@ Python/Rustで次を同一にする。
 
 ### 17.3 API Gateway
 
-Python/Rustを同条件で比較できるよう、同等構成のHTTP APIを用意する。
+全言語を同条件で比較できるよう、同等構成のHTTP APIを用意する。
 
 各APIはLambdalithへproxy integrationする。
 
@@ -846,13 +848,12 @@ Python/Rustを同条件で比較できるよう、同等構成のHTTP APIを用�
 
 ### 17.4 Outputs
 
-- python_api_endpoint
-- rust_api_endpoint
-- python_lambda_name
-- rust_lambda_name
+言語を追加しても出力名が変わらないよう、言語ごとの値は実装キーの対応表で出力する。
+
+- api_endpoints
+- lambda_names
+- ecr_repository_urls
 - dynamodb_table_name
-- python_ecr_repository_url
-- rust_ecr_repository_url
 
 ---
 

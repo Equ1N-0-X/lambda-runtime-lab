@@ -134,54 +134,17 @@ make lint
 make test
 ```
 
-共通の Contract Test は、URL未指定または `.env.local` の標準ローカル値なら、DynamoDB・Python API・Rust Lambda RIEを起動し、`spec/testcases/` の正本ケースを比較します。既定値で使う場合、環境変数の設定や事前起動は不要です。
+共通の Contract Test は、`spec/implementations.yaml` の全言語について、DynamoDB Local と各言語の Lambda イメージ（Lambda Runtime Interface Emulator 経由）を起動し、`spec/testcases/` の正本ケースを比較します。デプロイするのと同じイメージを、同じ起動コマンドで検証します。環境変数の設定や事前起動は不要で、イメージがなければその言語だけをビルドします。
 
 ```bash
 make contract-test
 ```
 
-コマンドが自動起動したサービスはテスト終了時に停止します。AWSや手動起動済みAPIなど、標準ローカル値とは異なる接続先を使う場合は `PYTHON_API_URL` と `RUST_API_URL` を指定してください。この場合、起動・fixture投入・停止を行わず、指定先へテスト要求だけを送ります。RustのRIEを指定先にする場合は、`RUST_CONTRACT_TRANSPORT=lambda-rie` も設定してください。
-
-このリポジトリでコンテナを用いるローカル実行では、DynamoDB Local を起動し、正本フィクスチャを読み込み、Python ASGI アプリを実行してから、Lambda Runtime Interface Emulator 経由で Rust の Lambda イメージを起動します。
-
-```bash
-export AWS_ACCESS_KEY_ID=test
-export AWS_SECRET_ACCESS_KEY=test
-export AWS_REGION=us-east-1
-docker run --rm -p 8000:8000 amazon/dynamodb-local:latest
-aws dynamodb create-table \
-  --endpoint-url http://127.0.0.1:8000 \
-  --region us-east-1 \
-  --table-name lambda-runtime-lab-contract \
-  --attribute-definitions AttributeName=id,AttributeType=S \
-  --key-schema AttributeName=id,KeyType=HASH \
-  --billing-mode PAY_PER_REQUEST
-uv run --project tests/contract python tests/contract/seed_fixtures.py \
-  --table lambda-runtime-lab-contract \
-  --endpoint-url http://127.0.0.1:8000
-
-AWS_ENDPOINT_URL_DYNAMODB=http://127.0.0.1:8000 \
-DYNAMODB_TABLE_NAME=lambda-runtime-lab-contract \
-uv run --project apps/python --with uvicorn \
-  uvicorn app.main:app --app-dir apps/python/src --port 9001
-
-docker run --rm -p 9002:8080 \
-  --env AWS_ACCESS_KEY_ID=test \
-  --env AWS_SECRET_ACCESS_KEY=test \
-  --env AWS_REGION=us-east-1 \
-  --env AWS_ENDPOINT_URL_DYNAMODB=http://host.docker.internal:8000 \
-  --env DYNAMODB_TABLE_NAME=lambda-runtime-lab-contract \
-  lambda-runtime-lab-rust:local
-
-# ローカルサービスを手動で起動済みの場合も、そのまま実行できる
-make contract-test
-```
-
-Linux では、Rust の `docker run` コマンドに `--add-host host.docker.internal:host-gateway` を追加してください。DynamoDB Local では、AWS SDK の認証情報にダミー値を使用できます。`/items` または `/aggregate` を使用するケースでは、両アプリケーションが同じテーブルを参照している必要があります。`direct` モードが既定です。`lambda-rie` はローカル転送用アダプターにすぎず、正本の HTTP リクエストと期待レスポンスは変更しません。
+コマンドが自動起動したコンテナはテスト終了時に停止します。言語ごとの RIE は 9101 番から一覧の順に割り当てます。AWSや手動起動済みAPIなど別の接続先を検証する場合は、全言語について `<実装キー大文字>_API_URL`（例: `PYTHON_API_URL`、`RUST_API_URL`）を指定してください。この場合、起動・fixture投入・停止を行わず、指定先へテスト要求だけを送ります。呼び出し方式は `CONTRACT_TRANSPORT`（`direct` または `lambda-rie`、言語ごとには `<実装キー大文字>_CONTRACT_TRANSPORT`）で指定します。`lambda-rie` はローカル転送用アダプターにすぎず、正本の HTTP リクエストと期待レスポンスは変更しません。
 
 ## デプロイ方法
 
-初回作成、イメージ更新、Lambda切替、確認、切戻し、削除は、[AWSデプロイ手順](docs/06_AWSデプロイ手順.md) を参照してください。API URL やテーブル名の環境変数は、同手順の「共通の準備」どおり `source ./.env.export.sh` で読み込みます。`make publish-images` はECRへのpushだけであり、Lambdaを新digestへ更新するには、出力されたURIを指定して `plan` を確認後に `make deploy` が必要です。
+初回作成、イメージ更新、Lambda切替、言語の追加、確認、切戻し、削除は、[AWSデプロイ手順](docs/06_AWSデプロイ手順.md) を参照してください。テーブル名などの環境変数は、同手順の「共通の準備」どおり `source ./.env.export.sh` で読み込みます。`make publish-images` はECRへのpushとデプロイ対象のdigest URIの書き出しだけであり、Lambdaを新digestへ更新するには、`plan` を確認後に `make deploy` が必要です。
 
 実験後は環境を削除します。
 
@@ -244,10 +207,11 @@ make ui                  # http://127.0.0.1:8765/ で起動（Ctrl+C で停止�
 UI_PORT=9000 make ui     # ポートを変える場合
 ```
 
-- **計測結果**: Markdown・CSV レポートと同じ集計処理を使い、計測履歴、比較に使えるかどうかの判定と理由、応答時間・Lambda 実行時間・メモリ・推定料金の Python/Rust 比較、実験条件を表示します。
+- **計測結果**: Markdown・CSV レポートと同じ集計処理を使い、計測履歴、比較に使えるかどうかの判定と理由、応答時間・Lambda 実行時間・メモリ・推定料金の言語間の比較、実験条件を表示します。
 - **新しく計測する**: ワークロードと回数を選ぶと、計測、ログの反映待ち（60 秒）、ログ収集、レポート作成を順に実行します。送信するリクエスト数と、同じワークロードの過去の実測から求めた料金の見込みを開始前に表示します。計測は同時に一件だけ実行でき、途中で中止できます。
-- 接続先とロググループは Terraform の出力から、アーキテクチャとメモリは AWS 上の Lambda の実設定から、計測のたびに読み取ります。`.env` の読み込みは不要です。環境変数 `PYTHON_API_URL`・`RUST_API_URL` があれば接続先はそちらを優先し、`ARCHITECTURE`・`LAMBDA_MEMORY_MB` が実設定と食い違う場合は計測を開始させません。
-- Terraform の出力を読めない、AWS の認証が切れている、Python と Rust の Lambda 設定が異なる、といった場合は理由を画面に表示します。解消後は「設定を再確認」で、画面を起動し直さずに計測できます。
+- 接続先とロググループは Terraform の出力から、アーキテクチャとメモリは AWS 上の Lambda の実設定から、計測のたびに読み取ります。`.env` の読み込みは不要です。環境変数 `<実装キー大文字>_API_URL`（例: `PYTHON_API_URL`）があれば接続先はそちらを優先し、`ARCHITECTURE`・`LAMBDA_MEMORY_MB` が実設定と食い違う場合は計測を開始させません。
+- 計測を始める前に、デプロイ済みイメージのタグに記録したGitコミットと手元のアプリを照合し、デプロイ後にアプリが変更されていれば計測を止めて再デプロイを促します（古い版のまま計測すると、Lambda側の指標を結び付けられないため）。
+- Terraform の出力を読めない、AWS の認証が切れている、言語ごとの Lambda 設定が異なる、といった場合は理由を画面に表示します。解消後は「設定を再確認」で、画面を起動し直さずに計測できます。
 - サーバーは `127.0.0.1` だけで待ち受け、別サイトからの操作要求を拒否します。API の URL は画面とコマンド出力の表示から除きます。デプロイ、シード投入、削除は画面から実行できません。
 
 ## テスト方針

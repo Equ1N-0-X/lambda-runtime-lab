@@ -8,6 +8,7 @@ import pytest
 from contract_harness import (
     ApiResponse,
     assert_case_matches,
+    configured_targets,
     load_cases,
     load_fixture_items,
     normalized_json,
@@ -64,9 +65,59 @@ def test_assert_case_matches_removes_only_declared_nondeterministic_fields(
 
     assert_case_matches(
         case,
-        ApiResponse(200, {"status": "ok", "request_id": "python"}),
-        ApiResponse(200, {"status": "ok", "request_id": "rust"}),
+        {
+            "Python": ApiResponse(200, {"status": "ok", "request_id": "python"}),
+            "Rust": ApiResponse(200, {"status": "ok", "request_id": "rust"}),
+            "Java": ApiResponse(200, {"status": "ok", "request_id": "java"}),
+        },
     )
+
+
+def test_assert_case_matches_names_the_language_that_differs(tmp_path: Path) -> None:
+    (tmp_path / "health.json").write_text(
+        json.dumps(
+            {
+                "request": {"method": "GET", "path": "/health"},
+                "expected": {"status": 200, "body": {"status": "ok"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    case = load_cases(tmp_path)[0]
+
+    with pytest.raises(AssertionError, match="Java response does not match"):
+        assert_case_matches(
+            case,
+            {
+                "Python": ApiResponse(200, {"status": "ok"}),
+                "Java": ApiResponse(200, {"status": "OK"}),
+            },
+        )
+
+
+def test_configured_targets_require_url_for_every_registered_language(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = tmp_path / "implementations.yaml"
+    registry.write_text(
+        "implementations:\n"
+        "  python: {label: Python, app_dir: apps/python}\n"
+        "  java: {label: Java, app_dir: apps/java}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PYTHON_API_URL", "http://127.0.0.1:9101")
+    monkeypatch.delenv("JAVA_API_URL", raising=False)
+
+    with pytest.raises(AssertionError, match="JAVA_API_URL"):
+        configured_targets(registry)
+
+    monkeypatch.setenv("JAVA_API_URL", "http://127.0.0.1:9102")
+    monkeypatch.setenv("CONTRACT_TRANSPORT", "lambda-rie")
+    targets = configured_targets(registry)
+    assert [(target.label, target.transport) for target in targets] == [
+        ("Python", "lambda-rie"),
+        ("Java", "lambda-rie"),
+    ]
 
 
 def test_load_cases_rejects_missing_canonical_response(tmp_path: Path) -> None:
