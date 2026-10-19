@@ -18,9 +18,15 @@ IMAGE_TAG="${IMAGE_TAG:-local}"
 # 言語ごとのRIEは、この番号から一覧の順に一つずつ割り当てたポートで待ち受ける。
 FIRST_PORT="${CONTRACT_FIRST_PORT:-9101}"
 DYNAMODB_CONTAINER="lambda-runtime-lab-contract-dynamodb"
+# 自前で起動したDynamoDB Localと各言語のコンテナは同じネットワークに置き、コンテナ名で接続する。
+# LinuxのDockerでは、ホストの127.0.0.1だけで待ち受けるポートへコンテナから届かないため。
+CONTRACT_NETWORK="lambda-runtime-lab-contract"
+# 各言語のコンテナから見たDynamoDBの接続先。自前で起動した場合はコンテナ名に切り替える。
+RUNTIME_DYNAMODB_URL="http://host.docker.internal:8000"
 HEALTH_EVENT='{"version":"2.0","routeKey":"$default","rawPath":"/health","rawQueryString":"","headers":{},"requestContext":{"accountId":"123456789012","apiId":"local","domainName":"localhost","domainPrefix":"local","http":{"method":"GET","path":"/health","protocol":"HTTP/1.1","sourceIp":"127.0.0.1","userAgent":"contract-test"},"requestId":"health-check","routeKey":"$default","stage":"$default","time":"01/Jan/2026:00:00:00 +0000","timeEpoch":1767225600000},"body":null,"isBase64Encoded":false}'
 KEYS="$(implementation_keys)"
 STARTED_DYNAMODB=false
+STARTED_NETWORK=false
 STARTED_CONTAINERS=()
 
 upper() {
@@ -54,6 +60,9 @@ cleanup() {
   done
   if [[ "${STARTED_DYNAMODB}" == true ]]; then
     docker rm --force "${DYNAMODB_CONTAINER}" >/dev/null 2>&1 || true
+  fi
+  if [[ "${STARTED_NETWORK}" == true ]]; then
+    docker network rm "${CONTRACT_NETWORK}" >/dev/null 2>&1 || true
   fi
 
   exit "${exit_status}"
@@ -126,9 +135,14 @@ start_dynamodb_if_needed() {
     return 0
   fi
 
-  docker run --detach --rm --name "${DYNAMODB_CONTAINER}" --publish 127.0.0.1:8000:8000 \
-    amazon/dynamodb-local:latest >/dev/null
+  if ! docker network inspect "${CONTRACT_NETWORK}" >/dev/null 2>&1; then
+    docker network create "${CONTRACT_NETWORK}" >/dev/null
+    STARTED_NETWORK=true
+  fi
+  docker run --detach --rm --name "${DYNAMODB_CONTAINER}" --network "${CONTRACT_NETWORK}" \
+    --publish 127.0.0.1:8000:8000 amazon/dynamodb-local:latest >/dev/null
   STARTED_DYNAMODB=true
+  RUNTIME_DYNAMODB_URL="http://${DYNAMODB_CONTAINER}:8000"
   wait_for_dynamodb
 }
 
@@ -168,16 +182,19 @@ start_runtime() {
     --format '{{range .Config.Entrypoint}}{{.}} {{end}}{{range .Config.Cmd}}{{.}} {{end}}')"
 
   docker rm --force "${container}" >/dev/null 2>&1 || true
-  local host_options=()
-  # Linux Dockerではhost.docker.internalを明示解決し、macOS/WindowsではDocker Desktopの標準名を使う。
-  if [[ "$(uname -s)" == Linux ]]; then
-    host_options=(--add-host host.docker.internal:host-gateway)
+  local network_options=()
+  # 自前で起動したDynamoDBなら同じネットワークに入る。利用者が起動済みのDynamoDBへは
+  # host.docker.internal で接続し、LinuxのDockerではその名前を明示的に解決させる。
+  if [[ "${STARTED_DYNAMODB}" == true ]]; then
+    network_options=(--network "${CONTRACT_NETWORK}")
+  elif [[ "$(uname -s)" == Linux ]]; then
+    network_options=(--add-host host.docker.internal:host-gateway)
   fi
   # shellcheck disable=SC2086 # 起動コマンドは空白区切りの引数として渡す。
   docker run --detach --rm --name "${container}" --publish "127.0.0.1:${port}:8080" \
-    ${host_options[@]+"${host_options[@]}"} \
+    ${network_options[@]+"${network_options[@]}"} \
     --env AWS_ACCESS_KEY_ID=test --env AWS_SECRET_ACCESS_KEY=test --env AWS_REGION="${AWS_REGION}" \
-    --env AWS_ENDPOINT_URL_DYNAMODB=http://host.docker.internal:8000 \
+    --env AWS_ENDPOINT_URL_DYNAMODB="${RUNTIME_DYNAMODB_URL}" \
     --env DYNAMODB_TABLE_NAME="${DYNAMODB_TABLE_NAME}" \
     --entrypoint /usr/local/bin/aws-lambda-rie "${image}" ${command_line} >/dev/null
   STARTED_CONTAINERS+=("${container}")
