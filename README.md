@@ -1,280 +1,179 @@
-# Python と Rust による AWS Lambda Lambdalith ベンチマーク
+# Lambda Runtime Lab: 言語ごとの AWS Lambda 比較
 
-## 概要
+同じ API を Python・Rust・TypeScript・Java で実装し、AWS Lambda のコンテナイメージとして同じ条件でデプロイして、処理時間・コールドスタート・メモリ・料金を比べる検証環境です。
+「どの言語が常に優れているか」は前提にしません。作りたい API に近い処理（ワークロード）ごとに、実測で判断できるようにします。
 
-このリポジトリは、AWS Lambda のコンテナイメージとしてデプロイする小規模 API アプリケーションを、Python と Rust で比較可能にするための再現可能な検証環境です。どちらの実装も単一の Lambda 関数から同じ 5 つのルートを公開し、同じ DynamoDB データを使用します。特定の言語が常に優れているとは前提せず、ランタイムの挙動、リソース使用量、デプロイ成果物、推定クラウドコストを測定します。
+## できること
 
-## 目的
+| やりたいこと | 方法 |
+| --- | --- |
+| 言語ごとの処理時間・コールドスタート・メモリ・料金を比べる | `make ui` の画面で計測し、結果を見る |
+| これから作る API の月額料金を言語ごとに見積もる | 画面の「作りたいAPIの月額料金を見込む」 |
+| 結果をファイルで残す・表計算で扱う | `results/reports/<計測ID>.md`・`.csv` |
+| 言語や計測する処理を増やす | `spec/` の一覧に足し、実装を追加する |
 
-言語ベンチマークでは、アプリケーションを実際にリリースする際の意思決定を十分に表せないことが多くあります。本プロジェクトでは、小規模なサーバーレス API の技術選定に影響するほど、ランタイムと実装の差がどこで現れるかを検証します。外部から観測できる挙動と実験条件はそろえつつ、各言語で一般的なフレームワーク、並行処理モデル、バリデーション、シリアライズ、リソースライフサイクルを使用できるようにしています。
+## 比べる対象
 
-## このリポジトリにおける Lambdalith
+| 言語 | 主なフレームワーク・ライブラリ | ランタイム |
+| --- | --- | --- |
+| Python | FastAPI、Pydantic、Mangum | CPython 3.13 |
+| Rust | Axum、Tokio、Serde、lambda_http | Rust 1.98（リリースバイナリ） |
+| TypeScript | Hono、AWS SDK for JavaScript v3 | Node.js 24 |
+| Java | Spring Boot 4、aws-serverless-java-container | Java 25 |
 
-ここでいう Lambdalith は、複数のルートとアプリケーションロジックを 1 つの Lambda 関数にまとめた小規模な Web/API アプリケーションです。大規模なモノリスを意図するものではありません。ルーティング、シリアライズ、CPU 処理、DynamoDB アクセスを 1 つのデプロイ可能な単位に収め、アプリケーションスタックとしてこれらの特性を比較します。
+比較の原則は **WHAT は同じ、HOW は各言語で自然に** です。
 
-## 比較方針
+- **そろえるもの**: API 契約（`spec/openapi.yaml`）、要求と期待応答（`spec/testcases/`）、エラー形式、DynamoDB の読み取り回数とデータ、Lambda の設定（arm64・メモリ・タイムアウト・ログ）、最終イメージの OS ベース（AL2023 OS-only）、計測条件。
+- **各言語に任せるもの**: フレームワーク、並行処理、検証・シリアライズの方法、内部の構造。
 
-基本原則は、**WHAT は同一、HOW は各言語で自然に**です。
+全言語の応答が正本と一致することは、Contract Test（`make contract-test`）で状態コードと JSON の内容まで照合します。
 
-2 つのアプリケーションは、正本となる OpenAPI 契約、リクエストとレスポンスのデータ、バリデーションとエラー条件、決定的な計算、DynamoDB の操作回数、データセット、Lambda のメモリとタイムアウト、対象アーキテクチャ、ベンチマークワークロード設定を共有します。`spec/openapi.yaml`、`spec/workloads.yaml`、`spec/testcases/` が正本の入力です。
+## 仕組み
 
-Python では FastAPI、Pydantic、`asyncio`、モジュールレベルでのリソース再利用を、Rust では Axum、Serde、Tokio、アプリケーション状態を使用できます。内部の呼び出しグラフを一致させる必要はありません。共通の Contract Test は、正本の各ケースを稼働中の両 API に送信し、ステータスと完全な JSON 結果を比較します。JSON オブジェクトのキー順は無視しますが、配列順と数値型は保持し、非決定的なフィールドとして明示的に宣言した JSON Pointer のみを除外します。そのため、チェックサムと共通エラーレスポンスも厳密な比較対象です。
+```mermaid
+flowchart LR
+  SPEC["spec/<br/>言語・処理・契約・料金の正本"] --> APPS["apps/{言語}<br/>各言語の実装"]
+  APPS -->|"make publish-images"| ECR["Amazon ECR"]
+  ECR -->|"make deploy（Terraform）"| LAMBDA["API Gateway → Lambda × 言語数<br/>→ 共有 DynamoDB"]
+  UI["make ui の画面 / make benchmark"] -->|"同じリクエスト"| LAMBDA
+  LAMBDA -->|"ログ"| CW["CloudWatch Logs"]
+  CW -->|"make collect"| RES["results/<br/>生データ・レポート"]
+  RES --> UI
+```
 
-## アーキテクチャ
+構成の詳細（AWS 構成図、手元の資材、コマンドごとに何が起きるか）は [全体構成と操作の地図](docs/10_全体構成と操作の地図.md) にまとめています。
+
+## はじめかた
+
+### 必要なもの
+
+Docker（Buildx）、uv と Python 3.13、Rust（stable）、Node.js 24、Terraform、AWS CLI。Java は Maven がなければ Docker で実行します。
+
+### 手元だけで確かめる（AWS 不要）
+
+```bash
+make lint            # 書式と静的解析
+make test            # 全言語・計測ツールの単体テスト
+make contract-test   # 全言語のイメージを起動し、応答を正本と照合
+```
+
+### AWS に環境を作って計測する
+
+```bash
+cp .env.example .env          # 初回だけ。AWS_PROFILE などを書く
+make bootstrap-ecr            # ECR を作る（初回・言語追加時）
+make publish-images           # 全言語をビルドして ECR へ登録（Lambda はまだ変わらない）
+terraform -chdir=infrastructure/terraform plan \
+  -var="aws_region=ap-northeast-1" -var="environment=benchmark"   # 変更予定の確認
+make deploy                   # Lambda・API Gateway・DynamoDB などを作成・更新
+# terraform output -raw dynamodb_table_name の値を .env の DYNAMODB_TABLE_NAME へ
+source ./.env.export.sh
+make seed                     # 比較用のデータを投入
+make ui                       # http://127.0.0.1:8765/ で計測・比較
+```
+
+AWS の操作は料金が発生します。使い終わったら `make destroy` で削除します（ECR のイメージと DynamoDB のデータも消えます）。
+詳しい手順・確認・切り戻しは [AWSデプロイ手順](docs/06_AWSデプロイ手順.md) を参照してください。
+
+## 画面
+
+`make ui` で開く画面では、次の3つを行えます。操作は [画面の操作ガイド](docs/09_画面の操作ガイド.md) を参照してください。
+
+| 画面 | できること |
+| --- | --- |
+| 計測結果 | 指標ごとに一番有利な言語、全言語の比較表、P50・P95・P99 のグラフ、計測件数、実験条件 |
+| 新しく計測する | ワークロード・言語・回数を選んで計測し、ログ収集とレポート作成まで自動で行う |
+| 作りたいAPIの月額料金を見込む | 作りたい API がどの処理に近いかの割合と月間リクエスト数から、言語ごとの月額を見積もる |
+
+計測を始める前に、デプロイ済みイメージの版と手元のアプリを照合します。デプロイ後にアプリのコード・依存定義・`Dockerfile` を変えていれば、計測を止めて再デプロイを促します（テストだけの変更では止めません）。
+
+## API とワークロード
+
+すべての言語が、1つの Lambda 関数から同じ5つのルートを公開します（Lambdalith: 複数のルートを1つの関数にまとめた小さな API）。
+
+| ルート | 測るもの | ワークロード |
+| --- | --- | --- |
+| `GET /health` | フレームワークとランタイムの最小の負荷 | `health` |
+| `POST /transform` | JSON の解析・検証・正規化・並べ替え | `transform-small`、`transform-large` |
+| `POST /compute` | CPU を使う決定的なハッシュ計算 | `compute-sequential` |
+| `GET /items/{id}` | DynamoDB から1件読む | `items` |
+| `POST /aggregate` | DynamoDB から5件を順番に、または同時に読んで集計する | `aggregate-sequential`、`aggregate-concurrent` |
+
+ワークロードの回数・同時実行数・ウォームアップは `spec/workloads.yaml` で定義します。一部の言語だけが対応するワークロードも定義でき、未対応の言語は計測せず「未対応」と表示します。
+
+## 計測する指標と料金
+
+| 指標 | 出どころ |
+| --- | --- |
+| 応答時間（P50・P95・P99） | 手元の計測ランナー |
+| Lambda の実行時間・課金対象時間・初期化時間・最大メモリ | CloudWatch Logs の実行レポート |
+| コールド・ウォームの件数、エラー率、ログと結び付かなかった件数 | 上記の結合結果 |
+| 料金（100万リクエストあたり、うち実行時間分） | 課金対象時間・メモリ・`spec/pricing.yaml` |
+| イメージの容量・レイヤー・digest | `scripts/collect-image-metrics.sh`（任意） |
 
 ```text
-                           ベンチマークランナー
-                    （AWS 認証情報チェーン + SigV4）
-                                  |
-                    +-------------+-------------+
-                    |                           |
-             API Gateway HTTP API       API Gateway HTTP API
-                 （AWS_IAM）                 （AWS_IAM）
-                    |                           |
-           Python Lambdalith             Rust Lambdalith
-                    |                           |
-                    +----------+----------------+
-                               |
-                           DynamoDB
-
-             Lambda ログと REPORT レコード -> CloudWatch
-             コンテナイメージ                 -> Amazon ECR
-             インフラ                         -> Terraform
-             生データ / レポート              -> JSON、CSV、Markdown
+実行時間分の料金 = 課金対象時間（秒）× メモリ（GB）× GB秒あたりの料金
+1リクエストの料金 = 実行時間分の料金 + リクエスト料金
 ```
 
-両 Lambda 関数は、同等の API Gateway 統合、IAM 権限、ログ、メモリ、タイムアウト、環境、アーキテクチャ、および同一の DynamoDB テーブルを使用します。AWS リソースは Terraform が管理します。ベンチマークランナーは関数の外部にあり、同一のクライアント側条件で両方の対象を呼び出します。
+料金は Lambda だけの概算です。Free Tier・API Gateway・DynamoDB・データ転送は含みません。料金表は `spec/pricing.yaml` の更新日と出典を確認してから使います。
+取得できなかった値は 0 にせず「未取得」（`null`）のまま扱います。コンテナイメージの容量はデプロイ成果物の大きさで、実行料金とは別です。
 
-## 技術スタック
+## 主なコマンド
 
-- Python: CPython、FastAPI、Mangum、Pydantic、AWS SDK、pytest、Ruff、uv
-- Rust: stable Rust、Axum、`lambda_http`、Tokio、Serde、AWS SDK for Rust、rustfmt、Clippy
-- ランタイムパッケージング: マルチステージ Docker ビルドと、AL2023 Lambda OS-only の最終ベースイメージ
-- インフラ: AWS Lambda、API Gateway HTTP API、ECR、DynamoDB、CloudWatch、IAM、Terraform
-- ベンチマーク: Python ランナー、決定的な YAML ワークロード、生の JSON/JSONL レコード、CSV/Markdown レポート
-- CI: アプリケーション、契約、arm64 コンテナ、Terraform の検証を行う GitHub Actions
+| 目的 | コマンド |
+| --- | --- |
+| 品質確認 | `make format`・`make lint`・`make test`・`make contract-test`・`make terraform-validate` |
+| ビルド | `make build`（`IMPLEMENTATIONS="python rust"` で絞る） |
+| AWS の構築・更新 | `make bootstrap-ecr`・`make publish-images`・`make deploy`・`make destroy` |
+| データと計測 | `make seed`・`WORKLOAD=health make benchmark`・`RUN_ID=<計測ID> make collect`・`RUN_ID=<計測ID> make report`・`make benchmark-matrix` |
+| 画面 | `make ui`（`UI_PORT=9000` でポートを変更） |
 
-## API エンドポイント
-
-- `GET /health`: 外部 I/O を伴わないルーター、フレームワーク、ランタイムのオーバーヘッドを測定します。
-- `POST /transform`: JSON のデコード、バリデーション、正規化、並べ替え、エンコードを測定します。
-- `POST /compute`: 決定的な CPU バウンドのハッシュ処理を実行します。MVP では共通の `sequential` プロファイルのみ有効です。
-- `GET /items/{id}`: DynamoDB の項目を 1 件読み取り、共通の未検出エラーを返します。
-- `POST /aggregate`: `sequential` または `concurrent` モードで同等の DynamoDB 読み取りを行い、項目 ID で正規化した件数、合計、決定的なチェックサムを返します。
-
-レスポンスボディから実装言語を識別できることはありません。エラーは共通の `error.code`、`error.message`、任意の `error.details` スキーマを使用します。
-
-## ベンチマークワークロード
-
-`spec/workloads.yaml` は、次の制御されたワークロードを定義します。
-
-- `health`
-- `transform-small`
-- `transform-large`
-- `compute-sequential`
-- `items`
-- `aggregate-sequential`
-- `aggregate-concurrent`
-
-各定義には、メソッド、パス、ペイロード、ウォームアップ回数、測定反復回数、クライアント並行数を記録します。標準マトリクスでは arm64 と、等しい Lambda メモリ設定である 256 MB、512 MB、1024 MB を使用します。CPU の並列処理と x86_64 は MVP の対象外です。
-
-## コンテナ方針
-
-両方の最終イメージには、同じ AL2023 Lambda OS-only ベースを使用します。`scripts/build-images.sh` はそのベースのダイジェストを一度だけ解決して両方のビルドに渡すため、比較実行中に `al2023` タグの異なるリビジョンを取得することはありません。解決したダイジェストはビルドメトリクスとともに記録します。言語固有のビルダーステージは意図的に異なります。Python の最終ステージには CPython、Lambda Runtime Interface Client、ランタイム依存関係、アプリケーションコードを含めます。Rust の最終ステージにはリリースバイナリと必要なランタイムファイルを含め、Cargo やコンパイラの成果物は含めません。また、Rust のビルダーステージも Amazon Linux 2023 で動作させます。これにより、動的リンクされたバイナリが実行環境の glibc と一致し、アロケータの挙動を変えてしまう静的 musl ビルドを回避します。
-
-既定のビルド対象は `linux/arm64` です。記録する成果物データには、ビルド時間、ローカルイメージのサイズとレイヤー、ECR のサイズとダイジェスト、Python のランタイム・依存関係・アプリケーションの使用量、Rust バイナリのサイズを含みます。
-
-**コンテナイメージのサイズはデプロイ使用量の指標であり、Lambda 実行料金ではありません。** 実行コストは、課金対象時間、設定メモリ、リクエスト料金、設定アーキテクチャの料金から計算します。
-
-## メトリクス
-
-ランナーと分析器は、ビルド／成果物の観測値とランタイムの観測値を分けて扱います。
-
-- クライアント側レイテンシーと P50、P95、P99
-- Lambda Duration と Billed Duration
-- Init Duration、Max Memory Used、設定メモリ、エラー数、エラー率
-- コールド／ウォームサンプル数
-- ビルド時間、イメージ／レイヤーサイズ、ECR ダイジェストとサイズ、言語固有の使用量
-- リクエストあたり、ワークロードあたり、100 万リクエストあたりの推定コスト
-- Git リビジョン、実行 ID、リージョン、アーキテクチャ、メモリ、ワークロード、イメージダイジェスト
-
-欠損した CloudWatch 値は `null` のままとし、ゼロには変換しません。
-
-## コスト計算
-
-料金はアプリケーションコードに散在させる定数ではなく、データとして扱います。`spec/pricing.yaml` には更新日、リージョン、出典、リクエスト料金、arm64/x86_64 の GB 秒料金を記録します。サンプルの正規化済み推定値は次のとおりです。
-
-```text
-計算コスト = 課金対象時間（秒）× 設定メモリ（GB）× GB 秒料金
-リクエストコスト = リクエストあたりの料金
-100 万リクエストあたりの正規化コスト = （計算コスト + リクエストコスト）× 1,000,000
-```
-
-アカウント間で実行結果を比較可能にするため、主比較から AWS Free Tier を除外します。Free Tier を反映した表示には、その旨を個別に明記する必要があります。料金が未設定の場合は値を補完せず、計算を失敗させます。レポートを解釈する前に、出典と更新日を確認してください。
-
-## ビルド方法
-
-前提条件は、Buildx 対応の Docker、uv、Python 3.13、stable Rust、Terraform、および AWS 操作に使用する AWS CLI です。
-
-```bash
-make build              # 両方の linux/arm64 コンテナイメージ
-make build-python
-make build-rust
-make terraform-validate
-```
-
-必要に応じて `PLATFORM` または `IMAGE_TAG` を上書きします。制御されたベンチマークでは、`PLATFORM=linux/arm64` を維持してください。
-
-## ローカルでの実行方法
-
-最初に高速なローカルチェックを実行します。
-
-```bash
-make lint
-make test
-```
-
-共通の Contract Test は、`spec/implementations.yaml` の全言語について、DynamoDB Local と各言語の Lambda イメージ（Lambda Runtime Interface Emulator 経由）を起動し、`spec/testcases/` の正本ケースを比較します。デプロイするのと同じイメージを、同じ起動コマンドで検証します。環境変数の設定や事前起動は不要で、イメージがなければその言語だけをビルドします。
-
-```bash
-make contract-test
-```
-
-コマンドが自動起動したコンテナはテスト終了時に停止します。言語ごとの RIE は 9101 番から一覧の順に割り当てます。AWSや手動起動済みAPIなど別の接続先を検証する場合は、全言語について `<実装キー大文字>_API_URL`（例: `PYTHON_API_URL`、`RUST_API_URL`）を指定してください。この場合、起動・fixture投入・停止を行わず、指定先へテスト要求だけを送ります。呼び出し方式は `CONTRACT_TRANSPORT`（`direct` または `lambda-rie`、言語ごとには `<実装キー大文字>_CONTRACT_TRANSPORT`）で指定します。`lambda-rie` はローカル転送用アダプターにすぎず、正本の HTTP リクエストと期待レスポンスは変更しません。
-
-## デプロイ方法
-
-初回作成、イメージ更新、Lambda切替、言語の追加、確認、切戻し、削除は、[AWSデプロイ手順](docs/06_AWSデプロイ手順.md) を参照してください。ワークロード（計測する処理）や比較する言語を増やす手順は、[ワークロードと言語の追加手順](docs/08_ワークロードと言語の追加手順.md) にまとめています。テーブル名などの環境変数は、同手順の「共通の準備」どおり `source ./.env.export.sh` で読み込みます。`make publish-images` はECRへのpushとデプロイ対象のdigest URIの書き出しだけであり、Lambdaを新digestへ更新するには、`plan` を確認後に `make deploy` が必要です。
-
-実験後は環境を削除します。
-
-```bash
-make destroy
-```
-
-## シード方法
-
-`terraform output` からデプロイ済みテーブル名を取得し、`.env` へ書いたうえで決定的なシードスクリプトを実行します。
-
-```bash
-source ./.env.export.sh
-make seed
-```
-
-DynamoDB Local では、`source ./.env.export.sh --local`（`DYNAMODB_ENDPOINT_URL` 含む）を使ってください。コマンドを再実行しても、約 100 件の項目 ID、値、ペイロードは同一になります。
-
-## ベンチマーク方法
-
-保護された両方の API エンドポイント、実際のLambdaアーキテクチャ、メモリを `.env` に設定し、`source ./.env.export.sh` で読み込みます。Python/RustのLambda設定が同じであることをAWS CLIで確認してから、`ARCHITECTURE` と `LAMBDA_MEMORY_MB` を記録してください。ランナーは `X-Benchmark-Run-Id` とリクエスト番号を追加し、ウォームアップを実行し、両対象に同一のワークロード設定を使用し、SigV4 で AWS リクエストに署名し、後から再分析できるよう生の観測値を保存します。
-
-```bash
-source ./.env.export.sh
-WORKLOAD=aggregate-concurrent \
-RUN_ID=auto \
-make benchmark
-```
-
-同一メモリのマトリクスを明示的に実行します。
-
-```bash
-source ./.env.export.sh
-make benchmark-matrix
-```
-
-この操作はデプロイ済み Lambda の設定を変更し、AWS 料金が発生する可能性があります。
-
-## レポート生成方法
-
-Lambda Duration、Init Duration、メモリはログレコードから取得するため、レポート生成前に実行結果を収集してください。いずれの手順も、その実行の生レコードのみを読み書きします。
-
-```bash
-RUN_ID=<existing-run-id> make collect
-RUN_ID=<existing-run-id> make report
-```
-
-出力先は `results/reports/<run-id>.md` と `results/reports/<run-id>.csv` です。レポートには、条件、サンプル数、パーセンタイル、リソース観測値、イメージメタデータ、正規化コスト、測定時の注記を含めます。
-
-レポートは、最初に`Unclassified=0`と実験条件を確認してから数値を比較します。各章・指標・
-`null`の意味、CSVの利用方法、結論を書く際の注意点は
-[ベンチマークレポート利用ガイド](docs/07_BENCHMARK_REPORT_GUIDE.md) を参照してください。
-
-## 画面で計測・比較する
-
-計測の開始と、`results/raw/` に保存した計測結果の一覧・比較をブラウザで行えます。
-
-```bash
-make ui                  # http://127.0.0.1:8765/ で起動（Ctrl+C で停止）
-UI_PORT=9000 make ui     # ポートを変える場合
-```
-
-- **計測結果**: Markdown・CSV レポートと同じ集計処理を使い、計測履歴、比較に使えるかどうかの判定と理由、応答時間・Lambda 実行時間・メモリ・推定料金の言語間の比較、実験条件を表示します。
-- **新しく計測する**: ワークロードと回数を選ぶと、計測、ログの反映待ち（60 秒）、ログ収集、レポート作成を順に実行します。送信するリクエスト数と、同じワークロードの過去の実測から求めた料金の見込みを開始前に表示します。計測は同時に一件だけ実行でき、途中で中止できます。
-- 接続先とロググループは Terraform の出力から、アーキテクチャとメモリは AWS 上の Lambda の実設定から、計測のたびに読み取ります。`.env` の読み込みは不要です。環境変数 `<実装キー大文字>_API_URL`（例: `PYTHON_API_URL`）があれば接続先はそちらを優先し、`ARCHITECTURE`・`LAMBDA_MEMORY_MB` が実設定と食い違う場合は計測を開始させません。
-- 計測を始める前に、デプロイ済みイメージのタグに記録したGitコミットと手元のアプリを照合し、デプロイ後にアプリが変更されていれば計測を止めて再デプロイを促します（古い版のまま計測すると、Lambda側の指標を結び付けられないため）。
-- Terraform の出力を読めない、AWS の認証が切れている、言語ごとの Lambda 設定が異なる、といった場合は理由を画面に表示します。解消後は「設定を再確認」で、画面を起動し直さずに計測できます。
-- サーバーは `127.0.0.1` だけで待ち受け、別サイトからの操作要求を拒否します。API の URL は画面とコマンド出力の表示から除きます。デプロイ、シード投入、削除は画面から実行できません。
-
-## テスト方針
-
-- Python プロジェクトで、Python の単体、API、リポジトリ、エラーテストを実行します。
-- Cargo で、Rust の単体、API、リポジトリ、エラーテストを実行します。
-- 両言語のテストスイートは、`spec/testcases/` の全ベクターをそれぞれのアプリケーションに対して実行します。そのため、デプロイせずに契約の乖離を高速なローカルテストで検出できます。
-- ベンチマークプロジェクトで、ベンチマークランナー、分析器、コスト、レポートの挙動を検証します。
-- Contract Test ハーネスの単体テストで、正本ケースの読み込み、厳密な JSON 比較、順序、数値型、非決定的フィールドの明示的な除外を検証します。
-- 共通の Contract Test で、各正本ベクターを両 API に送信し、正本のステータス、ボディ、エラースキーマ、順序、数値結果、チェックサムを検証します。
-- コンテナのスモーク／契約テストでは、arm64 イメージと共通の決定的なデータソースを使用します。
-- Terraform は、リソースをデプロイせずにフォーマット、バックエンドなしの初期化、検証を実行します。
-
-`make test` は暗黙に AWS へ接続しません。`make contract-test` は既定のローカル環境だけを自動起動し、AWSへ接続しません。
+コマンドごとの読み書きと AWS への影響は [全体構成と操作の地図](docs/10_全体構成と操作の地図.md#4-操作の地図コマンドごとに何が起きるか) にあります。
 
 ## CI
 
-`.github/workflows/ci.yml` はプルリクエストとプッシュ時に実行されます。Python、Rust、共通 Contract Test、`linux/arm64` Docker ビルド、Terraform を個別のジョブで検証します。Contract Test はローカルの Lambda コンテナを使用し、AWS にはデプロイしません。
+- `.github/workflows/ci.yml`: push とプルリクエストで、全言語の書式・テスト、arm64 のイメージビルドと Contract Test、Terraform の検証を行います。AWS にはデプロイしません。
+- `.github/workflows/benchmark.yml`: 手動実行だけです。GitHub OIDC で AWS のロールを引き受け、デプロイ・計測・レポート・削除を行います。
 
-料金が発生する可能性があるため、完全な AWS デプロイとベンチマークは通常の CI から意図的に除外しています。`.github/workflows/benchmark.yml` は手動の `workflow_dispatch` トリガーのみを持ち、明示的に設定した AWS ロールとイメージ URI を必要とし、保存済みアクセスキーではなく GitHub OIDC を使用します。
+## 資料
 
-## 結果
+| 資料 | 内容 |
+| --- | --- |
+| [画面の操作ガイド](docs/09_画面の操作ガイド.md) | 画面の見方・操作・困ったとき |
+| [全体構成と操作の地図](docs/10_全体構成と操作の地図.md) | AWS 構成、手元の資材、コマンドごとの影響、目的別の手順 |
+| [AWSデプロイ手順](docs/06_AWSデプロイ手順.md) | 初回構築・更新・確認・切り戻し・削除 |
+| [ワークロードと言語の追加手順](docs/08_ワークロードと言語の追加手順.md) | 計測する処理や言語を増やす |
+| [ベンチマークレポート利用ガイド](docs/07_BENCHMARK_REPORT_GUIDE.md) | Markdown・CSV レポートの読み方と注意点 |
+| [要件](docs/01_REQUIREMENTS.md)・[仕様](docs/02_SPECIFICATION.md) | 比較方針・API 契約・計測仕様の正本 |
 
-**未測定です。**
+`docs/03`〜`05`、`docs/reviews/`、`docs/diagrams/aws-runtime-architecture.drawio` は、Python と Rust の2言語だった時点の記録です。現在の構成は上の資料を参照してください。
 
-再現可能な実行によって生データとレポートが生成されるまで、ベンチマーク値や言語の優劣は提示しません。
+## 結果の扱い
 
-**AWS では未検証です。**
+計測結果は `results/` に保存し、画面とレポートで確認します。数値は条件（ワークロード・メモリ・回数・時間帯・手元の回線）で変わるため、README には載せません。
+比較に使う前に、レポートの `Unclassified` が 0 であること、条件が同じであること、エラー率を確認してください。
 
-結果を公開する前に、所有する AWS アカウントでデプロイ、IAM 認可、SigV4 呼び出し、CloudWatch との相関、制御されたコールドスタート収集、ECR メタデータ、コスト推定、クリーンアップを検証する必要があります。
+結果はワークロードごとに解釈します。
 
-## 解釈
+- `/health` はフレームワークとランタイムの負荷として、アプリの処理と分けて読みます。
+- I/O を伴う処理（DynamoDB）は、ネットワークの時間で言語差が小さくなることがあります。
+- コールドスタートは初期化時間とイメージ・ランタイムの初期化を分けて比べます。
+- 技術選定には、ビルド・依存・可観測性・保守性も含めて判断します。
 
-結果は単一の順位に集約せず、ワークロードごとに議論してください。
+## 制約
 
-- フレームワークのオーバーヘッド: `/health` はアプリケーション処理と分けて解釈します。
-- CPU バウンド処理: 決定的な `/compute` の結果と課金対象時間を比較します。
-- I/O バウンド処理: ネットワークと DynamoDB のレイテンシーにより言語差が小さくなる可能性があります。同一の操作回数で逐次・並行プロファイルを比較します。
-- コールドスタート: Init Duration と成果物／ランタイムの初期化を分けて比較します。
-- リソース使用量: メモリとデプロイ使用量を実行コストから独立して確認します。
-- 開発の複雑さ: ランタイムメトリクスとともに、ビルド、依存関係、可観測性、保守性のトレードオフを含めます。
-
-技術選定は、あらかじめ決めた結論ではなく、測定したワークロードと運用上の制約に従うべきです。
-
-## 制約事項
-
-- Lambda のコールドスタートを完全に同一にすることはできません。Init Duration は観測したコールドサンプルを識別しますが、制御された実行環境の更新は分離を改善するにとどまり、保証はしません。
-- ウォーム結果には文書化されたウォームアップが必要であり、それでも共有 AWS システム、ネットワークのばらつき、サービスのスロットリング、実行環境の置き換えによる影響を受ける可能性があります。
-- API Gateway、DynamoDB、CloudWatch の配信、クライアントの所在地は、言語ランタイム外のレイテンシーに寄与します。
-- MVP は arm64 コンテナイメージ、3 種類のメモリ設定、1 つの AWS リージョンを比較するものであり、すべてのアーキテクチャ、リージョン、デプロイ形式、ワークロードに関する一般的な結論ではありません。
-- 共通 OS ベースにより変動要因の 1 つは減らせますが、言語ランタイムと依存関係レイヤーは必然的に異なります。
-- コスト出力は、設定済みの料金と測定した課金対象時間に基づく推定値であり、AWS 請求書ではありません。
+- コールドスタートを完全に同じ条件にはできません。初期化時間でコールドの計測を見分けますが、実行環境の入れ替わりは制御しきれません。
+- ウォームの結果も、AWS 側の共有基盤・ネットワーク・スロットリングの影響を受けます。
+- API Gateway、DynamoDB、CloudWatch への反映、手元の回線は、言語以外の時間として応答時間に含まれます。
+- 比較の範囲は arm64・コンテナイメージ・1リージョンです。x86_64、ZIP デプロイ、Java の SnapStart（起動済み状態を保存して起動を速くする機能）は対象外です。
+- OS ベースは共通ですが、言語ランタイムと依存は言語ごとに異なります。
+- 料金は設定した料金表と計測した課金対象時間からの見積もりで、AWS の請求額ではありません。
 
 ## 今後の作業
 
-- 同等のマトリクスで x86_64 と arm64 を比較する。
-- コンテナイメージと ZIP のデプロイモデルを比較する。
-- 制御された共通ベースの実行に加え、本番志向のコンテナ比較を追加する。
-- 両言語が同じ論理契約を実装した後にのみ、CPU 並列プロファイルを追加する。
-- 文書化した信頼区間を伴う、リージョンと時間帯をまたぐ反復実行を拡充する。
-- Cloud Run など別のコンピューティングプラットフォームで、同じアプリケーション契約を比較する。
-
-<!--
-AWS_PROFILE=lambda-runtime-lab-deploy \
-terraform -chdir=infrastructure/terraform output
- -->
+- x86_64 と arm64 を同じ条件で比べる。
+- コンテナイメージと ZIP のデプロイ方式を比べる。
+- Java の SnapStart など、言語ごとの起動対策ありの比較を、対策なしの比較と分けて追加する。
+- リージョンや時間帯をまたいで繰り返し計測し、ばらつきの幅を示す。
+- Cloud Run など別の実行基盤で、同じ API 契約を比べる。
