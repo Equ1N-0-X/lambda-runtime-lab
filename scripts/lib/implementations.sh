@@ -23,3 +23,9 @@ implementation_app_dir() {
   local key="$1"
   implementation_cli --format tsv | awk -F '\t' -v key="${key}" '$1 == key { print $2 }'
 }
+
+# 全言語のイメージの元になるファイルを、一行一つのGit pathspecで出力する。
+# イメージに入らないテスト（test_paths）は除外の指定（:(exclude)...）として含む。
+implementation_image_pathspecs() {
+  implementation_cli --format pathspecs
+}

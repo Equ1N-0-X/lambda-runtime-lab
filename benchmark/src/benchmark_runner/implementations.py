@@ -28,11 +28,21 @@ class Implementation:
     app_dir: str
     # イメージ指標として容量を測るコンテナ内のパス（指標名からパスへの対応表）。
     artifact_paths: dict[str, str] = field(default_factory=dict, compare=False, hash=False)
+    # app_dirのうち、イメージに入らないテストのパス（app_dirからの相対パス）。
+    test_paths: tuple[str, ...] = field(default=(), compare=False, hash=False)
 
     @property
     def env_prefix(self) -> str:
         """接続先などを環境変数で上書きするときの接頭辞（例: PYTHON）。"""
         return self.key.upper()
+
+    @property
+    def image_source_pathspecs(self) -> tuple[str, ...]:
+        """イメージの元になるファイルを表すGitのpathspec。テストだけの変更は版のずれとみなさない。"""
+        return (
+            self.app_dir,
+            *(f":(exclude){self.app_dir}/{path}" for path in self.test_paths),
+        )
 
 
 def load_implementations(path: Path = DEFAULT_REGISTRY) -> tuple[Implementation, ...]:
@@ -62,12 +72,25 @@ def load_implementations(path: Path = DEFAULT_REGISTRY) -> tuple[Implementation,
         # 容量を測るパスは指標名とパスの対応表でなければ、イメージ指標を集められない。
         if not isinstance(artifact_paths, dict):
             raise ImplementationError(f"{path}: {key} の artifact_paths は対応表で指定してください")
+        test_paths = definition.get("test_paths") or []
+        # テストのパスがapp_dirの外を指すと、照合から外す範囲がアプリの外へ広がってしまう。
+        if not isinstance(test_paths, list) or not all(
+            isinstance(item, str)
+            and item
+            and not item.startswith("/")
+            and ".." not in item.split("/")
+            for item in test_paths
+        ):
+            raise ImplementationError(
+                f"{path}: {key} の test_paths は app_dir からの相対パスの一覧で指定してください"
+            )
         implementations.append(
             Implementation(
                 key=key,
                 label=str(definition["label"]),
                 app_dir=str(definition["app_dir"]),
                 artifact_paths={str(name): str(value) for name, value in artifact_paths.items()},
+                test_paths=tuple(test_paths),
             )
         )
     return tuple(implementations)
