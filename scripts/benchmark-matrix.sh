@@ -8,6 +8,9 @@ MEMORIES="${MEMORIES:-256 512 1024}"
 WORKLOADS="${WORKLOADS:-health transform-small transform-large compute-sequential items aggregate-sequential aggregate-concurrent}"
 ARCHITECTURE="${ARCHITECTURE:-arm64}"
 REGION="${AWS_REGION:-ap-northeast-1}"
+# Terraformの既定の環境名（dev）のまま適用すると、別名の環境として全リソースを作り直すため、
+# デプロイ時（make deploy）と同じ環境名を必ず渡す。
+ENVIRONMENT="${ENVIRONMENT:-benchmark}"
 LOG_WAIT_SECONDS="${LOG_PROPAGATION_WAIT_SECONDS:-10}"
 DRY_RUN=false
 # 第一引数が --dry-run の場合は、AWS操作を行わず実行予定のコマンドを表示する。
@@ -29,6 +32,8 @@ execute() {
 for memory in ${MEMORIES}; do
   # 現在のメモリ量をLambda設定へ反映してから、同じ条件で全ワークロードを実行する。
   execute terraform -chdir="${TERRAFORM_DIR}" apply -auto-approve \
+    -var="aws_region=${REGION}" \
+    -var="environment=${ENVIRONMENT}" \
     -var="lambda_memory_mb=${memory}"
 
   # 接続先とロググループは、実装キーごとのTerraform出力から runner の引数へ変換する。
