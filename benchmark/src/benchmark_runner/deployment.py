@@ -5,14 +5,15 @@ Lambda側の指標を結び付けられないデータになるため、計測�
 
 イメージのタグには、公開時のGitコミット（-g<sha>、未コミットの変更があれば -dirty）を含める
 （scripts/publish-images.sh）。デプロイ済みイメージのタグからそのコミットを読み、
-そのコミット以降にアプリのディレクトリが変更されていないかをGitで確認する。
+そのコミット以降にイメージの元になるファイルが変更されていないかをGitで確認する。
+イメージに入らないテスト（spec/implementations.yaml の test_paths）の変更は、ずれとみなさない。
 """
 
 from __future__ import annotations
 
 import re
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -57,29 +58,31 @@ def read_deployed_image(function_name: str, region: str) -> DeployedImage:
     )
 
 
-def _git(*arguments: str) -> subprocess.CompletedProcess[str]:
+def _git(root: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["git", "-C", str(ROOT), *arguments], capture_output=True, text=True, check=False
+        ["git", "-C", str(root), *arguments], capture_output=True, text=True, check=False
     )
 
 
-def app_changed_since(revision: str, app_dir: str) -> bool | None:
-    """指定コミット以降にアプリのディレクトリが変わったかを返す。判定できなければNone。"""
+def sources_changed_since(
+    revision: str, source_pathspecs: Sequence[str], *, root: Path = ROOT
+) -> bool | None:
+    """指定コミット以降にイメージの元になるファイルが変わったかを返す。判定できなければNone。"""
     # 手元の履歴にないコミットなら、比較の基準がないため判定できない。
-    if _git("cat-file", "-e", f"{revision}^{{commit}}").returncode != 0:
+    if _git(root, "cat-file", "-e", f"{revision}^{{commit}}").returncode != 0:
         return None
     # git diff --quiet は差分があると1、なければ0を返す。
-    return _git("diff", "--quiet", revision, "HEAD", "--", app_dir).returncode == 1
+    return _git(root, "diff", "--quiet", revision, "HEAD", "--", *source_pathspecs).returncode == 1
 
 
 def check_deployed_revision(
     *,
     label: str,
     function_name: str,
-    app_dir: str,
+    source_pathspecs: Sequence[str],
     region: str,
     read_image: Callable[[str, str], DeployedImage] = read_deployed_image,
-    changed_since: Callable[[str, str], bool | None] = app_changed_since,
+    changed_since: Callable[[str, Sequence[str]], bool | None] = sources_changed_since,
 ) -> str | None:
     """デプロイ済みの版が手元のアプリと一致しなければ、その理由と対処を返す。一致すればNone。"""
     try:
@@ -104,7 +107,7 @@ def check_deployed_revision(
             f"{label} のデプロイ済みイメージは、未コミットの変更を含めて作られています。"
             "変更をコミットしてから" + REPUBLISH_HINT
         )
-    changed = changed_since(match["sha"], app_dir)
+    changed = changed_since(match["sha"], source_pathspecs)
     # 手元の履歴にないコミットから作られていれば、別の作業ブランチの版の可能性がある。
     if changed is None:
         return (
