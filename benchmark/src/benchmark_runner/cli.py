@@ -15,6 +15,7 @@ from pathlib import Path
 
 import boto3
 
+from benchmark_runner.build_inputs import external_base_images
 from benchmark_runner.cloudwatch import collect_run
 from benchmark_runner.dashboard.jobs import JobManager
 from benchmark_runner.dashboard.server import LISTEN_HOST, create_server
@@ -182,6 +183,12 @@ def build_parser() -> argparse.ArgumentParser:
     implementations.add_argument(
         "--format", choices=("keys", "tsv", "pathspecs", "json"), default="keys"
     )
+
+    inputs = subparsers.add_parser(
+        "build-inputs", help="Dockerfileが参照する外部のベースイメージを一行ずつ表示する"
+    )
+    inputs.add_argument("--dockerfile", type=Path, required=True)
+    inputs.add_argument("--build-arg", type=_key_value, action="append", default=[])
 
     ui = subparsers.add_parser("ui", help="計測結果の閲覧と計測開始の画面を手元で起動する")
     ui.add_argument("--port", type=int, default=8765)
@@ -447,7 +454,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         # runなら計測、collectならログ収集、uiなら閲覧画面、implementationsなら実装一覧、
-        # それ以外のreportなら報告作成を実行する。
+        # build-inputsならビルドの入力、それ以外のreportなら報告作成を実行する。
         if args.command == "run":
             return _run_command(args)
         if args.command == "collect":
@@ -456,6 +463,10 @@ def main(argv: list[str] | None = None) -> int:
             return _ui_command(args)
         if args.command == "implementations":
             return _implementations_command(args)
+        if args.command == "build-inputs":
+            dockerfile = args.dockerfile.read_text(encoding="utf-8")
+            print("\n".join(external_base_images(dockerfile, dict(args.build_arg))))
+            return 0
         return _report_command(args)
     # 署名の失敗は、API保存先の障害とは別の、計測する側の認証の問題として案内する。
     except SigningError as exc:
