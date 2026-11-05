@@ -25,6 +25,7 @@ from benchmark_runner.dashboard.jobs import (
     JobManager,
     LaunchError,
     load_workloads,
+    workload_experiments,
 )
 
 logger = logging.getLogger(__name__)
@@ -157,15 +158,22 @@ class DashboardHandler(BaseHTTPRequestHandler):
             raise RequestRejected(HTTPStatus.NOT_FOUND, "ページが見つかりません。")
 
     def _launch_options(self) -> dict[str, Any]:
+        settings = self.jobs.resolve_settings()
+        definitions = load_workloads(self.jobs.workload_file)
+        # 料金の目安は、これから計測するLambdaの条件と同じ処理内容の実測だけから求める。
         costs = latest_costs_by_workload(
-            results_dir=self.results_dir, pricing_path=self.pricing_path
+            results_dir=self.results_dir,
+            pricing_path=self.pricing_path,
+            architecture=settings.architecture,
+            memory_mb=settings.memory_mb,
+            region=settings.region,
+            experiments=workload_experiments(self.jobs.workload_file, definitions),
         )
         workloads = [
-            {**workload, "cost_basis": costs.get(workload["name"])}
-            for workload in load_workloads(self.jobs.workload_file)
+            {**workload, "cost_basis": costs.get(workload["name"])} for workload in definitions
         ]
         return {
-            "settings": self.jobs.resolve_settings().public(),
+            "settings": settings.public(),
             "workloads": workloads,
             "limits": {name: {"min": low, "max": high} for name, (low, high) in LIMITS.items()},
             "log_wait_seconds": self.jobs.log_wait_seconds,

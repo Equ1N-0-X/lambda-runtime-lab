@@ -18,7 +18,7 @@ import httpx
 
 from benchmark_runner.response_contract import validate_success_response
 from benchmark_runner.sigv4 import frozen_credentials, sign_headers
-from benchmark_runner.workloads import Workload
+from benchmark_runner.workloads import Workload, experiment_id
 
 RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
@@ -105,22 +105,8 @@ def build_plan(config: RunConfig, workload: Workload) -> dict[str, Any]:
         "dry_run": config.dry_run,
         "requests_per_target": workload.iterations,
         "warmup_per_target": workload.warmup,
-        # 送信する本文・方式・経路・回数の組の識別子。同じ実験かを後から照合するために使う。
-        "request_id": content_id(
-            json.dumps(
-                {
-                    "method": workload.method,
-                    "path": workload.path,
-                    "body": workload.body,
-                    "client_concurrency": workload.client_concurrency,
-                    "iterations": workload.iterations,
-                    "warmup": workload.warmup,
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode()
-        ),
+        # 処理の内容と同時要求数の識別子。料金の根拠を選ぶとき、同じ実験かを照合するために使う。
+        "experiment_id": experiment_id(workload),
         **config.evidence,
     }
 

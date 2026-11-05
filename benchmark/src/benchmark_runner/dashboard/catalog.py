@@ -77,6 +77,10 @@ def list_runs(*, results_dir: Path, pricing_path: Path) -> list[dict[str, Any]]:
                     "architecture": None,
                     "memory_mb": None,
                     "iterations": None,
+                    "region": None,
+                    "experiment_id": None,
+                    "client_concurrency": None,
+                    "image_digests": {},
                     "languages": [],
                     "comparable": False,
                     "issues": [f"結果ファイルを読み込めません: {exc}"],
@@ -94,6 +98,12 @@ def list_runs(*, results_dir: Path, pricing_path: Path) -> list[dict[str, Any]]:
                 "architecture": metadata.get("architecture"),
                 "memory_mb": metadata.get("memory_mb"),
                 "iterations": workload.get("iterations"),
+                # 料金の根拠を選ぶとき、同じ地域・同じ実験・同じ版の計測かを照合するために使う。
+                # 記録がない古い計測ではNoneのままとし、推測で補わない。
+                "region": metadata.get("region"),
+                "experiment_id": metadata.get("experiment_id"),
+                "client_concurrency": workload.get("client_concurrency"),
+                "image_digests": _image_digests(metadata),
                 # 履歴で計測同士を見分けられるよう、計測した言語の表示名を表示順で返す。
                 "languages": list(run["labels"].values()),
                 "comparable": run["comparable"],
@@ -105,28 +115,68 @@ def list_runs(*, results_dir: Path, pricing_path: Path) -> list[dict[str, Any]]:
     return runs
 
 
-def latest_costs_by_workload(*, results_dir: Path, pricing_path: Path) -> dict[str, Any]:
-    """ワークロードごとに、言語別の最新の実測から1リクエストあたり推定料金を返す。
+def _image_digests(metadata: dict[str, Any]) -> dict[str, str]:
+    """計測前に確かめた、言語ごとのイメージdigestを返す。記録がない言語は含めない。"""
+    deployments = (metadata.get("verification") or {}).get("deployments") or {}
+    return {
+        key: deployment["image_digest"]
+        for key, deployment in deployments.items()
+        if isinstance(deployment, dict) and deployment.get("image_digest")
+    }
 
-    計測開始前の料金の目安は、同じワークロードの実測から算出する。言語を後から追加した場合も
-    目安を出せるよう、言語ごとに比較可能な最新runの値を使う。実測がない言語は含めない。
+
+def latest_costs_by_workload(
+    *,
+    results_dir: Path,
+    pricing_path: Path,
+    architecture: str | None,
+    memory_mb: int | None,
+    region: str,
+    experiments: dict[str, str],
+) -> dict[str, Any]:
+    """これから計測する条件に合う実測から、ワークロード・言語ごとの1リクエストあたり料金を返す。
+
+    計測開始前の料金の目安に使う。方式・メモリ・地域が予定と同じで、処理の内容
+    （experiments: ワークロード名から実験の識別子）が同じ計測だけを根拠にする。
+    言語を後から追加した場合も目安を出せるよう、言語ごとに条件に合う最新の値を使う。
+    条件に合う実測がない言語は含めない（古い条件の料金で代用しない）。
     """
     basis: dict[str, Any] = {}
+    # 予定の方式・メモリが分からなければ、どの実測が予定と同じ条件か決められない。
+    if architecture is None or memory_mb is None:
+        return basis
     # 一覧は新しい順なので、各ワークロード・言語で最初に見つかった値が最新になる。
     for summary in list_runs(results_dir=results_dir, pricing_path=pricing_path):
-        # 比較不能なrunは料金や条件が欠けるため使わない。
-        if not summary["comparable"]:
+        workload = summary["workload"]
+        # 比較不能な計測や、予定と異なる条件・処理内容の計測は料金の根拠に使わない。
+        if (
+            not summary["comparable"]
+            or workload not in experiments
+            or summary["experiment_id"] != experiments[workload]
+            or summary["architecture"] != architecture
+            or summary["memory_mb"] != memory_mb
+            or summary["region"] != region
+        ):
             continue
         run = load_run(summary["run_id"], results_dir=results_dir, pricing_path=pricing_path)
+        # 料金の指標を根拠に使えない計測（料金表の地域違いなど）は採用しない。
+        if run["quality"]["columns"]["cost"]["status"] != "usable":
+            continue
         entry = basis.setdefault(
-            summary["workload"],
-            {"started_at": summary["started_at"], "cost_per_request": {}},
+            workload,
+            {
+                "started_at": summary["started_at"],
+                "client_concurrency": summary["client_concurrency"],
+                "cost_per_request": {},
+                "sources": {},
+            },
         )
         for name, values in run["implementations"].items():
             cost = (values.get("cost") or {}).get("estimated_cost_per_request")
             # 料金を計算できた言語のうち、まだ値がない（より新しい実測がない）ものだけ採用する。
             if cost is not None and name not in entry["cost_per_request"]:
                 entry["cost_per_request"][name] = cost
+                entry["sources"][name] = summary["run_id"]
                 # 目安の根拠として、採用した実測のうち最も古い日時を示す。
                 entry["started_at"] = summary["started_at"]
     return basis

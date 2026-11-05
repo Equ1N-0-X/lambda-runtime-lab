@@ -203,3 +203,33 @@ def test_server_returns_404_for_unknown_paths(server_url, path):
 
     assert error.value.code == 404
     assert "error" in json.loads(error.value.read())
+
+
+def _costs(tmp_path, **overrides):
+    from benchmark_runner.dashboard.catalog import latest_costs_by_workload
+
+    values = {
+        "architecture": "arm64",
+        "memory_mb": 512,
+        "region": "ap-northeast-1",
+        "experiments": {"health": "sha256:health"},
+        **overrides,
+    }
+    return latest_costs_by_workload(results_dir=tmp_path, pricing_path=PRICING, **values)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"memory_mb": 1024},
+        {"architecture": "x86_64"},
+        {"region": "us-east-1"},
+        {"experiments": {"health": "sha256:other-body"}},
+    ],
+)
+def test_launch_cost_basis_ignores_runs_with_other_planned_conditions(tmp_path, overrides):
+    _write_run(tmp_path, "planned", metadata_overrides={"experiment_id": "sha256:health"})
+
+    assert _costs(tmp_path)["health"]["sources"] == {"python": "planned", "rust": "planned"}
+    # 予定と異なる条件の実測は、古い料金として目安に使わない。
+    assert _costs(tmp_path, **overrides) == {}

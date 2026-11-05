@@ -18,6 +18,7 @@ from typing import Any
 import yaml
 
 from benchmark_runner.dashboard.settings import LaunchSettings
+from benchmark_runner.workloads import WorkloadError, experiment_id, load_workload
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,22 @@ def load_workloads(workload_file: Path) -> list[dict[str, Any]]:
             }
         )
     return workloads
+
+
+def workload_experiments(workload_file: Path, definitions: list[dict[str, Any]]) -> dict[str, str]:
+    """画面の既定値で計測した場合の、ワークロードごとの実験の識別子を返す。
+
+    定義を読めないワークロードは含めない（料金の目安を出さない）。
+    """
+    experiments = {}
+    for definition in definitions:
+        try:
+            workload = load_workload(workload_file, definition["name"])
+        # 定義に誤りがあるワークロードは計測もできないため、目安の対象から外す。
+        except WorkloadError:
+            continue
+        experiments[definition["name"]] = experiment_id(workload)
+    return experiments
 
 
 def _validated_count(values: dict[str, Any], name: str) -> int:

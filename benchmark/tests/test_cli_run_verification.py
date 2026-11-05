@@ -107,5 +107,5 @@ def test_dry_run_plan_contains_request_identity(capsys):
     assert cli.main(["run", "--workload", "health", "--dry-run"]) == 0
 
     plan = json.loads(capsys.readouterr().out)
-    assert plan["request_id"].startswith("sha256:")
+    assert plan["experiment_id"].startswith("sha256:")
     assert plan["verification"] == {"mode": "local"}

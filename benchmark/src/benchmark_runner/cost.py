@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,8 @@ class Pricing:
     source: str
     request_price_per_million: Decimal
     compute_price_per_gb_second: dict[str, Decimal]
+    # 実行時間単価を適用できる月間使用量（GB秒）の上限。未設定の方式は上限を確かめられない。
+    tier1_max_gb_seconds_per_month: dict[str, Decimal] = dataclass_field(default_factory=dict)
 
 
 def _positive_decimal(value: object, field: str) -> Decimal:
@@ -77,6 +80,12 @@ def load_pricing(path: Path) -> Pricing:
             document.get("request_price_per_million"), "request_price_per_million"
         ),
         compute_price_per_gb_second=compute,
+        tier1_max_gb_seconds_per_month={
+            architecture: _positive_decimal(value, f"tier1_max_gb_seconds_per_month.{architecture}")
+            for architecture, value in (
+                document.get("tier1_max_gb_seconds_per_month") or {}
+            ).items()
+        },
     )
 
 
