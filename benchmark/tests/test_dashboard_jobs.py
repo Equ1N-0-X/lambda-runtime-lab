@@ -39,7 +39,7 @@ import sys, time
 step = sys.argv[1]
 print(f"{{step}} via {SECRET_URL}", flush=True)
 if step == "{{fail}}":
-    sys.exit(3)
+    sys.exit(4)
 if step == "{{slow}}":
     time.sleep(30)
 """
@@ -173,7 +173,7 @@ def test_failed_step_stops_pipeline_and_reports_step(tmp_path):
 
     assert job["state"] == "failed"
     assert job["step"] == "collect"
-    assert "ログ収集に失敗しました" in job["message"]
+    assert "ログ収集（反映を待ちながら）に失敗しました" in job["message"]
     assert not any(line.startswith("report") for line in job["output"])
 
 
@@ -325,3 +325,20 @@ def test_command_build_failure_finishes_as_failed(tmp_path):
     job = _wait_until_finished(manager)
     assert job["state"] == "failed"
     assert "KeyError" in job["message"]
+
+
+def test_incomplete_log_collection_still_reports_but_does_not_succeed(tmp_path):
+    manager = _manager(tmp_path)
+    script = tmp_path / "fake_cli.py"
+    script.write_text(
+        script.read_text(encoding="utf-8") + '\nif step == "collect":\n    sys.exit(3)\n',
+        encoding="utf-8",
+    )
+
+    manager.start(_request())
+    job = _wait_until_finished(manager)
+
+    # 期限内にログがそろわなくてもレポートは作るが、完全な成功とは示さない。
+    assert job["state"] == "failed"
+    assert any(line.startswith("report") for line in job["output"])
+    assert "make collect" in job["message"]

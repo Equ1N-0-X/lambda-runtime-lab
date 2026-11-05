@@ -1023,7 +1023,7 @@ function renderLaunchForm(options) {
       submit,
       el("p", {
         class: "field-help",
-        text: `開始後は、ログの反映を ${options.log_wait_seconds} 秒待ってから、ログ収集とレポート作成まで自動で行います。`,
+        text: `開始後は、ログが反映されるのを最大 ${options.log_wait_seconds} 秒待ちながら収集し、レポート作成まで自動で行います（ログがそろえば早く終わります）。`,
       }),
     ]),
   );

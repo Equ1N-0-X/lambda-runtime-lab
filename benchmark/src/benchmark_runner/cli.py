@@ -35,6 +35,8 @@ from benchmark_runner.workloads import WorkloadError, apply_profile, load_worklo
 
 ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_TERRAFORM_DIR = ROOT / "infrastructure/terraform"
+# ログ収集が期限内にそろわなかったことを表す終了コード。結果は保存済みで、再収集できる。
+INCOMPLETE_COLLECTION_EXIT_CODE = 3
 
 
 def _git_revision() -> str | None:
@@ -160,6 +162,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="引数・環境変数にないロググループを、このTerraformの出力（lambda_names）から求める",
     )
     collect.add_argument("--strategy", choices=("auto", "insights", "filter"), default="auto")
+    collect.add_argument(
+        "--wait-seconds",
+        type=float,
+        default=0,
+        help="成功した要求のログがすべてそろうまで、取得し直す期限（秒）。0なら一度だけ取得する",
+    )
     collect.add_argument("--dry-run", action="store_true")
 
     report = subparsers.add_parser("report", help="MarkdownとCSVのレポートを作成する")
@@ -349,8 +357,17 @@ def _collect_command(args: argparse.Namespace) -> int:
         logs_client=client,
         strategy=args.strategy,
         dry_run=args.dry_run,
+        wait_seconds=args.wait_seconds,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+    # 期限内にログがそろわなければ、欠けたまま完了したと装わないよう終了コード3で知らせる。
+    if result.get("status") == "incomplete":
+        print(
+            f"警告: 成功した要求のうち {result['missing_reports']} 件の実行レポートが、"
+            "期限内に見つかりませんでした。時間をおいて再収集するか、未結合のまま扱ってください。",
+            file=sys.stderr,
+        )
+        return INCOMPLETE_COLLECTION_EXIT_CODE
     return 0
 
 

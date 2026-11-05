@@ -22,8 +22,9 @@ from benchmark_runner.workloads import WorkloadError, experiment_id, load_worklo
 
 logger = logging.getLogger(__name__)
 
-# CloudWatch Logsへ構造化ログとREPORTが反映されるまでの待ち時間。短すぎると未結合の計測が残る。
-LOG_INGESTION_WAIT_SECONDS = 60
+# CloudWatch Logsへ構造化ログとREPORTが反映されるのを待つ期限。収集はこの期限まで、
+# 成功した要求のログがすべてそろったかを確かめながら取得し直す（そろえば早く終わる）。
+LOG_INGESTION_WAIT_SECONDS = 180
 
 # 画面からの誤入力で長時間・高額な計測を始めないよう、指定できる範囲を制限する。
 LIMITS = {
@@ -37,10 +38,12 @@ OUTPUT_TAIL_LINES = 20
 
 STEPS = (
     ("run", "計測"),
-    ("wait", "ログの反映待ち"),
-    ("collect", "ログ収集"),
+    ("collect", "ログ収集（反映を待ちながら）"),
     ("report", "レポート作成"),
 )
+
+# ログ収集のCLIが、期限内にログがそろわなかったことを表す終了コード（cli.py と同じ値）。
+INCOMPLETE_COLLECTION_EXIT_CODE = 3
 
 
 class LaunchError(ValueError):
@@ -153,6 +156,8 @@ class Job:
     started_at: float = field(default_factory=time.time)
     finished_at: float | None = None
     output: deque[str] = field(default_factory=lambda: deque(maxlen=OUTPUT_TAIL_LINES))
+    # 工程は続けられたが、結果に欠けがあることを知らせる注意（ログ収集の期限切れなど）。
+    warning: str | None = None
 
     def public(self) -> dict[str, Any]:
         """画面表示用の状態を返す。"""
@@ -287,6 +292,8 @@ class JobManager:
                 job.run_id,
                 "--region",
                 settings.region,
+                "--wait-seconds",
+                str(self.log_wait_seconds),
                 *[
                     argument
                     for key in job.targets
@@ -343,11 +350,6 @@ class JobManager:
         commands = self._commands(job)
         for step, _label in STEPS:
             self._set(job, step=step)
-            # ログ反映待ちは中止要求で即座に抜けられるよう、イベント待ちで実装する。
-            if step == "wait":
-                if self._cancel.wait(self.log_wait_seconds):
-                    break
-                continue
             self._run_command(job, commands[step])
             # 計測コマンドの終了直後に中止要求があれば、後続の工程へ進まない。
             if self._cancel.is_set():
@@ -355,6 +357,10 @@ class JobManager:
         # 中止要求で抜けた場合は、途中までの結果を残したまま中止として終える。
         if self._cancel.is_set():
             self._finish(job, "cancelled", "計測を中止しました。途中までの結果は比較に使えません。")
+            return
+        # ログが期限内にそろわなかった場合は、レポートを作っても完全な成功とは示さない。
+        if job.warning:
+            self._finish(job, "failed", job.warning)
             return
         self._finish(job, "succeeded", "計測とレポート作成が完了しました。")
 
@@ -389,6 +395,15 @@ class JobManager:
             self._process = None
         # 中止による終了は失敗ではないため、終了コードを確認せずに戻る。
         if self._cancel.is_set():
+            return
+        # ログ収集が期限内にそろわなかっただけなら、未結合のままレポートは作れるため続ける。
+        if job.step == "collect" and returncode == INCOMPLETE_COLLECTION_EXIT_CODE:
+            job.warning = (
+                f"ログの一部が {self.log_wait_seconds:g} 秒以内にそろわなかったため、"
+                "Lambda 側の指標と料金が一部欠けたままレポートを作成しました。"
+                f"時間をおいて RUN_ID={job.run_id} make collect と RUN_ID={job.run_id} make report"
+                " を実行すると、そろえ直せます。"
+            )
             return
         # 終了コードが0以外なら、出力末尾を手掛かりとして残し工程失敗として扱う。
         if returncode != 0:

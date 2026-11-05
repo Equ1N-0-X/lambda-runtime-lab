@@ -77,14 +77,16 @@ def test_rust_image_label_follows_the_build_target():
     assert 'TARGET_ARCH="arm64"' not in dockerfile
 
 
-def _run_with_stubs(tmp_path, *, fail_on=None, expected=None):
+def _run_with_stubs(tmp_path, *, fail_on=None, expected=None, runner=None):
     """terraformとuvを偽コマンドに差し替え、AWSへ触れずに終了時の案内を確かめる。"""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     (bin_dir / "terraform").write_text(
         f'#!/usr/bin/env bash\n[[ "$*" == *"lambda_memory_mb={fail_on}"* ]] && exit 1\nexit 0\n'
     )
-    (bin_dir / "uv").write_text("#!/usr/bin/env bash\nexit 0\n")
+    (bin_dir / "uv").write_text(
+        "#!/usr/bin/env bash\n" + (runner or "") + f'echo "uv $*" >> "{tmp_path}/calls"\nexit 0\n'
+    )
     for path in bin_dir.iterdir():
         path.chmod(0o755)
     env = {
@@ -123,3 +125,13 @@ def test_failure_while_applying_reports_unknown_state(tmp_path):
 
     assert result.returncode != 0
     assert "1024 MB の適用中に失敗" in result.stderr
+
+
+def test_incomplete_log_collection_still_reports_and_fails_at_the_end(tmp_path):
+    result = _run_with_stubs(tmp_path, runner='[[ "$*" == *" collect "* ]] && exit 3\n')
+
+    calls = (tmp_path / "calls").read_text()
+    # ログがそろわなくても未結合のままレポートを作り、最後に失敗（3）で知らせる。
+    assert calls.count(" report ") == 2
+    assert result.returncode == 3
+    assert "ログが期限内にそろわなかった run" in result.stderr
