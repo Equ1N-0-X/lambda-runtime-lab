@@ -242,3 +242,19 @@ def test_local_unsigned_run_is_reference_not_formal(tmp_path):
 
     assert report["quality"]["comparable"] is False
     assert "ローカル" in "\n".join(report["quality"]["issues"])
+
+
+def test_aborted_run_is_not_comparable(tmp_path):
+    records = [_record(name, index) for name in ("python", "rust") for index in (1, 2)]
+    _write_run(tmp_path, records)
+    metadata_path = tmp_path / "raw/run/metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["aborted"] = "署名に失敗したため計測を中断しました"
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    report = build_report(
+        run_id="run", results_dir=tmp_path, pricing_path=PRICING, registry_path=REGISTRY
+    )
+
+    assert report["quality"]["comparable"] is False
+    assert "中断" in "\n".join(report["quality"]["issues"])

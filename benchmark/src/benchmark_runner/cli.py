@@ -31,6 +31,7 @@ from benchmark_runner.implementations import (
 )
 from benchmark_runner.report import generate_report
 from benchmark_runner.runner import RunConfig, file_content_id, run_benchmark
+from benchmark_runner.sigv4 import SigningError
 from benchmark_runner.workloads import WorkloadError, apply_profile, load_workload
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -456,6 +457,15 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "implementations":
             return _implementations_command(args)
         return _report_command(args)
+    # 署名の失敗は、API保存先の障害とは別の、計測する側の認証の問題として案内する。
+    except SigningError as exc:
+        print(
+            f"エラー: AWSへの要求に署名できませんでした（{exc}）。"
+            "AWS にログインし直してから計測し直してください。"
+            "途中まで計測した結果は保存されていますが、比較には使えません。",
+            file=sys.stderr,
+        )
+        return 2
     except (OSError, ValueError, WorkloadError, SettingsUnavailable) as exc:
         print(f"エラー: {exc}", file=sys.stderr)
         return 2
