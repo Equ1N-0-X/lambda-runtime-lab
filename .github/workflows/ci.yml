@@ -1,11 +1,21 @@
 name: CI
 
+# 統合先（main）への push と、プルリクエストの更新で検証する。作業ブランチへの push だけでは
+# 動かさず、同じコミットを push と pull_request の二重で検証しない。PRを作らない作業ブランチは
+# 手動実行（workflow_dispatch）で検証できる。
 on:
   push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+# uv.lock が依存の定義と食い違えば、自動で直さずに失敗させる（uv の --locked と同じ）。
+# --frozen は lock を更新しないだけで、食い違いを検出しない。
+env:
+  UV_LOCKED: "1"
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -25,19 +35,19 @@ jobs:
           enable-cache: true
       - name: Check Python application
         run: |
-          uv sync --project apps/python --frozen
+          uv sync --project apps/python --locked
           uv run --project apps/python ruff format --check apps/python
           uv run --project apps/python ruff check apps/python
           uv run --project apps/python pytest apps/python/tests
       - name: Check benchmark tools
         run: |
-          uv sync --project benchmark --frozen --extra dev
+          uv sync --project benchmark --locked --extra dev
           uv run --project benchmark --extra dev ruff format --check benchmark
           uv run --project benchmark --extra dev ruff check benchmark
           uv run --project benchmark --extra dev pytest benchmark/tests
       - name: Check Contract Test harness
         run: |
-          uv sync --project tests/contract
+          uv sync --project tests/contract --locked
           uv run --project tests/contract ruff format --check tests/contract
           uv run --project tests/contract ruff check tests/contract
           make test-contract-harness
