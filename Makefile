@@ -25,6 +25,8 @@ DYNAMODB_TABLE_NAME ?=
 DYNAMODB_ENDPOINT_URL ?=
 TF_AUTO_APPROVE ?=
 UI_PORT ?= 8765
+# ログ収集の期限（秒）。0なら一度だけ取得し、正の値ならログがそろうまで期限まで取得し直す。
+COLLECT_WAIT_SECONDS ?= 0
 
 # TypeScriptは依存が未導入ならlockファイルどおりに導入してからnpmスクリプトを実行する。
 TYPESCRIPT_NPM = (test -d $(TYPESCRIPT_DIR)/node_modules || npm --prefix $(TYPESCRIPT_DIR) ci --no-audit --no-fund) && npm --prefix $(TYPESCRIPT_DIR)
@@ -180,6 +182,7 @@ collect:
 	uv run --project $(BENCHMARK_DIR) python -m benchmark_runner collect \
 		--run-id "$(RUN_ID)" \
 		--region "$(AWS_REGION)" \
+		--wait-seconds "$(COLLECT_WAIT_SECONDS)" \
 		--terraform-dir "$(TERRAFORM_DIR)"
 
 report:

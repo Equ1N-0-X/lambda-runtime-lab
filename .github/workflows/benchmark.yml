@@ -111,10 +111,9 @@ jobs:
         run: make seed
       - name: Run benchmark
         run: make benchmark
+      # 固定時間の待機ではなく、ログがそろったかを確かめながら期限まで収集する。
       - name: Collect CloudWatch records
-        run: |
-          sleep "${LOG_PROPAGATION_WAIT_SECONDS:-15}"
-          make collect
+        run: make collect COLLECT_WAIT_SECONDS=180
       - name: Generate report
         run: make report
       - name: Upload raw data and reports

@@ -11,7 +11,8 @@ REGION="${AWS_REGION:-ap-northeast-1}"
 # Terraformの既定の環境名（dev）のまま適用すると、別名の環境として全リソースを作り直すため、
 # デプロイ時（make deploy）と同じ環境名を必ず渡す。
 ENVIRONMENT="${ENVIRONMENT:-benchmark}"
-LOG_WAIT_SECONDS="${LOG_PROPAGATION_WAIT_SECONDS:-10}"
+# ログ収集の期限（秒）。成功した要求のログがすべてそろうまで、この期限まで取得し直す。
+COLLECT_WAIT_SECONDS="${COLLECT_WAIT_SECONDS:-180}"
 DRY_RUN=false
 # 第一引数が --dry-run の場合は、AWS操作を行わず実行予定のコマンドを表示する。
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=true
@@ -36,6 +37,9 @@ execute() {
     "$@"
   fi
 }
+
+# ログが期限内にそろわなかったrun。最後に一覧で示し、一括計測を成功として終えない。
+INCOMPLETE_RUNS=()
 
 # 最後にLambdaへ適用したメモリ。終了時に、次の計測で期待する設定とのずれを案内するために使う。
 APPLIED_MEMORY=""
@@ -83,12 +87,23 @@ for memory in ${MEMORIES}; do
     execute "${runner[@]}" run --target all --workload "${workload}" \
       --run-id "${run_id}" --region "${REGION}" --architecture "${ARCHITECTURE}" \
       --memory-mb "${memory}" --terraform-dir "${TERRAFORM_DIR}"
-    # 実行時だけCloudWatchへのログ反映を待ち、ドライランでは待機時間を発生させない。
-    if ! "${DRY_RUN}"; then
-      sleep "${LOG_WAIT_SECONDS}"
-    fi
+    # 固定時間だけ待つのではなく、ログがそろったかを確かめながら期限まで収集する。
+    # 期限内にそろわなかった場合（終了コード3）は、未結合のままレポートを作り、最後に失敗で知らせる。
+    collect_status=0
     execute "${runner[@]}" collect --run-id "${run_id}" --region "${REGION}" \
-      --terraform-dir "${TERRAFORM_DIR}"
+      --terraform-dir "${TERRAFORM_DIR}" --wait-seconds "${COLLECT_WAIT_SECONDS}" ||
+      collect_status=$?
+    if [[ "${collect_status}" -eq 3 ]]; then
+      INCOMPLETE_RUNS+=("${run_id}")
+    elif [[ "${collect_status}" -ne 0 ]]; then
+      exit "${collect_status}"
+    fi
     execute "${runner[@]}" report --run-id "${run_id}"
   done
 done
+
+# ログがそろわなかったrunがあれば、レポートはあっても欠けがあるため失敗で終える。
+if [[ ${#INCOMPLETE_RUNS[@]} -gt 0 ]]; then
+  echo "ログが期限内にそろわなかった run: ${INCOMPLETE_RUNS[*]}（make collect で再収集できます）" >&2
+  exit 3
+fi
