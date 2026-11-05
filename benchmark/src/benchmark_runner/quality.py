@@ -98,6 +98,9 @@ def assess_run(report: dict[str, Any], *, run_dir: Path) -> dict[str, Any]:
         for name in names:
             columns[name].lower(status, reason)
 
+    # 署名の失敗などで途中で止まった計測は、言語ごとの件数がそろわず比較に使えない。
+    if metadata.get("aborted"):
+        lower(COLUMNS, UNUSABLE, f"計測が途中で中断されました。{metadata['aborted']}")
     # ドライランは実際のAPIを呼んでいないため、どの数値も性能比較に使えない。
     if metadata.get("dry_run"):
         lower(COLUMNS, UNUSABLE, "ドライランの結果です。実際のAPIは呼び出していません。")

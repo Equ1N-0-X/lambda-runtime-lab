@@ -17,7 +17,7 @@ import boto3
 import httpx
 
 from benchmark_runner.response_contract import validate_success_response
-from benchmark_runner.sigv4 import frozen_credentials, sign_headers
+from benchmark_runner.sigv4 import SigningError, credential_source, sign_headers, snapshot
 from benchmark_runner.workloads import Workload, experiment_id
 
 RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -162,7 +162,7 @@ async def _send_one(
             url=url,
             headers=headers,
             body=body,
-            credentials=credentials,  # type: ignore[arg-type]
+            credentials=snapshot(credentials),
             region=region,
         )
 
@@ -270,25 +270,34 @@ async def run_benchmark(config: RunConfig, workload: Workload) -> dict[str, Any]
     }
     _write_json(run_dir / "metadata.json", metadata)
 
-    credentials = None
-    # 署名ありの設定の場合だけAWS認証情報を取得し、署名なしの場合はローカルAPIへそのまま送る。
-    if config.sign_requests:
-        credentials = frozen_credentials(boto3.Session(region_name=config.region))
     records: list[dict[str, Any]] = []
-    async with httpx.AsyncClient(
-        timeout=config.timeout_seconds, transport=config.transport
-    ) as client:
-        for implementation in config.targets:
-            records.extend(
-                await _execute_target(
-                    client=client,
-                    endpoint=config.endpoints[implementation],
-                    implementation=implementation,
-                    workload=workload,
-                    config=config,
-                    credentials=credentials,
+    try:
+        credentials = None
+        # 署名ありの設定の場合だけAWS認証情報を取得し、署名なしの場合はローカルAPIへそのまま送る。
+        if config.sign_requests:
+            credentials = credential_source(boto3.Session(region_name=config.region))
+        async with httpx.AsyncClient(
+            timeout=config.timeout_seconds, transport=config.transport
+        ) as client:
+            for implementation in config.targets:
+                records.extend(
+                    await _execute_target(
+                        client=client,
+                        endpoint=config.endpoints[implementation],
+                        implementation=implementation,
+                        workload=workload,
+                        config=config,
+                        credentials=credentials,
+                    )
                 )
-            )
+    # 署名できなくなった場合は、そこまでの結果を中断したrunとして残し、呼び出し元へ知らせる。
+    except SigningError as exc:
+        metadata["completed_at"] = utc_now()
+        metadata["aborted"] = f"署名に失敗したため計測を中断しました: {exc}"
+        metadata["sample_count"] = len(records)
+        _write_jsonl(run_dir / "samples.jsonl", records)
+        _write_json(run_dir / "metadata.json", metadata)
+        raise
 
     metadata["completed_at"] = utc_now()
     metadata["sample_count"] = len(records)
