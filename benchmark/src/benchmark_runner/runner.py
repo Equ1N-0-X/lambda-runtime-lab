@@ -15,6 +15,7 @@ from urllib.parse import urljoin
 import boto3
 import httpx
 
+from benchmark_runner.response_contract import validate_success_response
 from benchmark_runner.sigv4 import frozen_credentials, sign_headers
 from benchmark_runner.workloads import Workload
 
@@ -153,18 +154,18 @@ async def _send_one(
     request_id: str | None = None
     try:
         response = await client.request(workload.method, url, headers=headers, content=body)
-        status_code = response.status_code
-        request_id = _lambda_request_id(response)
-        success = 200 <= status_code < 400
-        # HTTP状態が200以上400未満なら成功、それ以外は応答を受け取れた失敗として記録する。
-        if not success:
-            error = f"HTTP状態 {status_code}"
-
     # 通信・タイムアウトなどHTTP応答を得られなかった場合は、例外種別と内容を測定失敗へ記録する。
     except httpx.HTTPError as exc:
-        success = False
+        response = None
         error = f"{type(exc).__name__}: {exc}"
     latency_ms = (time.perf_counter() - started) * 1000
+
+    # 応答本文の確認は計測区間の外で行い、確認の処理時間を応答時間へ含めない。
+    if response is not None:
+        status_code = response.status_code
+        request_id = _lambda_request_id(response)
+        error = validate_success_response(workload.path, status_code, response.content)
+    success = response is not None and error is None
     return {
         "run_id": run_id,
         "implementation": implementation,
@@ -175,6 +176,8 @@ async def _send_one(
         "latency_ms": round(latency_ms, 6),
         "status_code": status_code,
         "success": success,
+        # 成功を状態コードだけでなく本文の内容でも確かめたことを示す。古い計測との区別に使う。
+        "response_checked": True,
         "error": error,
         "lambda_request_id": request_id,
     }
@@ -270,6 +273,22 @@ async def run_benchmark(config: RunConfig, workload: Workload) -> dict[str, Any]
 
     metadata["completed_at"] = utc_now()
     metadata["sample_count"] = len(records)
+    # 実装ごとの成功・失敗件数を残し、全件失敗した計測を工程の失敗として扱えるようにする。
+    metadata["outcomes"] = {
+        implementation: {
+            "success_count": sum(
+                1
+                for record in records
+                if record["implementation"] == implementation and record["success"]
+            ),
+            "failure_count": sum(
+                1
+                for record in records
+                if record["implementation"] == implementation and not record["success"]
+            ),
+        }
+        for implementation in config.targets
+    }
     _write_jsonl(run_dir / "samples.jsonl", records)
     _write_json(run_dir / "metadata.json", metadata)
     return metadata

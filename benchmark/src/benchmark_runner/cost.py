@@ -80,6 +80,21 @@ def load_pricing(path: Path) -> Pricing:
     )
 
 
+def check_pricing_region(pricing: Pricing, region: object) -> None:
+    """計測した地域に料金表を適用できるか確かめ、できなければ理由を通知する。
+
+    Lambdaの単価は地域ごとに異なるため、別地域の料金表で計算した金額は正しくない。
+    """
+    # 計測の地域が記録されていなければ、どの地域の料金を使うべきか決められない。
+    if not isinstance(region, str) or not region:
+        raise PricingUnavailable("計測した地域が記録されていないため、料金表を適用できません")
+    # 料金表の地域と計測の地域が異なれば、別地域の単価で計算することになるため止める。
+    if region != pricing.region:
+        raise PricingUnavailable(
+            f"料金表の地域（{pricing.region}）と計測した地域（{region}）が異なります"
+        )
+
+
 def calculate_cost(
     *,
     billed_duration_ms: float,
@@ -148,6 +163,8 @@ def summarize_costs(
         result[implementation] = {
             "priced_sample_count": len(costs),
             "estimated_cost_per_request": sum(item["total_cost"] for item in costs) / len(costs),
+            # 計測した要求の料金の合計。失敗した要求に課金された額を示すために使う。
+            "estimated_total_cost": sum(item["total_cost"] for item in costs),
             "estimated_cost_per_1m": sum(item["normalized_cost_per_1m"] for item in costs)
             / len(costs),
             "estimated_compute_cost_per_1m": sum(item["compute_cost"] for item in costs)
