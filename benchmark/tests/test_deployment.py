@@ -2,6 +2,7 @@
 
 import subprocess
 
+import pytest
 from botocore.exceptions import ClientError
 
 from benchmark_runner.deployment import (
@@ -107,3 +108,47 @@ def test_unknown_revision_cannot_be_compared(tmp_path):
     _repository_with_app(tmp_path)
 
     assert sources_changed_since("0123456789ab", LAB.image_source_pathspecs, root=tmp_path) is None
+
+
+def test_git_failure_is_not_treated_as_unchanged(tmp_path):
+    from benchmark_runner.deployment import RevisionCheckError
+
+    deployed = _repository_with_app(tmp_path)
+    # 不正なpathspecでgit diffを異常終了（128）させ、変更なしと判定しないことを確かめる。
+    with pytest.raises(RevisionCheckError, match="128"):
+        sources_changed_since(deployed, (":(bogus)apps/lab",), root=tmp_path)
+
+
+def test_git_unavailable_outside_repository_is_an_error(tmp_path):
+    from benchmark_runner.deployment import RevisionCheckError
+
+    with pytest.raises(RevisionCheckError):
+        sources_changed_since("0123456789ab", LAB.image_source_pathspecs, root=tmp_path)
+
+
+def test_revision_check_error_blocks_measurement():
+    from benchmark_runner.deployment import RevisionCheckError
+
+    def changed(revision, pathspecs):
+        raise RevisionCheckError("git diff が終了コード 128 で失敗しました")
+
+    problem = check_deployed_revision(
+        label="Rust",
+        function_name="lab-rust",
+        source_pathspecs=("apps/rust",),
+        region="ap-northeast-1",
+        read_image=lambda *_: DeployedImage("lab-rust", "sha256:abc", ("t-gabc1234",)),
+        changed_since=changed,
+    )
+
+    assert "照合できませんでした" in problem
+
+
+def test_shared_build_input_change_is_a_revision_gap(tmp_path):
+    deployed = _repository_with_app(tmp_path)
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts/build-images.sh").write_text("FINAL_BASE=new")
+    _commit_all(tmp_path, "change shared build input")
+
+    # 全言語のビルドに使う共通の入力が変われば、アプリが同じでもイメージは変わりうる。
+    assert sources_changed_since(deployed, LAB.image_source_pathspecs, root=tmp_path) is True
