@@ -74,3 +74,16 @@ def test_locked_mode_fails_without_rewriting_a_stale_lock(tmp_path):
 
     assert result.returncode != 0
     assert (tmp_path / "uv.lock").read_text(encoding="utf-8") == lock
+
+
+def test_aws_workflow_pins_every_action_to_a_full_commit_sha():
+    import re
+
+    workflow = yaml.safe_load((ROOT / ".github/workflows/benchmark.yml").read_text())
+    uses = [
+        step["uses"] for job in workflow["jobs"].values() for step in job["steps"] if "uses" in step
+    ]
+
+    # AWSの権限を持つworkflowでは、移動できるタグではなくコミットで固定する。
+    assert uses
+    assert all(re.fullmatch(r"[\w.-]+/[\w.-]+@[0-9a-f]{40}", ref) for ref in uses), uses
