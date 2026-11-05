@@ -63,56 +63,74 @@ def load_run(run_id: str, *, results_dir: Path, pricing_path: Path) -> dict[str,
 
 def list_runs(*, results_dir: Path, pricing_path: Path) -> list[dict[str, Any]]:
     """全runを開始日時の新しい順に並べ、一覧表示に必要な概要だけを返す。"""
-    runs: list[dict[str, Any]] = []
+    return [summary for summary, _run in _scan_runs(results_dir, pricing_path)]
+
+
+def _scan_runs(
+    results_dir: Path, pricing_path: Path
+) -> list[tuple[dict[str, Any], dict[str, Any] | None]]:
+    """全runを一度だけ読み、新しい順の概要と、読み込んだ比較結果の組を返す。
+
+    同じ要求の中で概要と詳細の両方が必要な処理（料金の目安など）が、同じrunを読み直さない
+    ようにする。要求をまたいで保持はしないため、結果や料金表の更新は次の要求で反映される。
+    読み込めなかったrunの比較結果はNoneとする。
+    """
+    scanned: list[tuple[dict[str, Any], dict[str, Any] | None]] = []
     for run_dir in _run_dirs(results_dir):
         try:
             run = load_run(run_dir.name, results_dir=results_dir, pricing_path=pricing_path)
         # 壊れたrunが一つあっても一覧全体は表示し、そのrunだけ読込失敗として示す。
         except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
-            runs.append(
-                {
-                    "run_id": run_dir.name,
-                    "started_at": None,
-                    "workload": None,
-                    "architecture": None,
-                    "memory_mb": None,
-                    "iterations": None,
-                    "region": None,
-                    "experiment_id": None,
-                    "client_concurrency": None,
-                    "image_digests": {},
-                    "languages": [],
-                    "comparable": False,
-                    "issues": [f"結果ファイルを読み込めません: {exc}"],
-                }
+            scanned.append(
+                (
+                    {
+                        "run_id": run_dir.name,
+                        "started_at": None,
+                        "workload": None,
+                        "architecture": None,
+                        "memory_mb": None,
+                        "iterations": None,
+                        "region": None,
+                        "experiment_id": None,
+                        "client_concurrency": None,
+                        "image_digests": {},
+                        "languages": [],
+                        "comparable": False,
+                        "issues": [f"結果ファイルを読み込めません: {exc}"],
+                    },
+                    None,
+                )
             )
             continue
 
         metadata = run["metadata"]
         workload = metadata.get("workload") or {}
-        runs.append(
-            {
-                "run_id": run["run_id"],
-                "started_at": metadata.get("started_at"),
-                "workload": workload.get("name"),
-                "architecture": metadata.get("architecture"),
-                "memory_mb": metadata.get("memory_mb"),
-                "iterations": workload.get("iterations"),
-                # 料金の根拠を選ぶとき、同じ地域・同じ実験・同じ版の計測かを照合するために使う。
-                # 記録がない古い計測ではNoneのままとし、推測で補わない。
-                "region": metadata.get("region"),
-                "experiment_id": metadata.get("experiment_id"),
-                "client_concurrency": workload.get("client_concurrency"),
-                "image_digests": _image_digests(metadata),
-                # 履歴で計測同士を見分けられるよう、計測した言語の表示名を表示順で返す。
-                "languages": list(run["labels"].values()),
-                "comparable": run["comparable"],
-                "issues": run["issues"],
-            }
+        scanned.append(
+            (
+                {
+                    "run_id": run["run_id"],
+                    "started_at": metadata.get("started_at"),
+                    "workload": workload.get("name"),
+                    "architecture": metadata.get("architecture"),
+                    "memory_mb": metadata.get("memory_mb"),
+                    "iterations": workload.get("iterations"),
+                    # 料金の根拠を選ぶとき、同じ地域・同じ実験・同じ版の計測かを照合するために使う。
+                    # 記録がない古い計測ではNoneのままとし、推測で補わない。
+                    "region": metadata.get("region"),
+                    "experiment_id": metadata.get("experiment_id"),
+                    "client_concurrency": workload.get("client_concurrency"),
+                    "image_digests": _image_digests(metadata),
+                    # 履歴で計測同士を見分けられるよう、計測した言語の表示名を表示順で返す。
+                    "languages": list(run["labels"].values()),
+                    "comparable": run["comparable"],
+                    "issues": run["issues"],
+                },
+                run,
+            )
         )
     # 開始日時がないrunは並べようがないため、一覧の末尾へ置く。
-    runs.sort(key=lambda run: run["started_at"] or "", reverse=True)
-    return runs
+    scanned.sort(key=lambda entry: entry[0]["started_at"] or "", reverse=True)
+    return scanned
 
 
 def _image_digests(metadata: dict[str, Any]) -> dict[str, str]:
@@ -146,7 +164,7 @@ def latest_costs_by_workload(
     if architecture is None or memory_mb is None:
         return basis
     # 一覧は新しい順なので、各ワークロード・言語で最初に見つかった値が最新になる。
-    for summary in list_runs(results_dir=results_dir, pricing_path=pricing_path):
+    for summary, run in _scan_runs(results_dir, pricing_path):
         workload = summary["workload"]
         # 比較不能な計測や、予定と異なる条件・処理内容の計測は料金の根拠に使わない。
         if (
@@ -158,9 +176,8 @@ def latest_costs_by_workload(
             or summary["region"] != region
         ):
             continue
-        run = load_run(summary["run_id"], results_dir=results_dir, pricing_path=pricing_path)
         # 料金の指標を根拠に使えない計測（料金表の地域違いなど）は採用しない。
-        if run["quality"]["columns"]["cost"]["status"] != "usable":
+        if run is None or run["quality"]["columns"]["cost"]["status"] != "usable":
             continue
         entry = basis.setdefault(
             workload,
