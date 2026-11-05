@@ -4,6 +4,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 PYTHON_REPOSITORY = "123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/test-python"
 RUST_REPOSITORY = "123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/test-rust"
@@ -69,3 +71,64 @@ def test_publish_images_default_tag_records_source_commit():
 
     # 計測前の版の確認がタグからコミットを読み取れるよう、-g<コミット> を含める。
     assert f"-g{revision}" in result.stdout
+
+
+def _with_fake_uv(tmp_path, body):
+    """実装一覧を返すuvを偽コマンドに差し替え、一覧取得の失敗を再現する。"""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    fake = bin_dir / "uv"
+    fake.write_text(f"#!/usr/bin/env bash\n{body}\n", encoding="utf-8")
+    fake.chmod(0o755)
+    return {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"}
+
+
+@pytest.mark.parametrize(
+    ("body", "extra_env", "message"),
+    [
+        ("echo 'broken registry' >&2; exit 7", {}, "終了コード 7"),
+        ("exit 0", {}, "実装がありません"),
+        ("printf 'python\\nrust\\n'", {"IMPLEMENTATIONS": "python cobol"}, "cobol"),
+    ],
+)
+@pytest.mark.parametrize("script", ["build-images.sh", "publish-images.sh"])
+def test_unreadable_implementation_list_stops_before_building(
+    tmp_path, body, extra_env, message, script
+):
+    env = _with_fake_uv(tmp_path, body) | {
+        "TAG": "benchmark-test",
+        "PYTHON_ECR_REPOSITORY_URL": PYTHON_REPOSITORY,
+        "RUST_ECR_REPOSITORY_URL": RUST_REPOSITORY,
+        **extra_env,
+    }
+    result = subprocess.run(
+        ["bash", f"scripts/{script}", "--dry-run"],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    # イメージを一つも作らないまま成功（終了コード0）にしない。
+    assert result.returncode != 0
+    assert "docker buildx build" not in result.stdout
+    assert message in result.stderr
+
+
+def test_implementations_filter_accepts_known_keys(tmp_path):
+    env = _with_fake_uv(
+        tmp_path,
+        'case "$*" in *keys*) printf "python\\nrust\\n";; '
+        '*tsv*) printf "python\\tapps/python\\nrust\\tapps/rust\\n";; esac',
+    ) | {"IMPLEMENTATIONS": "rust", "FINAL_BASE": "base"}
+    result = subprocess.run(
+        ["bash", "scripts/build-images.sh", "--dry-run"],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+
+    assert result.stdout.count("docker buildx build") == 1
+    assert "apps/rust" in result.stdout
