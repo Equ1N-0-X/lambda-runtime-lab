@@ -3,7 +3,10 @@ project_name          = "lambda-runtime-lab"
 lambda_memory_mb      = 512
 lambda_timeout_seconds = 30
 architecture          = "arm64"
-environment           = "dev"
+# make deploy・make benchmark-matrix・make destroy の既定（ENVIRONMENT=benchmark）と同じ環境名にする。
+# 違う名前で terraform を直接実行すると、別の環境として全リソースを作り直す計画になる。
+# 実行前に terraform plan で、操作する環境名（リソース名の一部）を確認する。
+environment           = "benchmark"
 
 # イメージURIは make publish-images が images.auto.tfvars.json へ書き出すため、ここには書かない。
 # 空のままでも terraform validate は通るが、plan/apply では spec/implementations.yaml の
