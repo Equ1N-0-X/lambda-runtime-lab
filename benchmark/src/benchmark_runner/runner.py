@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -39,6 +40,8 @@ class RunConfig:
     # ワークロードが未対応のため計測しない実装のキー。結果で「未対応」と欠損を区別するために残す。
     unsupported_targets: tuple[str, ...] = ()
     transport: httpx.AsyncBaseTransport | None = None
+    # 計測先の確認結果や定義ファイルの内容識別子など、runの証跡として保存する追加の記録。
+    evidence: dict[str, Any] = field(default_factory=dict)
 
 
 def utc_now() -> str:
@@ -65,6 +68,19 @@ def _request_body(workload: Workload) -> bytes | None:
     ).encode()
 
 
+def content_id(value: bytes) -> str:
+    """内容が同じかを照合するための識別子（SHA-256）を返す。"""
+    return "sha256:" + hashlib.sha256(value).hexdigest()
+
+
+def file_content_id(path: Path) -> str | None:
+    """ファイルの内容識別子を返す。読めなければ推測せず不明（None）とする。"""
+    try:
+        return content_id(path.read_bytes())
+    except OSError:
+        return None
+
+
 def build_plan(config: RunConfig, workload: Workload) -> dict[str, Any]:
     """実行前に対象と接続先を検証し、保存可能な実行計画へ変換する。"""
     targets = config.targets
@@ -89,6 +105,23 @@ def build_plan(config: RunConfig, workload: Workload) -> dict[str, Any]:
         "dry_run": config.dry_run,
         "requests_per_target": workload.iterations,
         "warmup_per_target": workload.warmup,
+        # 送信する本文・方式・経路・回数の組の識別子。同じ実験かを後から照合するために使う。
+        "request_id": content_id(
+            json.dumps(
+                {
+                    "method": workload.method,
+                    "path": workload.path,
+                    "body": workload.body,
+                    "client_concurrency": workload.client_concurrency,
+                    "iterations": workload.iterations,
+                    "warmup": workload.warmup,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ),
+        **config.evidence,
     }
 
 

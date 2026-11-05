@@ -50,6 +50,7 @@ def _write_run(results, run_id, workload, records, started_at="2026-10-01T00:00:
                 "memory_mb": 1024,
                 "region": "ap-northeast-1",
                 "dry_run": False,
+                "verification": {"mode": "aws"},
                 "workload": {"name": workload, "iterations": 2},
             }
         ),

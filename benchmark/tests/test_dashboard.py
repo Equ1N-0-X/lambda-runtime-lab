@@ -44,6 +44,7 @@ def _write_run(results_dir, run_id, *, metadata_overrides=None, records=None, co
         "memory_mb": 512,
         "region": "ap-northeast-1",
         "dry_run": False,
+        "verification": {"mode": "aws"},
         "endpoints": {"python": "https://secret.example", "rust": "https://secret.example"},
         "workload": {"name": "health", "iterations": 2, "client_concurrency": 1, "warmup": 0},
         **(metadata_overrides or {}),

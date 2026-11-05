@@ -19,6 +19,7 @@ from benchmark_runner.cloudwatch import collect_run
 from benchmark_runner.dashboard.jobs import JobManager
 from benchmark_runner.dashboard.server import LISTEN_HOST, create_server
 from benchmark_runner.dashboard.settings import (
+    LaunchSettings,
     SettingsResolver,
     SettingsUnavailable,
     read_terraform_outputs,
@@ -29,10 +30,11 @@ from benchmark_runner.implementations import (
     resolve_targets,
 )
 from benchmark_runner.report import generate_report
-from benchmark_runner.runner import RunConfig, run_benchmark
+from benchmark_runner.runner import RunConfig, file_content_id, run_benchmark
 from benchmark_runner.workloads import WorkloadError, apply_profile, load_workload
 
 ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_TERRAFORM_DIR = ROOT / "infrastructure/terraform"
 
 
 def _git_revision() -> str | None:
@@ -211,29 +213,93 @@ def _run_command(args: argparse.Namespace) -> int:
         raise ValueError(
             f"ワークロード {workload.name} は次の言語に未対応です: {', '.join(unsupported)}"
         )
+    # allの場合は、ワークロードに対応する言語だけを計測する。
+    targets = tuple(key for key in requested if key in supported)
+    endpoints = _per_implementation(
+        args.endpoint,
+        env_suffixes=("API_ENDPOINT", "API_URL"),
+        keys=keys,
+        fallback=_terraform_output(args.terraform_dir, "api_endpoints"),
+    )
+    architecture, memory_mb = args.architecture, args.memory_mb
+    verification: dict[str, object] = {"mode": "local"}
+    # AWSへ署名して送る計測は、画面と同じ事前確認を通し、確かめた実設定を記録する。
+    # 署名しないローカルAPIの確認やドライランは、AWSの照合を求めず正式な計測と区別する。
+    if not args.unsigned and not args.dry_run:
+        settings = _verified_settings(args, targets, endpoints)
+        architecture, memory_mb = settings.architecture, settings.memory_mb
+        verification = {
+            "mode": "aws",
+            "deployments": {key: settings.deployments.get(key) for key in targets},
+        }
     config = RunConfig(
         run_id=run_id,
-        # allの場合は、ワークロードに対応する言語だけを計測する。
-        targets=tuple(key for key in requested if key in supported),
+        targets=targets,
         unsupported_targets=tuple(key for key in keys if key not in supported),
-        endpoints=_per_implementation(
-            args.endpoint,
-            env_suffixes=("API_ENDPOINT", "API_URL"),
-            keys=keys,
-            fallback=_terraform_output(args.terraform_dir, "api_endpoints"),
-        ),
+        endpoints=endpoints,
         region=args.region,
         results_dir=args.results_dir,
         timeout_seconds=args.timeout,
         sign_requests=not args.unsigned,
         dry_run=args.dry_run,
-        architecture=args.architecture,
-        memory_mb=args.memory_mb,
+        architecture=architecture,
+        memory_mb=memory_mb,
         git_revision=_git_revision(),
+        evidence={
+            "verification": verification,
+            "content_ids": _content_ids(args.workload_file),
+        },
     )
     result = asyncio.run(run_benchmark(config, workload))
     print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
     return _run_exit_code(result.get("outcomes") or {})
+
+
+def _verified_settings(
+    args: argparse.Namespace, targets: tuple[str, ...], endpoints: dict[str, str]
+) -> LaunchSettings:
+    """計測先のAPI・Lambda・実設定・版を画面と同じ方法で確かめ、記録と食い違えば止める。"""
+    resolver = SettingsResolver(
+        terraform_dir=args.terraform_dir or DEFAULT_TERRAFORM_DIR,
+        environ={**os.environ, "AWS_REGION": args.region},
+    )
+    settings = resolver.resolve()
+    problems = settings.missing()
+    # 画面で計測を開始できない状態なら、CLIからも正式な計測を始めない。
+    if problems:
+        raise ValueError("計測前の確認で問題が見つかりました: " + " ".join(problems))
+    # 指定した条件がLambdaの実設定と違えば、記録が実体と食い違うため止める。
+    if args.architecture is not None and args.architecture != settings.architecture:
+        raise ValueError(
+            f"--architecture {args.architecture} が Lambda の実設定（{settings.architecture}）と"
+            "異なります"
+        )
+    if args.memory_mb is not None and args.memory_mb != settings.memory_mb:
+        raise ValueError(
+            f"--memory-mb {args.memory_mb} が Lambda の実設定（{settings.memory_mb} MB）と"
+            "異なります"
+        )
+    mismatched = [key for key in targets if endpoints.get(key) != settings.endpoints.get(key)]
+    # 接続先がTerraformで管理するAPIと違えば、呼び出す先と記録するLambdaが別になる。
+    if mismatched:
+        raise ValueError(
+            "次の言語の接続先が、Terraform で管理する API と異なります: "
+            + ", ".join(mismatched)
+            + "。--endpoint や <KEY>_API_ENDPOINT・<KEY>_API_URL の上書きを確認してください"
+        )
+    return settings
+
+
+def _content_ids(workload_file: Path) -> dict[str, str | None]:
+    """計測条件の元になった定義ファイルの内容識別子を返す。読めないファイルは不明とする。"""
+    files = {
+        "workloads": workload_file,
+        "implementations": DEFAULT_REGISTRY,
+        "pricing": ROOT / "spec/pricing.yaml",
+        # 比較用の初期データ（DynamoDB）は、このスクリプトが決定的に生成する。
+        "seed_data": ROOT / "scripts/seed-data.py",
+    }
+    return {name: file_content_id(path) for name, path in files.items()}
 
 
 def _run_exit_code(outcomes: dict[str, dict[str, int]]) -> int:
