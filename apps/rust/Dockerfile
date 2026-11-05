@@ -33,14 +33,15 @@ FROM --platform=$TARGETPLATFORM ${FINAL_BASE} AS runtime
 ARG BUILD_DATE=""
 ARG GIT_REVISION=""
 ARG IMAGE_SOURCE=""
-ARG TARGET_ARCH="arm64"
+# BuildKitがビルド対象の方式（arm64・amd64）を自動で設定する。固定値にすると実体と食い違う。
+ARG TARGETARCH
 
 LABEL org.opencontainers.image.created=$BUILD_DATE \
       org.opencontainers.image.revision=$GIT_REVISION \
       org.opencontainers.image.source=$IMAGE_SOURCE \
       org.opencontainers.image.title="Rust Lambdalith" \
       io.lambda-runtime-lab.implementation="rust" \
-      io.lambda-runtime-lab.target-architecture=$TARGET_ARCH
+      io.lambda-runtime-lab.target-architecture=$TARGETARCH
 
 COPY --from=builder /out/bootstrap ${LAMBDA_RUNTIME_DIR}/bootstrap
 
