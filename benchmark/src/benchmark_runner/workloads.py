@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +34,34 @@ class Workload:
         if self.implementations is None:
             return available
         return tuple(key for key in available if key in self.implementations)
+
+
+# 公開API契約（spec/openapi.yaml の x-supported-values）で処理方式として受け付けるprofile。
+KNOWN_PROFILES = ("sequential", "concurrent")
+
+
+def apply_profile(workload: Workload, profile: str | None) -> Workload:
+    """送信本文のprofileを指定値へ置き換え、記録するprofileを本文と一致させて返す。
+
+    profileは本文の項目としてAPIへ送られる。記録だけを変えると、記録と異なる処理方式で
+    計測したrunになるため、本文と記録を必ず同じ値にする。
+    """
+    body = workload.body
+    body_profile = body.get("profile") if isinstance(body, dict) else None
+    # 上書きがなければ、本文のprofileをそのまま記録する（本文にないなら記録もしない）。
+    if profile is None:
+        return replace(workload, profile=body_profile)
+    # 本文がprofileを持たないワークロードでは、指定しても送られないため誤りとして止める。
+    if body_profile is None:
+        raise WorkloadError(
+            f"ワークロード {workload.name} の本文にはprofileがないため、profileを指定できません"
+        )
+    # 契約にない処理方式を送ると、全件がUNSUPPORTED_PROFILEになり比較にならない。
+    if profile not in KNOWN_PROFILES:
+        raise WorkloadError(
+            f"profile は {' または '.join(KNOWN_PROFILES)} を指定してください: {profile}"
+        )
+    return replace(workload, body={**body, "profile": profile}, profile=profile)
 
 
 def _positive_int(value: object, field: str, *, allow_zero: bool = False) -> int:
@@ -121,6 +149,15 @@ def load_workload(config_path: Path, name: str) -> Workload:
         except json.JSONDecodeError as exc:
             raise WorkloadError(f"payloadのJSONが不正です: {path}: {exc}") from exc
 
+    configured_profile = raw.get("profile")
+    body_profile = body.get("profile") if isinstance(body, dict) else None
+    # 定義のprofileと本文のprofileが食い違えば、どちらで計測したと記録すべきか決められない。
+    if configured_profile is not None and configured_profile != body_profile:
+        raise WorkloadError(
+            f"ワークロード {name} のprofile（{configured_profile}）が本文のprofile"
+            f"（{body_profile}）と一致しません"
+        )
+
     return Workload(
         name=name,
         method=method,
@@ -129,7 +166,7 @@ def load_workload(config_path: Path, name: str) -> Workload:
         iterations=_positive_int(raw.get("iterations"), "iterations"),
         client_concurrency=_positive_int(raw.get("client_concurrency", 1), "client_concurrency"),
         body=body,
-        profile=raw.get("profile") or (body.get("profile") if isinstance(body, dict) else None),
+        profile=body_profile,
         description=raw.get("description"),
         implementations=_implementations(raw.get("implementations"), name),
     )

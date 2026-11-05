@@ -30,7 +30,7 @@ from benchmark_runner.implementations import (
 )
 from benchmark_runner.report import generate_report
 from benchmark_runner.runner import RunConfig, run_benchmark
-from benchmark_runner.workloads import WorkloadError, load_workload
+from benchmark_runner.workloads import WorkloadError, apply_profile, load_workload
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -194,9 +194,8 @@ def _run_command(args: argparse.Namespace) -> int:
         overrides["warmup"] = args.warmup
     if args.payload is not None:
         overrides["body"] = args.payload
-    if args.profile is not None:
-        overrides["profile"] = args.profile
-    workload = replace(workload, **overrides)
+    # profileは本文の項目なので、本文を確定してから本文と記録の両方へ同じ値を反映する。
+    workload = apply_profile(replace(workload, **overrides), args.profile)
     # 反復・並行数は正数、ウォームアップは0以上の場合だけ実行可能な条件として受け付ける。
     if workload.iterations <= 0 or workload.client_concurrency <= 0 or workload.warmup < 0:
         raise ValueError("iterationsとconcurrencyは正数、warmupは0以上で指定してください")
