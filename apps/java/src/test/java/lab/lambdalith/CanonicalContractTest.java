@@ -3,13 +3,16 @@ package lab.lambdalith;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
+import org.assertj.core.api.SoftAssertions;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
 import org.springframework.mock.web.MockHttpServletResponse;
@@ -33,28 +36,47 @@ class CanonicalContractTest {
     MockMvc mvc = TestApp.mockMvc(new InMemoryItemRepository(fixtureItems(documents)));
 
     int executed = 0;
+    // 一つの不一致で止めず、全ケースの不一致をまとめて報告する。
+    SoftAssertions softly = new SoftAssertions();
     for (JsonNode document : documents) {
       for (JsonNode testcase : document.get("cases")) {
         String name = testcase.get("name").asString();
         JsonNode request = testcase.get("request");
-        JsonNode body = request.get("body");
         MockHttpServletResponse response =
-            TestApp.send(
+            TestApp.sendBytes(
                 mvc,
                 request.get("method").asString(),
                 request.get("path").asString(),
-                body == null ? null : MAPPER.writeValueAsString(body),
+                requestBody(request),
                 Map.of());
 
         JsonNode expected = testcase.get("expected");
-        assertThat(response.getStatus()).as(name + ": status").isEqualTo(expected.get("status").asInt());
-        assertThat(MAPPER.readTree(response.getContentAsByteArray()))
+        softly.assertThat(response.getStatus()).as(name + ": status").isEqualTo(expected.get("status").asInt());
+        softly
+            .assertThat(MAPPER.readTree(response.getContentAsByteArray()))
             .as(name + ": body")
             .isEqualTo(expected.get("body"));
         executed++;
       }
     }
+    softly.assertAll();
     assertThat(executed).isGreaterThanOrEqualTo(12);
+  }
+
+  /**
+   * ケースの本文を送信するバイト列へ変換する。生の本文は組み立て直さずにそのまま送る。
+   *
+   * <p>raw_body・raw_body_base64は、JSONとして不正な本文や数値の表記をそのまま送るために使う。
+   */
+  private static byte[] requestBody(JsonNode request) throws IOException {
+    if (request.has("raw_body_base64")) {
+      return Base64.getDecoder().decode(request.get("raw_body_base64").asString());
+    }
+    if (request.has("raw_body")) {
+      return request.get("raw_body").asString().getBytes(StandardCharsets.UTF_8);
+    }
+    JsonNode body = request.get("body");
+    return body == null ? null : MAPPER.writeValueAsBytes(body);
   }
 
   private static List<JsonNode> documents() throws IOException {

@@ -32,10 +32,18 @@ final class TestApp {
   static MockHttpServletResponse send(
       MockMvc mvc, String method, String path, String body, Map<String, String> headers)
       throws Exception {
+    return sendBytes(
+        mvc, method, path, body == null ? null : body.getBytes(StandardCharsets.UTF_8), headers);
+  }
+
+  /** 本文をバイト列のまま送る。UTF-8として不正な本文など、文字列にできない入力の検証に使う。 */
+  static MockHttpServletResponse sendBytes(
+      MockMvc mvc, String method, String path, byte[] body, Map<String, String> headers)
+      throws Exception {
     MockHttpServletRequestBuilder builder = request(HttpMethod.valueOf(method), path);
     headers.forEach(builder::header);
     if (body != null) {
-      builder.contentType(MediaType.APPLICATION_JSON).content(body.getBytes(StandardCharsets.UTF_8));
+      builder.contentType(MediaType.APPLICATION_JSON).content(body);
     }
     return mvc.perform(builder).andReturn().getResponse();
   }

@@ -1,0 +1,285 @@
+{
+  "contract_version": "1.0.0",
+  "description": "生の本文で送る、JSON・数値・profileの共通境界。request.raw_body はUTF-8の文字列のまま、raw_body_base64 はデコードしたバイト列のまま送る（JSONとして組み立て直さない）。",
+  "cases": [
+    {
+      "name": "long-unsupported-profile-is-unsupported-profile",
+      "request": {
+        "method": "POST",
+        "path": "/compute",
+        "body": {
+          "items": 1,
+          "iterations": 1,
+          "seed": "s",
+          "profile": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        }
+      },
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "UNSUPPORTED_PROFILE",
+            "message": "profile is not supported",
+            "details": [
+              {
+                "field": "profile",
+                "reason": "supported_values:sequential"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "long-unsupported-aggregate-profile-is-unsupported-profile",
+      "request": {
+        "method": "POST",
+        "path": "/aggregate",
+        "body": {
+          "ids": [
+            "item-001"
+          ],
+          "profile": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        }
+      },
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "UNSUPPORTED_PROFILE",
+            "message": "profile is not supported",
+            "details": [
+              {
+                "field": "profile",
+                "reason": "supported_values:sequential,concurrent"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "integer-above-64-bit-is-out-of-range",
+      "request": {
+        "method": "POST",
+        "path": "/compute",
+        "raw_body": "{\"items\":18446744073709551616,\"iterations\":1,\"seed\":\"s\",\"profile\":\"sequential\"}"
+      },
+      "expected": {
+        "status": 422,
+        "body": {
+          "error": {
+            "code": "VALIDATION_ERROR",
+            "message": "request validation failed",
+            "details": [
+              {
+                "field": "items",
+                "reason": "maximum:1000"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "integer-below-64-bit-is-out-of-range",
+      "request": {
+        "method": "POST",
+        "path": "/compute",
+        "raw_body": "{\"items\":-9223372036854775809,\"iterations\":1,\"seed\":\"s\",\"profile\":\"sequential\"}"
+      },
+      "expected": {
+        "status": 422,
+        "body": {
+          "error": {
+            "code": "VALIDATION_ERROR",
+            "message": "request validation failed",
+            "details": [
+              {
+                "field": "items",
+                "reason": "minimum:1"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "very-long-integer-is-out-of-range",
+      "request": {
+        "method": "POST",
+        "path": "/compute",
+        "raw_body": "{\"items\":1,\"iterations\":1000000000000000000000000000000000000000,\"seed\":\"s\",\"profile\":\"sequential\"}"
+      },
+      "expected": {
+        "status": 422,
+        "body": {
+          "error": {
+            "code": "VALIDATION_ERROR",
+            "message": "request validation failed",
+            "details": [
+              {
+                "field": "iterations",
+                "reason": "maximum:1000000"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "fraction-token-is-not-an-integer",
+      "request": {
+        "method": "POST",
+        "path": "/compute",
+        "raw_body": "{\"items\":1.0,\"iterations\":1,\"seed\":\"s\",\"profile\":\"sequential\"}"
+      },
+      "expected": {
+        "status": 422,
+        "body": {
+          "error": {
+            "code": "VALIDATION_ERROR",
+            "message": "request validation failed",
+            "details": [
+              {
+                "field": "items",
+                "reason": "type:integer"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "exponent-token-is-not-an-integer",
+      "request": {
+        "method": "POST",
+        "path": "/compute",
+        "raw_body": "{\"items\":1e2,\"iterations\":1,\"seed\":\"s\",\"profile\":\"sequential\"}"
+      },
+      "expected": {
+        "status": 422,
+        "body": {
+          "error": {
+            "code": "VALIDATION_ERROR",
+            "message": "request validation failed",
+            "details": [
+              {
+                "field": "items",
+                "reason": "type:integer"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "nan-is-invalid-json",
+      "request": {
+        "method": "POST",
+        "path": "/compute",
+        "raw_body": "{\"items\":NaN,\"iterations\":1,\"seed\":\"s\",\"profile\":\"sequential\"}"
+      },
+      "expected": {
+        "status": 422,
+        "body": {
+          "error": {
+            "code": "VALIDATION_ERROR",
+            "message": "request validation failed",
+            "details": [
+              {
+                "field": "$",
+                "reason": "invalid_json"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "infinity-is-invalid-json",
+      "request": {
+        "method": "POST",
+        "path": "/compute",
+        "raw_body": "{\"items\":Infinity,\"iterations\":1,\"seed\":\"s\",\"profile\":\"sequential\"}"
+      },
+      "expected": {
+        "status": 422,
+        "body": {
+          "error": {
+            "code": "VALIDATION_ERROR",
+            "message": "request validation failed",
+            "details": [
+              {
+                "field": "$",
+                "reason": "invalid_json"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "lone-surrogate-escape-is-invalid-json",
+      "request": {
+        "method": "POST",
+        "path": "/compute",
+        "raw_body": "{\"items\":1,\"iterations\":1,\"seed\":\"\\ud800\",\"profile\":\"sequential\"}"
+      },
+      "expected": {
+        "status": 422,
+        "body": {
+          "error": {
+            "code": "VALIDATION_ERROR",
+            "message": "request validation failed",
+            "details": [
+              {
+                "field": "$",
+                "reason": "invalid_json"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "invalid-utf8-is-invalid-json",
+      "request": {
+        "method": "POST",
+        "path": "/compute",
+        "raw_body_base64": "eyJpdGVtcyI6MSwiaXRlcmF0aW9ucyI6MSwic2VlZCI6Iv8iLCJwcm9maWxlIjoic2VxdWVudGlhbCJ9"
+      },
+      "expected": {
+        "status": 422,
+        "body": {
+          "error": {
+            "code": "VALIDATION_ERROR",
+            "message": "request validation failed",
+            "details": [
+              {
+                "field": "$",
+                "reason": "invalid_json"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "surrogate-pair-escape-is-a-valid-scalar",
+      "request": {
+        "method": "POST",
+        "path": "/compute",
+        "raw_body": "{\"items\":1,\"iterations\":1,\"seed\":\"\\ud83d\\ude00\",\"profile\":\"sequential\"}"
+      },
+      "expected": {
+        "status": 200,
+        "body": {
+          "processed": 1,
+          "iterations": 1,
+          "checksum": "ed48e9e4ea7f6e2c72eb7470e8b4c3f7250d50a39634e9fa2bdc210c3e53e58b"
+        }
+      }
+    }
+  ]
+}
