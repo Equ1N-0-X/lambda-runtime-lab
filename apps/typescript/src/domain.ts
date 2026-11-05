@@ -6,7 +6,7 @@
 import { createHash } from "node:crypto";
 
 import { AppError } from "./errors.js";
-import type { Item, ItemRepository } from "./repository.js";
+import { type Item, type ItemRepository, RepositoryError } from "./repository.js";
 import type { ComputeRequest, TransformRecord, TransformRequest } from "./validation.js";
 
 export interface TransformResponse {
@@ -129,8 +129,13 @@ async function readOrDependencyError(
 ): Promise<Item | undefined> {
   try {
     return await repository.get(id);
-  } catch {
+  } catch (error) {
     // 保存先の呼び出し失敗は、利用者の入力ではなく外部依存の障害として502にする。
-    throw AppError.dependency();
+    // 原因の分類は内部ログ用に引き継ぎ、分類されていない例外は不明として扱う。
+    const cause =
+      error instanceof RepositoryError
+        ? { category: error.category, errorCode: error.errorCode }
+        : { category: "unknown", errorCode: null };
+    throw AppError.dependency(cause);
   }
 }

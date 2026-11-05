@@ -212,9 +212,9 @@ def create_app(repository: ItemRepository | None = None) -> FastAPI:
         )
 
     @application.exception_handler(RepositoryError)
-    async def repository_error_handler(request: Request, _error: RepositoryError) -> JSONResponse:
-        """DynamoDB障害を502へ変換し、運用調査用のWARNログを残す。"""
-        log_dependency_error(request)
+    async def repository_error_handler(request: Request, error: RepositoryError) -> JSONResponse:
+        """DynamoDB障害を502へ変換し、原因の分類を運用調査用のWARNログに残す。"""
+        log_dependency_error(request, category=error.category, error_code=error.error_code)
         return _error_response(502, "DEPENDENCY_ERROR", "dependency error")
 
     @application.exception_handler(Exception)

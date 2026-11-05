@@ -18,7 +18,7 @@ use lambda_http::RequestExt;
 
 use crate::{
     domain,
-    error::{AppError, ErrorDetail},
+    error::{AppError, DependencyCause, ErrorDetail},
     json,
     model::{HealthResponse, ItemResponse},
     repository::ItemRepository,
@@ -198,6 +198,10 @@ async fn log_request(request: Request, next: Next) -> Response {
         .unwrap_or("unknown");
 
     let status_code = response.status().as_u16();
+    // 保存先障害の原因は、本文ではなく応答の拡張から読む（本文・例外の全文はログへ出さない）。
+    let cause = response.extensions().get::<DependencyCause>();
+    let dependency_error_category = cause.map(|cause| cause.category);
+    let dependency_error_code = cause.and_then(|cause| cause.error_code.as_deref());
 
     // 502は外部依存先の障害としてWARN、500以上（502以外）は内部障害としてERROR、
     // それ以外は仕様どおり応答できた処理としてINFOに分類する。全分類で相関項目は共通に保つ。
@@ -210,6 +214,10 @@ async fn log_request(request: Request, next: Next) -> Response {
             route,
             profile,
             status_code,
+            dependency = "dynamodb",
+            dependency_operation = "GetItem",
+            dependency_error_category,
+            dependency_error_code,
             "外部データストアへのアクセスに失敗しました"
         ),
         500..=599 => tracing::error!(

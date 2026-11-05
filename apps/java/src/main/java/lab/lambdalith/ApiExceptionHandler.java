@@ -1,5 +1,6 @@
 package lab.lambdalith;
 
+import jakarta.servlet.http.HttpServletRequest;
 import java.util.Map;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -12,7 +13,15 @@ import org.springframework.web.servlet.resource.NoResourceFoundException;
 public class ApiExceptionHandler {
 
   @ExceptionHandler(AppError.class)
-  public ResponseEntity<Map<String, Object>> appError(AppError error) {
+  public ResponseEntity<Map<String, Object>> appError(AppError error, HttpServletRequest request) {
+    // 保存先障害の原因は本文に出さず、ログを出すフィルターだけが読めるリクエスト属性へ渡す。
+    if (error.dependencyCause() != null) {
+      RequestLoggingFilter.setDependencyCause(request, error.dependencyCause());
+    }
+    return appError(error);
+  }
+
+  private static ResponseEntity<Map<String, Object>> appError(AppError error) {
     return ResponseEntity.status(error.status()).body(error.body());
   }
 

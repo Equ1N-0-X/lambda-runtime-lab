@@ -139,9 +139,12 @@ public final class Domain {
   private static Optional<Item> readOrDependencyError(ItemRepository repository, String id) {
     try {
       return repository.get(id);
-    } catch (RuntimeException error) {
+    } catch (RepositoryException error) {
       // 保存先の呼び出し失敗は、利用者の入力ではなく外部依存の障害として502にする。
-      throw AppError.dependency();
+      throw AppError.dependency(new AppError.DependencyCause(error.category(), error.errorCode()));
+    } catch (RuntimeException error) {
+      // 分類されていない保存先の例外も502にし、原因は不明として残す。
+      throw AppError.dependency(new AppError.DependencyCause("unknown", null));
     }
   }
 

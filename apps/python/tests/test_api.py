@@ -273,7 +273,7 @@ def test_invalid_benchmark_run_id_header_is_rejected(client: TestClient) -> None
 
 class FailingRepository:
     async def get_item(self, item_id: str) -> None:
-        raise RepositoryError(f"failed for {item_id}")
+        raise RepositoryError("unknown")
 
 
 def test_repository_failure_uses_the_dependency_error_schema() -> None:

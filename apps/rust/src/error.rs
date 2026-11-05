@@ -10,6 +10,8 @@ use axum::{
 };
 use serde::Serialize;
 
+use crate::repository::RepositoryError;
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ErrorDetail {
     pub field: String,
@@ -42,6 +44,8 @@ pub struct ErrorContent {
 pub struct AppError {
     status: StatusCode,
     content: ErrorContent,
+    // 保存先障害の原因の分類。公開する本文には含めず、応答の拡張としてログへ渡す。
+    dependency_cause: Option<DependencyCause>,
 }
 
 impl AppError {
@@ -59,6 +63,7 @@ impl AppError {
                 message: "request validation failed",
                 details,
             },
+            dependency_cause: None,
         }
     }
 
@@ -79,6 +84,7 @@ impl AppError {
                     format!("supported_values:{}", supported_values.join(",")),
                 )],
             },
+            dependency_cause: None,
         }
     }
 
@@ -91,6 +97,7 @@ impl AppError {
                 message: "item not found",
                 details: vec![ErrorDetail::new("id", format!("not_found:{id}"))],
             },
+            dependency_cause: None,
         }
     }
 
@@ -103,11 +110,12 @@ impl AppError {
                 message: "item not found",
                 details: Vec::new(),
             },
+            dependency_cause: None,
         }
     }
 
-    /// DynamoDBなど外部依存先の障害を502応答へ変換する。
-    pub fn dependency() -> Self {
+    /// DynamoDBなど外部依存先の障害を、原因の分類を保持したまま502応答へ変換する。
+    pub fn dependency(error: RepositoryError) -> Self {
         Self {
             status: StatusCode::BAD_GATEWAY,
             content: ErrorContent {
@@ -115,6 +123,10 @@ impl AppError {
                 message: "dependency error",
                 details: Vec::new(),
             },
+            dependency_cause: Some(DependencyCause {
+                category: error.category.as_str(),
+                error_code: error.error_code,
+            }),
         }
     }
 
@@ -127,6 +139,7 @@ impl AppError {
                 message: "internal error",
                 details: Vec::new(),
             },
+            dependency_cause: None,
         }
     }
 
@@ -139,15 +152,27 @@ impl AppError {
     }
 }
 
+/// 保存先障害を調査するために内部ログへ残す、原因の分類とAWSのエラーコード。
+#[derive(Clone, Debug)]
+pub struct DependencyCause {
+    pub category: &'static str,
+    pub error_code: Option<String>,
+}
+
 impl IntoResponse for AppError {
     /// 内部エラー型を、契約どおりのHTTP状態とJSON本文へ変換する。
     fn into_response(self) -> Response {
-        (
+        let mut response = (
             self.status,
             Json(ErrorBody {
                 error: self.content,
             }),
         )
-            .into_response()
+            .into_response();
+        // 原因の分類は本文に出さず、ログを出す処理だけが読める応答の拡張に入れる。
+        if let Some(cause) = self.dependency_cause {
+            response.extensions_mut().insert(cause);
+        }
+        response
     }
 }

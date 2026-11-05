@@ -91,17 +91,26 @@ def log_request_completed(request: Request, status_code: int) -> None:
     )
 
 
-def log_dependency_error(request: Request) -> None:
-    """外部データストアの障害により 502 を返す事実を WARN として記録する。"""
-    _write(
-        logging.WARNING,
-        _request_fields(
-            request,
-            status_code=502,
-            level="WARN",
-            message="外部データストアへのアクセスに失敗しました",
-        ),
+def log_dependency_error(request: Request, *, category: str, error_code: str | None) -> None:
+    """外部データストアの障害により 502 を返す事実を、原因の分類とともに WARN として記録する。
+
+    本文・認証情報・例外の全文は出さず、分類・AWSのエラーコード・操作名だけを残す。
+    """
+    fields = _request_fields(
+        request,
+        status_code=502,
+        level="WARN",
+        message="外部データストアへのアクセスに失敗しました",
     )
+    fields.update(
+        {
+            "dependency": "dynamodb",
+            "dependency_operation": "GetItem",
+            "dependency_error_category": category,
+            "dependency_error_code": error_code,
+        }
+    )
+    _write(logging.WARNING, fields)
 
 
 def log_internal_error(request: Request, error: Exception) -> None:
