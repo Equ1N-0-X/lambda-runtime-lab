@@ -105,27 +105,37 @@ wait_for_dynamodb() {
   return 1
 }
 
-runtime_is_ready() {
-  local url="$1"
-  local response
-  # RIE invoke APIのレスポンスを確認し、HTTPポートが開いているだけでは起動完了とみなさない。
-  response="$(curl --connect-timeout 1 --max-time 5 --silent --request POST \
-    --header 'Content-Type: application/json' --data "${HEALTH_EVENT}" \
-    "${url}/2015-03-31/functions/function/invocations" || true)"
-  jq --exit-status '.statusCode == 200' >/dev/null 2>&1 <<<"${response}"
+# 起動を待つ上限（秒）。JVMなど初回の呼び出しが遅い言語も待てるようにする。
+RUNTIME_WAIT_SECONDS="${CONTRACT_RUNTIME_WAIT_SECONDS:-60}"
+
+runtime_port_is_open() {
+  # 呼び出しを送らずに、RIEがHTTPを受け付け始めたかだけを確かめる（どんな応答でもよい）。
+  curl --connect-timeout 1 --max-time 2 --silent --output /dev/null "$1/" 2>/dev/null
 }
 
 wait_for_runtime() {
   local label="$1"
   local url="$2"
-  local attempt
-  # 起動の遅い言語（JVMなど）も待てるよう、最大60秒まで確認を繰り返す。
-  for attempt in $(seq 1 60); do
-    if runtime_is_ready "${url}"; then
-      return 0
+  local deadline=$((SECONDS + RUNTIME_WAIT_SECONDS))
+  local response
+  # Lambda RIEは同時に一つの呼び出ししか受け付けず、処理中に次の呼び出しが届くと
+  # ReserveFailed: AlreadyReserved で異常終了する。そのため、起動の確認では呼び出しを重ねない。
+  # 先にポートが開くまで呼び出しを送らずに待ち、その後に一度だけ、残りの時間を上限に呼び出す。
+  until runtime_port_is_open "${url}"; do
+    if ((SECONDS >= deadline)); then
+      show_failure_context
+      echo "${label} の Lambda RIE が待ち受けを始めませんでした: ${url}" >&2
+      return 1
     fi
     sleep 1
   done
+  response="$(curl --connect-timeout 1 --max-time "$((deadline - SECONDS > 1 ? deadline - SECONDS : 1))" \
+    --silent --request POST --header 'Content-Type: application/json' --data "${HEALTH_EVENT}" \
+    "${url}/2015-03-31/functions/function/invocations" || true)"
+  # 初回の呼び出しが正しく応答した場合だけ、起動が完了したとみなす。
+  if jq --exit-status '.statusCode == 200' >/dev/null 2>&1 <<<"${response}"; then
+    return 0
+  fi
   show_failure_context
   echo "${label} の Lambda RIE の起動を確認できませんでした: ${url}" >&2
   return 1
@@ -176,9 +186,19 @@ start_runtime() {
   local url="http://127.0.0.1:${port}"
   local command_line
 
-  # イメージがなければ、この言語だけをビルドしてから起動する。
-  if ! docker image inspect "${image}" >/dev/null 2>&1; then
+  # イメージがない、または手元のHEADと別のコミットから作られたイメージなら、この言語だけを
+  # ビルドし直してから起動する。古いイメージのまま検証すると、言語ごとに版が混ざった結果になる。
+  local image_revision head_revision
+  head_revision="$(git -C "${ROOT}" rev-parse --verify --quiet HEAD || echo unknown)"
+  image_revision="$(docker image inspect "${image}" \
+    --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' 2>/dev/null || true)"
+  if [[ "${image_revision}" != "${head_revision}" ]]; then
+    echo "${implementation} のイメージを現在のコミットからビルドします（イメージの版: ${image_revision:-なし}）" >&2
     make -C "${ROOT}" build IMPLEMENTATIONS="${implementation}" IMAGE_TAG="${IMAGE_TAG}"
+  fi
+  # 未コミットの変更はイメージの版に表れないため、その場合はビルドし直すよう案内する。
+  if [[ -n "$(git -C "${ROOT}" status --porcelain -- "$(implementation_app_dir "${implementation}")")" ]]; then
+    echo "警告: ${implementation} に未コミットの変更があります。変更を検証するには make build IMPLEMENTATIONS=${implementation} を実行してください" >&2
   fi
   # イメージ本来のENTRYPOINTとCMDをRIEの引数に渡し、Lambdaと同じ起動経路を再現する。
   command_line="$(docker image inspect "${image}" \
