@@ -18,6 +18,8 @@ GIT_REVISION="${GIT_REVISION:-$(git -C "${ROOT}" rev-parse --verify --quiet HEAD
 BUILD_PROGRESS="${BUILD_PROGRESS:-auto}"
 DRY_RUN=false
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=true
+# ビルドの前に実装一覧を確定する。読めなければ、イメージを作らずに成功しないよう止める。
+KEYS="$(implementation_keys)"
 
 resolve_final_base() {
   # FINAL_BASEが明示された場合はその参照を使い、未指定ならタグから現在のdigestを一度だけ解決する。
@@ -102,6 +104,6 @@ else
   echo "共通ベースイメージ: ${FINAL_BASE_RESOLVED}"
 fi
 
-for implementation in $(implementation_keys); do
+for implementation in ${KEYS}; do
   build_image "${implementation}" "${FINAL_BASE_RESOLVED}"
 done
