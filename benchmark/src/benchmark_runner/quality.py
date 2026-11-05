@@ -145,6 +145,17 @@ def assess_run(report: dict[str, Any], *, run_dir: Path) -> dict[str, Any]:
             "確認できていません。数値は参考値です。",
         )
 
+    verification = metadata.get("verification") or {}
+    # 計測前にAWS上の対象・実設定・版を確かめた計測だけを、正式な比較の根拠にする。
+    # ローカルAPIの確認や、確認を記録する前の版の計測は参考値として扱う。
+    if verification.get("mode") != "aws" and not metadata.get("dry_run"):
+        lower(
+            COLUMNS,
+            REFERENCE,
+            "計測前に AWS 上の計測先・実設定・版を確かめた記録がありません"
+            "（ローカルでの確認、または確認を記録する前の版の計測です）。数値は参考値です。",
+        )
+
     # アーキテクチャかメモリが記録されていなければ、条件の再現とコスト計算ができない。
     if metadata.get("architecture") is None or metadata.get("memory_mb") is None:
         reason = "アーキテクチャまたはメモリ設定が記録されていません。コストは比較できません。"

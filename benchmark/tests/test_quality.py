@@ -47,6 +47,7 @@ def _write_run(results, records, *, region="ap-northeast-1", run_id="run"):
         "memory_mb": 512,
         "region": region,
         "dry_run": False,
+        "verification": {"mode": "aws"},
         "workload": {"name": "health", "iterations": 2},
     }
     (run_dir / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
@@ -225,3 +226,19 @@ def test_cli_run_fails_when_a_language_has_no_success():
     assert _run_exit_code({"python": {"success_count": 0, "failure_count": 3}}) == 1
     assert _run_exit_code({"python": {"success_count": 2, "failure_count": 1}}) == 0
     assert _run_exit_code({"python": {"success_count": 3, "failure_count": 0}}) == 0
+
+
+def test_local_unsigned_run_is_reference_not_formal(tmp_path):
+    records = [_record(name, index) for name in ("python", "rust") for index in (1, 2)]
+    _write_run(tmp_path, records)
+    metadata_path = tmp_path / "raw/run/metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["verification"] = {"mode": "local"}
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    report = build_report(
+        run_id="run", results_dir=tmp_path, pricing_path=PRICING, registry_path=REGISTRY
+    )
+
+    assert report["quality"]["comparable"] is False
+    assert "ローカル" in "\n".join(report["quality"]["issues"])

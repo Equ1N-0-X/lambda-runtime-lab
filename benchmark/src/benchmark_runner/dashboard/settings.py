@@ -10,7 +10,7 @@ import json
 import os
 import subprocess
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +24,11 @@ from botocore.exceptions import (
     TokenRetrievalError,
 )
 
-from benchmark_runner.deployment import check_deployed_revision
+from benchmark_runner.deployment import (
+    DeployedImage,
+    check_deployed_revision,
+    read_deployed_image,
+)
 from benchmark_runner.implementations import DEFAULT_REGISTRY, Implementation, load_implementations
 
 DEFAULT_REGION = "ap-northeast-1"
@@ -59,6 +63,8 @@ class LaunchSettings:
     region: str
     # 取得元を読めなかった理由や条件の不一致など、値の欠落だけでは表せない問題。
     problems: tuple[str, ...] = ()
+    # 実装ごとに、計測先として確かめたLambda関数・実設定・イメージ。runの証跡として保存する。
+    deployments: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def missing(self) -> list[str]:
         """計測を開始できない理由を列挙する。問題の説明があればそれを優先する。"""
@@ -172,6 +178,7 @@ class SettingsResolver:
         read_outputs: Callable[[Path], dict[str, Any]] = read_terraform_outputs,
         read_conditions: Callable[[str, str], FunctionConditions] = read_lambda_conditions,
         check_revision: Callable[..., str | None] | None = check_deployed_revision,
+        read_image: Callable[[str, str], DeployedImage] = read_deployed_image,
     ) -> None:
         self.terraform_dir = terraform_dir
         self.registry_path = registry_path
@@ -180,6 +187,7 @@ class SettingsResolver:
         self.read_conditions = read_conditions
         # Noneなら版の確認を省く（テストや、AWS以外の接続先を計測する場合）。
         self.check_revision = check_revision
+        self.read_image = read_image
 
     def resolve(self) -> LaunchSettings:
         implementations = load_implementations(self.registry_path)
@@ -194,11 +202,20 @@ class SettingsResolver:
 
         api_endpoints = outputs.get("api_endpoints") or {}
         lambda_names = outputs.get("lambda_names") or {}
-        # 接続先は make benchmark と同じ環境変数を優先し、なければTerraformの出力を使う。
-        endpoints = {
-            item.key: self.environ.get(f"{item.env_prefix}_API_URL") or api_endpoints.get(item.key)
-            for item in implementations
-        }
+        endpoints = {}
+        for item in implementations:
+            name, override = self._endpoint_override(item)
+            deployed = api_endpoints.get(item.key)
+            endpoints[item.key] = override or deployed
+            # 上書きした接続先がTerraformで管理するAPIと違えば、呼び出す先と、設定・ログを読む
+            # Lambdaが別の環境になり、記録が実体と食い違うため計測させない。
+            if override and deployed and override != deployed:
+                problems.append(
+                    f"環境変数 {name} の接続先が、Terraform で管理する {item.label} の API と"
+                    "異なります。呼び出す API と、設定・ログを読む Lambda の対応を"
+                    "確かめられないため計測できません。"
+                    f"意図した上書きでなければ unset {name} を実行してください。"
+                )
         function_names = {item.key: lambda_names.get(item.key) for item in implementations}
         not_deployed = [item.label for item in implementations if not function_names[item.key]]
         # Terraformは読めたが一覧の実装がデプロイされていなければ、追加後のデプロイ漏れである。
@@ -222,15 +239,18 @@ class SettingsResolver:
                 break
 
         architecture, memory_mb = self._shared_conditions(implementations, conditions, problems)
+        deployments: dict[str, dict[str, Any]] = {
+            key: {
+                "function_name": function_names[key],
+                "architecture": condition.architecture,
+                "memory_mb": condition.memory_mb,
+            }
+            for key, condition in conditions.items()
+        }
         # 設定に問題がない場合だけ、デプロイ済みの版が手元のアプリと一致するかを確かめる。
         if not problems and self.check_revision is not None:
             for item in implementations:
-                problem = self.check_revision(
-                    label=item.label,
-                    function_name=function_names[item.key],
-                    source_pathspecs=item.image_source_pathspecs,
-                    region=region,
-                )
+                problem = self._check_image(item, function_names[item.key], region, deployments)
                 if problem:
                     problems.append(problem)
 
@@ -242,6 +262,45 @@ class SettingsResolver:
             memory_mb=memory_mb,
             region=region,
             problems=tuple(problems),
+            deployments=deployments,
+        )
+
+    def _endpoint_override(self, item: Implementation) -> tuple[str, str | None]:
+        """環境変数による接続先の上書きを、CLIと同じ優先順（API_ENDPOINT、API_URL）で返す。"""
+        for suffix in ("API_ENDPOINT", "API_URL"):
+            name = f"{item.env_prefix}_{suffix}"
+            # 先に見つかった空でない値を上書きとして使い、どの変数かも案内に使う。
+            if self.environ.get(name):
+                return name, self.environ[name]
+        return f"{item.env_prefix}_API_URL", None
+
+    def _check_image(
+        self,
+        item: Implementation,
+        function_name: str,
+        region: str,
+        deployments: dict[str, dict[str, Any]],
+    ) -> str | None:
+        """実イメージを一度だけ読み、版を照合したうえでdigestを証跡へ加える。"""
+        try:
+            image = self.read_image(function_name, region)
+        # 権限不足や関数の未作成などで読めなければ、版を確認できないまま計測させない。
+        except (ClientError, BotoCoreError) as exc:
+            return f"{item.label} のデプロイ済みイメージを確認できませんでした（{exc}）。"
+        deployments.setdefault(item.key, {}).update(
+            {
+                "image_repository": image.repository,
+                "image_digest": image.digest or None,
+                "image_tags": list(image.tags),
+            }
+        )
+        assert self.check_revision is not None
+        return self.check_revision(
+            label=item.label,
+            function_name=function_name,
+            source_pathspecs=item.image_source_pathspecs,
+            region=region,
+            read_image=lambda _function_name, _region: image,
         )
 
     def _shared_conditions(
