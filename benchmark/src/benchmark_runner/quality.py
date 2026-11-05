@@ -40,15 +40,22 @@ class _Column:
 
     def __init__(self) -> None:
         self.status = USABLE
-        self.reasons: list[str] = []
+        # 理由と、その理由が示す状態の組。表示では重い理由を先に並べる。
+        self._reasons: list[tuple[str, str]] = []
         self.notes: list[str] = []
+
+    @property
+    def reasons(self) -> list[str]:
+        """状態を決めた重い理由から順に返す（同じ重さなら判定した順）。"""
+        ordered = sorted(self._reasons, key=lambda entry: -_RANK[entry[0]])
+        return [reason for _status, reason in ordered]
 
     def lower(self, status: str, reason: str) -> None:
         # 既にある状態より悪い場合だけ状態を下げ、理由は重複させずに残す。
         if _RANK[status] > _RANK[self.status]:
             self.status = status
         if reason not in self.reasons:
-            self.reasons.append(reason)
+            self._reasons.append((status, reason))
 
     def public(self) -> dict[str, Any]:
         return {"status": self.status, "reasons": self.reasons, "notes": self.notes}
