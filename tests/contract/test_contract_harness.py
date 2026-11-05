@@ -7,7 +7,9 @@ import pytest
 
 from contract_harness import (
     ApiResponse,
+    _api_gateway_event,
     assert_case_matches,
+    case_targets,
     configured_targets,
     load_cases,
     load_fixture_items,
@@ -193,3 +195,65 @@ def test_case_files_can_limit_implementations(tmp_path: Path) -> None:
 
     assert case.applies_to("python")
     assert not case.applies_to("java")
+
+
+def _write_case_file(directory: Path, document: dict) -> None:
+    case = {
+        "name": "health",
+        "request": {"method": "GET", "path": "/health"},
+        "expected": {"status": 200, "body": {"status": "ok"}},
+    }
+    (directory / "case.json").write_text(json.dumps({"cases": [case], **document}))
+
+
+def test_cases_are_expanded_only_to_languages_that_implement_them(tmp_path: Path) -> None:
+    _write_case_file(tmp_path, {"implementations": ["python", "rust"]})
+    keys = ("python", "rust", "typescript", "java")
+
+    pairs = case_targets(load_cases(tmp_path, keys), keys)
+
+    # 一部の言語だけで実装したケースは、未対応の言語へ送らない。
+    assert [key for _case, key in pairs] == ["python", "rust"]
+
+
+def test_unknown_implementation_key_is_a_definition_error(tmp_path: Path) -> None:
+    _write_case_file(tmp_path, {"implementations": ["python", "cobol"]})
+
+    with pytest.raises(ValueError, match="cobol"):
+        load_cases(tmp_path, ("python", "rust"))
+
+
+def test_case_without_any_target_is_a_definition_error(tmp_path: Path) -> None:
+    _write_case_file(tmp_path, {"implementations": ["java"]})
+
+    with pytest.raises(ValueError, match="対象になる言語"):
+        case_targets(load_cases(tmp_path), ("python", "rust"))
+
+
+def test_raw_body_is_sent_without_rebuilding_json(tmp_path: Path) -> None:
+    case = {
+        "name": "nan",
+        "request": {"method": "POST", "path": "/compute", "raw_body": '{"items":NaN}'},
+        "expected": {"status": 422, "body": {}},
+    }
+    (tmp_path / "raw.json").write_text(json.dumps({"cases": [case]}))
+
+    loaded = load_cases(tmp_path)[0]
+
+    assert loaded.request_bytes() == b'{"items":NaN}'
+    assert _api_gateway_event(loaded)["body"] == '{"items":NaN}'
+
+
+def test_invalid_utf8_body_is_base64_encoded_in_lambda_event(tmp_path: Path) -> None:
+    case = {
+        "name": "bytes",
+        "request": {"method": "POST", "path": "/compute", "raw_body_base64": "/w=="},
+        "expected": {"status": 422, "body": {}},
+    }
+    (tmp_path / "raw.json").write_text(json.dumps({"cases": [case]}))
+
+    event = _api_gateway_event(load_cases(tmp_path)[0])
+
+    # API Gatewayと同じく、UTF-8として読めない本文はbase64で渡す。
+    assert event["isBase64Encoded"] is True
+    assert event["body"] == "/w=="
