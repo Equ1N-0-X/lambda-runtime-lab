@@ -4,6 +4,7 @@ import json
 import threading
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 import pytest
 
@@ -12,6 +13,8 @@ from benchmark_runner.dashboard.jobs import JobManager
 from benchmark_runner.dashboard.server import create_server
 from benchmark_runner.dashboard.settings import LaunchSettings
 
+PRICING = Path(__file__).resolve().parents[2] / "spec/pricing.yaml"
+
 
 def _record(implementation, index, *, start_type="warm"):
     return {
@@ -19,6 +22,7 @@ def _record(implementation, index, *, start_type="warm"):
         "implementation": implementation,
         "request_index": index,
         "success": True,
+        "response_checked": True,
         "latency_ms": 10.0 + index,
         "duration_ms": 5.0,
         "billed_duration_ms": 6.0,
@@ -57,7 +61,7 @@ def _write_run(results_dir, run_id, *, metadata_overrides=None, records=None, co
 def test_load_run_marks_complete_run_comparable_and_hides_endpoints(tmp_path):
     _write_run(tmp_path, "complete")
 
-    run = load_run("complete", results_dir=tmp_path, pricing_path=tmp_path / "missing.yaml")
+    run = load_run("complete", results_dir=tmp_path, pricing_path=PRICING)
 
     assert run["comparable"] is True
     assert run["issues"] == []

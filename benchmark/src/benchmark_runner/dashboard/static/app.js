@@ -56,7 +56,7 @@ const METRICS = {
 };
 
 const SCOPES = [
-  { key: "metrics", label: "全体", description: "すべての計測を対象にしています。" },
+  { key: "metrics", label: "全体", description: "成功したすべての計測を対象にしています。" },
   {
     key: "cold_metrics",
     label: "コールドスタート",
@@ -238,14 +238,29 @@ function renderRunList() {
 
 // --- 詳細 --------------------------------------------------------------------
 
-// 比較に使えない理由があるときだけ注意を出す。問題がない計測では何も出さない。
+// 確認が必要な点があるときだけ注意を出す。問題がない計測では何も出さない。
+// 性能を比べられない場合と、料金だけに問題がある場合とで見出しを分ける。
 function renderNotice(run) {
-  if (run.comparable) return null;
+  if (!run.issues?.length) return null;
+  const title = run.comparable ? "料金について確認が必要な点があります" : "この計測には確認が必要な点があります";
   return el("div", { class: "card notice" }, [
-    el("h3", { class: "badge badge-warning", text: "この計測には確認が必要な点があります" }),
+    el("h3", { class: "badge badge-warning", text: `⚠ ${title}` }),
     el("ul", {}, run.issues.map((issue) => el("li", { text: issue }))),
   ]);
 }
+
+// 指標ごとの採否はサーバー（quality.assess_run）の判定をそのまま使い、画面では計算しない。
+// 判定がない場合は、比較の根拠に使えるとは扱わない。
+function columnQuality(run, key) {
+  return run.quality?.columns?.[key] ?? { status: "unusable", reasons: ["比較に使えるかの判定がありません。"], notes: [] };
+}
+
+// 状態を色だけに頼らず、記号と言葉でも区別する。
+const QUALITY_LABELS = {
+  usable: null,
+  reference: "△ 参考値",
+  unusable: "× 比較不可",
+};
 
 // 比較表の列。いずれも小さいほど有利な指標で、値は中央値（P50）を使う。
 // readは計測結果の言語ごとの値から列の値を取り出す。
@@ -317,6 +332,15 @@ function renderVerdict(run) {
   ].map(({ column: key, title }) => {
     const column = SUMMARY_COLUMNS.find((item) => item.key === key);
     const ranked = rankBy(run, column);
+    const quality = columnQuality(run, key);
+    // 判定が参考値・比較不可の指標では、値があっても最良の言語や倍率を示さない。
+    if (quality.status !== "usable") {
+      return el("div", { class: "card verdict" }, [
+        el("p", { class: "verdict-title", text: title }),
+        el("p", { class: "verdict-empty", text: `${QUALITY_LABELS[quality.status]}のため、結論を出していません` }),
+        el("p", { class: "verdict-note", text: quality.reasons[0] ?? "" }),
+      ]);
+    }
     // 比べられる言語が二つ未満なら、結論を出さずに理由を示す。
     if (ranked.length < 2) {
       return el("div", { class: "card verdict" }, [
@@ -342,12 +366,20 @@ function renderVerdict(run) {
   ]);
 }
 
-// 言語を行、指標を列に並べた比較表。最も有利な値に★、それ以外に最良との比を添える。
+// 言語を行、指標を列に並べた比較表。比較の根拠に使える指標だけ、最も有利な値に★、
+// それ以外に最良との比を添える。参考値・比較不可の指標は値だけを示す。
 function renderSummaryTable(run) {
+  const qualities = Object.fromEntries(SUMMARY_COLUMNS.map((column) => [column.key, columnQuality(run, column.key)]));
   const bestByColumn = Object.fromEntries(SUMMARY_COLUMNS.map((column) => [column.key, rankBy(run, column)[0]?.value]));
   const header = el("tr", {}, [
     el("th", { class: "text", scope: "col", text: "言語" }),
-    ...SUMMARY_COLUMNS.map((column) => el("th", { scope: "col", text: column.label })),
+    ...SUMMARY_COLUMNS.map((column) => {
+      const label = QUALITY_LABELS[qualities[column.key].status];
+      return el("th", { scope: "col" }, [
+        el("span", { text: column.label }),
+        label ? el("span", { class: "cell-note quality-note", text: label }) : null,
+      ].filter(Boolean));
+    }),
   ]);
   const rows = implementationsOf(run).map(({ key, label, series }) => {
     const values = run.implementations[key];
@@ -357,6 +389,13 @@ function renderSummaryTable(run) {
         const value = column.read(values);
         const best = bestByColumn[column.key];
         if (!isNumber(value)) return el("td", { class: "muted", text: column.key === "init" ? "起動なし" : "未計測" });
+        const status = qualities[column.key].status;
+        if (status !== "usable") {
+          return el("td", { class: "muted" }, [
+            el("span", { text: column.format(value) }),
+            el("span", { class: "cell-note", text: QUALITY_LABELS[status] }),
+          ]);
+        }
         const isBest = value === best;
         return el("td", { class: isBest ? "best" : "" }, [
           el("span", { text: column.format(value) }),
@@ -369,13 +408,24 @@ function renderSummaryTable(run) {
     el("div", { class: "section-head" }, el("h3", { text: "言語ごとの比較" })),
     el("p", {
       class: "section-note",
-      text: "どの指標も小さいほど有利です。★は最も有利な言語、×は最も有利な値との比です。時間とメモリは中央値です。",
+      text: "どの指標も小さいほど有利です。★は最も有利な言語、×は最も有利な値との比です。時間とメモリは成功した要求の中央値です。「△ 参考値」「× 比較不可」の指標は、下の説明にある理由で優劣を示していません。",
     }),
     el("div", { class: "table-scroll" }, el("table", { class: "summary-table" }, [el("thead", {}, header), el("tbody", {}, rows)])),
     el(
       "dl",
       { class: "metric-guide" },
-      SUMMARY_COLUMNS.flatMap((column) => [el("dt", { text: column.label }), el("dd", { text: column.hint })]),
+      SUMMARY_COLUMNS.flatMap((column) => {
+        const quality = qualities[column.key];
+        // 参考値・比較不可の理由と、料金に含む範囲などの注記を、その指標の説明に並べる。
+        const details = [...quality.reasons, ...quality.notes];
+        return [
+          el("dt", { text: column.label }),
+          el("dd", {}, [
+            el("span", { text: column.hint }),
+            ...details.map((detail) => el("span", { class: "quality-reason", text: detail })),
+          ]),
+        ];
+      }),
     ),
   ]);
 }
@@ -638,6 +688,8 @@ function renderSampleTable(run) {
   const header = el("tr", {}, [
     el("th", { class: "text", text: "実装" }),
     el("th", { text: "計測件数" }),
+    el("th", { text: "成功" }),
+    el("th", { text: "失敗" }),
     el("th", { text: "コールド" }),
     el("th", { text: "ウォーム" }),
     el("th", { text: "ログと未結合" }),
@@ -649,6 +701,8 @@ function renderSampleTable(run) {
     return el("tr", {}, [
       el("td", { class: "text", text: label }),
       el("td", { text: values.sample_count.toLocaleString("ja-JP") }),
+      el("td", { text: (values.success_count ?? 0).toLocaleString("ja-JP") }),
+      el("td", { text: (values.error_count ?? 0).toLocaleString("ja-JP") }),
       el("td", { text: values.cold_count.toLocaleString("ja-JP") }),
       el("td", { text: values.warm_count.toLocaleString("ja-JP") }),
       el("td", { text: values.unclassified_count.toLocaleString("ja-JP") }),
@@ -659,7 +713,7 @@ function renderSampleTable(run) {
     el("div", { class: "section-head" }, el("h3", { text: "計測件数" })),
     el("p", {
       class: "section-note",
-      text: "各指標が何件の計測から求めたかを示します。コールドは実行環境の起動を伴った呼び出し、ウォームは起動済みの環境での呼び出しです。「ログと未結合」が 0 件でないと、Lambda 側の指標と料金が欠けます。",
+      text: "各指標が何件の計測から求めたかを示します。成功は状態と応答の内容が正しかった要求で、指標と料金は成功した要求だけから求めます。コールド・ウォーム・「ログと未結合」は成功した要求の内訳です。コールドは実行環境の起動を伴った呼び出し、ウォームは起動済みの環境での呼び出しです。「ログと未結合」が 0 件でないと、Lambda 側の指標と料金が欠けます。",
     }),
     el("div", { class: "table-scroll" }, el("table", {}, [el("thead", {}, header), el("tbody", {}, rows)])),
   ]);
@@ -1292,13 +1346,14 @@ function renderEstimateForm(options) {
     const sum = Object.values(mix).reduce((left, right) => left + right, 0);
     total.textContent = `割合の合計: ${sum}%${sum === 100 ? "" : "（100% にしてください）"}`;
     error.textContent = "";
+    // 計算を始める前に番号を進め、送信済みの古い要求の応答を表示しないようにする。
+    const current = ++sequence;
     // 合計が100%でない間は計算を送らず、直前の結果も消して誤読を防ぐ。
     if (sum !== 100) {
       output.replaceChildren();
       return;
     }
     const selected = conditions[Number(condition.value)];
-    const current = ++sequence;
     output.replaceChildren(el("p", { class: "muted", text: "計算しています…" }));
     try {
       const result = await fetchJson("/api/estimate", {
@@ -1317,7 +1372,12 @@ function renderEstimateForm(options) {
       }
     }
   };
+  // 入力が変わった時点で、表示中の結果と計算中の要求をどちらも古いものとして扱う。
+  // 計算は入力が止まってから送るが、その間も前の入力の結果を出し続けない。
   const schedule = () => {
+    sequence += 1;
+    output.replaceChildren(el("p", { class: "muted", text: "入力が変わりました。計算し直します…" }));
+    error.textContent = "";
     clearTimeout(timer);
     timer = setTimeout(calculate, ESTIMATE_DEBOUNCE_MS);
   };

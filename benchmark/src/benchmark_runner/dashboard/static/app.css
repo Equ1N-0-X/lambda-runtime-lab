@@ -923,3 +923,11 @@ code {
 .estimate-output {
   min-height: 48px;
 }
+
+/* 参考値・比較不可の理由。指標の説明の下に一行ずつ並べる。 */
+.quality-reason {
+  display: block;
+  margin-top: 4px;
+  color: var(--ink-secondary);
+}
+

@@ -19,7 +19,7 @@ def test_runner_warms_up_and_writes_measured_samples(tmp_path):
         index = request.headers["X-Benchmark-Request-Index"]
         return httpx.Response(
             200,
-            json={"lambda_request_id": f"request-{index}"},
+            json={"status": "ok", "lambda_request_id": f"request-{index}"},
         )
 
     workload = Workload(

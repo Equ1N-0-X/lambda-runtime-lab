@@ -27,6 +27,7 @@ def _record(language, index, *, billed, start_type="warm", init=None):
         "implementation": language,
         "request_index": index,
         "success": True,
+        "response_checked": True,
         "latency_ms": 10.0,
         "duration_ms": billed - 0.5,
         "billed_duration_ms": billed,
@@ -47,6 +48,7 @@ def _write_run(results, run_id, workload, records, started_at="2026-10-01T00:00:
                 "started_at": started_at,
                 "architecture": "arm64",
                 "memory_mb": 1024,
+                "region": "ap-northeast-1",
                 "dry_run": False,
                 "workload": {"name": workload, "iterations": 2},
             }

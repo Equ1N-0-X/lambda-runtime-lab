@@ -234,6 +234,32 @@ def _run_command(args: argparse.Namespace) -> int:
     )
     result = asyncio.run(run_benchmark(config, workload))
     print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+    return _run_exit_code(result.get("outcomes") or {})
+
+
+def _run_exit_code(outcomes: dict[str, dict[str, int]]) -> int:
+    """全件失敗した実装があれば計測の失敗として1を返す。一部の失敗は警告して0を返す。"""
+    all_failed = [name for name, counts in outcomes.items() if not counts["success_count"]]
+    # 成功が一件もない実装は性能を測れていないため、後続の工程が成功を装わないよう止める。
+    if all_failed:
+        print(
+            f"エラー: 次の言語はすべての要求が失敗しました: {', '.join(all_failed)}。"
+            "結果は保存しましたが、比較には使えません。",
+            file=sys.stderr,
+        )
+        return 1
+    partial = [
+        f"{name} {counts['failure_count']}件"
+        for name, counts in outcomes.items()
+        if counts["failure_count"]
+    ]
+    # 一部だけの失敗は成功分を参考値として残せるため、計測は続けて結果に注意を残す。
+    if partial:
+        print(
+            f"警告: 失敗した要求があります（{', '.join(partial)}）。"
+            "成功した要求だけの参考値として集計します。",
+            file=sys.stderr,
+        )
     return 0
 
 
