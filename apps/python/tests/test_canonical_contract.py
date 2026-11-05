@@ -4,6 +4,7 @@
 両実装の応答を比較する。
 """
 
+import base64
 import json
 from pathlib import Path
 from typing import Any
@@ -46,6 +47,18 @@ def _cases() -> list[tuple[str, dict[str, Any]]]:
     return [(case["name"], case) for document in _documents() for case in document.get("cases", [])]
 
 
+def _request_content(request: dict[str, Any]) -> bytes | None:
+    """ケースの本文を送信するバイト列へ変換する。生の本文は組み立て直さずにそのまま送る。"""
+    # raw_body・raw_body_base64は、JSONとして不正な本文や数値の表記をそのまま送るために使う。
+    if "raw_body_base64" in request:
+        return base64.b64decode(request["raw_body_base64"])
+    if "raw_body" in request:
+        return request["raw_body"].encode("utf-8")
+    if "body" in request:
+        return json.dumps(request["body"], ensure_ascii=False).encode("utf-8")
+    return None
+
+
 @pytest.fixture(scope="module")
 def canonical_client() -> TestClient:
     return TestClient(create_app(InMemoryItemRepository(_fixture_items())))
@@ -56,15 +69,12 @@ def test_canonical_case(name: str, case: dict[str, Any], canonical_client: TestC
     request = case["request"]
     expected = case["expected"]
 
+    content = _request_content(request)
     response = canonical_client.request(
         request["method"],
         request["path"],
-        content=(
-            json.dumps(request["body"], ensure_ascii=False).encode("utf-8")
-            if "body" in request
-            else None
-        ),
-        headers={"content-type": "application/json"} if "body" in request else None,
+        content=content,
+        headers={"content-type": "application/json"} if content is not None else None,
     )
 
     assert response.status_code == expected["status"], name
