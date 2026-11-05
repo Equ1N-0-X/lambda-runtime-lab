@@ -40,8 +40,25 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # 安全な状態管理が確認できるまで、このworkflowのAWS操作を止める（回避策であり恒久修復ではない）。
+  # runnerの中だけで作るTerraform stateは実行後に失われ、既存のECR等との衝突や、
+  # 削除の失敗・destroy_after=false で残った資源を管理できなくなる（レビュー01 R-019）。
+  # 再開には、state の永続化・排他・ECR の所有境界を直すか workflow を廃止するかを決め（D02）、
+  # その方式を検証する必要がある（docs/10_全体構成と操作の地図.md の「7. CI」）。
+  suspended:
+    name: Suspended until Terraform state is managed safely
+    runs-on: ubuntu-latest
+    steps:
+      - name: Stop before any AWS operation
+        run: |
+          echo "AWS Benchmark workflow is suspended: Terraform state is created only inside the runner and is lost after each run." >&2
+          echo "Resume only after persistent state, locking, and ECR ownership are implemented and verified (review 01, R-019 / D02)." >&2
+          exit 1
+
   benchmark:
     name: Deploy and benchmark
+    # 停止用のジョブが失敗するため、このジョブは常にスキップされ、always() の削除工程も動かない。
+    needs: suspended
     runs-on: ubuntu-latest
     environment: benchmark
     env:
