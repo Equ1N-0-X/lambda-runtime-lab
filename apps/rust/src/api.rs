@@ -8,7 +8,7 @@ use std::sync::Arc;
 use axum::{
     Json, Router,
     body::Bytes,
-    extract::{MatchedPath, Path, Request, State},
+    extract::{DefaultBodyLimit, MatchedPath, Path, Request, State},
     http::HeaderMap,
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -45,6 +45,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/aggregate", post(aggregate))
         .fallback(route_not_found)
         .with_state(state)
+        // axumは本文を既定で2MBまでに制限するが、正本は本文の大きさの上限を定めておらず、
+        // 他の言語は契約上有効な本文を大きさで拒否しない。言語間で応答をそろえるため既定の制限を外す
+        // （API GatewayとLambdaの要求サイズの上限は、この処理の前にプラットフォームが適用する）。
+        .layer(DefaultBodyLimit::disable())
         .layer(middleware::from_fn(log_request))
 }
 
