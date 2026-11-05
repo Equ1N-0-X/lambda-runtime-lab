@@ -94,6 +94,31 @@ class ApiTest {
     JsonNode line = MAPPER.readTree(logs.toString(StandardCharsets.UTF_8).strip());
     assertThat(line.get("level").asString()).isEqualTo("WARN");
     assertThat(line.get("route").asString()).isEqualTo("/items/{id}");
+    // 分類されていない例外は原因を不明として残し、例外の文言はログへ出さない。
+    assertThat(line.get("dependency_error_category").asString()).isEqualTo("unknown");
+    assertThat(logs.toString(StandardCharsets.UTF_8)).doesNotContain("timeout");
+  }
+
+  @Test
+  void classifiedStorageErrorIsLoggedWithCauseButSameBody() throws Exception {
+    ByteArrayOutputStream logs = new ByteArrayOutputStream();
+    ItemRepository failing =
+        id -> {
+          throw new RepositoryException("permission", "AccessDeniedException");
+        };
+    MockMvc failingMvc = TestApp.mockMvc(failing, new PrintStream(logs, true, StandardCharsets.UTF_8));
+
+    MockHttpServletResponse response = TestApp.send(failingMvc, "GET", "/items/item-001", null, Map.of());
+
+    assertThat(response.getStatus()).isEqualTo(502);
+    // 公開する本文は分類によらず同じで、原因はログにだけ残す。
+    assertThat(MAPPER.readTree(response.getContentAsByteArray()))
+        .isEqualTo(
+            MAPPER.readTree(
+                "{\"error\":{\"code\":\"DEPENDENCY_ERROR\",\"message\":\"dependency error\",\"details\":[]}}"));
+    JsonNode line = MAPPER.readTree(logs.toString(StandardCharsets.UTF_8).strip());
+    assertThat(line.get("dependency_error_category").asString()).isEqualTo("permission");
+    assertThat(line.get("dependency_error_code").asString()).isEqualTo("AccessDeniedException");
   }
 
   @Test

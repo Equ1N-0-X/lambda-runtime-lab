@@ -36,6 +36,14 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
     this.output = output;
   }
 
+  private static final String DEPENDENCY_CAUSE_ATTRIBUTE =
+      RequestLoggingFilter.class.getName() + ".dependencyCause";
+
+  /** 保存先障害の原因の分類を、処理中のリクエストへ記録する。502のログにだけ出す。 */
+  static void setDependencyCause(HttpServletRequest request, AppError.DependencyCause cause) {
+    request.setAttribute(DEPENDENCY_CAUSE_ATTRIBUTE, cause);
+  }
+
   /** ログに残す計測プロファイルを、処理中のリクエストへ記録する。 */
   static void setProfile(HttpServletRequest request, String profile) {
     request.setAttribute(PROFILE_ATTRIBUTE, profile);
@@ -74,6 +82,14 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
     line.put("route", route == null ? request.getRequestURI() : route.toString());
     line.put("profile", profile == null ? "unknown" : profile.toString());
     line.put("status_code", status);
+    // 502のときだけ、保存先障害の原因の分類とAWSのエラーコードを残す（本文や例外の全文は出さない）。
+    if (status == 502
+        && request.getAttribute(DEPENDENCY_CAUSE_ATTRIBUTE) instanceof AppError.DependencyCause cause) {
+      line.put("dependency", "dynamodb");
+      line.put("dependency_operation", "GetItem");
+      line.put("dependency_error_category", cause.category());
+      line.put("dependency_error_code", cause.errorCode());
+    }
     return line;
   }
 
