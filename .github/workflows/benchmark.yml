@@ -100,7 +100,7 @@ jobs:
           enable-cache: true
       - uses: hashicorp/setup-terraform@v3
       - name: Install benchmark dependencies
-        run: uv sync --project benchmark --frozen --extra dev
+        run: uv sync --project benchmark --locked --extra dev
       - name: Deploy controlled environment
         run: make deploy TF_AUTO_APPROVE=-auto-approve
       # 接続先とロググループは make benchmark・make collect がTerraformの出力から読む。

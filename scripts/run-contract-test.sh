@@ -160,7 +160,7 @@ prepare_fixtures() {
   fi
 
   AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_REGION="${AWS_REGION}" \
-    uv run --project "${ROOT}/tests/contract" python "${ROOT}/tests/contract/seed_fixtures.py" \
+    uv run --locked --project "${ROOT}/tests/contract" python "${ROOT}/tests/contract/seed_fixtures.py" \
       --table "${DYNAMODB_TABLE_NAME}" --endpoint-url "${DYNAMODB_ENDPOINT_URL}" --region "${AWS_REGION}"
 }
 
@@ -226,7 +226,8 @@ main() {
     done
   fi
 
-  uv run --project "${ROOT}/tests/contract" python -m pytest \
+  # uv.lock が依存の定義と食い違えば、自動で直さずに失敗させる。
+  uv run --locked --project "${ROOT}/tests/contract" python -m pytest \
     "${ROOT}/tests/contract/test_contract.py" -m integration
 }
 
