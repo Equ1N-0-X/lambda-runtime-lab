@@ -29,6 +29,9 @@ if ! "${DRY_RUN}" && [[ ${#missing[@]} -gt 0 ]]; then
   exit 2
 fi
 
+# 認証済みの登録先（空白区切り）。macOS標準のbash 3.2でも動くよう、連想配列は使わない。
+LOGGED_IN_REGISTRIES=""
+
 push_image() {
   # 一つの実装について、ECR認証、リモート用タグ付け、pushを順番に行う。
   local implementation="$1"
@@ -46,8 +49,12 @@ push_image() {
     return
   fi
 
-  aws ecr get-login-password --region "${REGION}" |
-    docker login --username AWS --password-stdin "${registry}"
+  # 同じ登録先（レジストリ）には一度だけ認証し、別の登録先にはそれぞれ認証する。
+  if [[ " ${LOGGED_IN_REGISTRIES} " != *" ${registry} "* ]]; then
+    aws ecr get-login-password --region "${REGION}" |
+      docker login --username AWS --password-stdin "${registry}"
+    LOGGED_IN_REGISTRIES+=" ${registry}"
+  fi
   docker tag "${local_image}" "${destination}"
   # PUSH_QUIETがtrueの場合は進捗を抑制し、それ以外はDocker標準の進捗を表示する。
   if "${PUSH_QUIET}"; then
