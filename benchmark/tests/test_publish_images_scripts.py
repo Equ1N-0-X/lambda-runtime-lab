@@ -132,3 +132,58 @@ def test_implementations_filter_accepts_known_keys(tmp_path):
 
     assert result.stdout.count("docker buildx build") == 1
     assert "apps/rust" in result.stdout
+
+
+def _push_with_stubs(tmp_path, repositories, *, fail_login=False):
+    """awsとdockerを偽コマンドにして、AWS・Dockerへ触れずに認証の回数を数える。"""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = tmp_path / "calls"
+    (bin_dir / "aws").write_text(
+        f'#!/usr/bin/env bash\necho "aws $*" >> "{log}"\n'
+        + ("exit 1\n" if fail_login else "echo token\n")
+    )
+    (bin_dir / "docker").write_text(
+        f'#!/usr/bin/env bash\ncat > /dev/null; echo "docker $*" >> "{log}"\n'
+    )
+    (bin_dir / "uv").write_text("#!/usr/bin/env bash\nprintf 'python\\nrust\\n'\n")
+    for path in bin_dir.iterdir():
+        path.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "TAG": "t",
+        "PYTHON_ECR_REPOSITORY_URL": repositories[0],
+        "RUST_ECR_REPOSITORY_URL": repositories[1],
+    }
+    result = subprocess.run(
+        ["bash", "scripts/push-images.sh"], cwd=ROOT, env=env, capture_output=True, text=True
+    )
+    calls = log.read_text().splitlines() if log.exists() else []
+    return result, calls
+
+
+def test_same_registry_is_logged_in_once(tmp_path):
+    result, calls = _push_with_stubs(tmp_path, [PYTHON_REPOSITORY, RUST_REPOSITORY])
+
+    assert result.returncode == 0, result.stderr
+    assert sum(call.startswith("aws ecr get-login-password") for call in calls) == 1
+    assert sum(call.startswith("docker push") for call in calls) == 2
+
+
+def test_each_registry_is_logged_in_separately(tmp_path):
+    other = "210987654321.dkr.ecr.ap-northeast-1.amazonaws.com/test-rust"
+    _, calls = _push_with_stubs(tmp_path, [PYTHON_REPOSITORY, other])
+
+    logins = [call for call in calls if call.startswith("docker login")]
+    assert len(logins) == 2
+    assert "210987654321" in logins[1]
+
+
+def test_login_failure_stops_before_pushing(tmp_path):
+    result, calls = _push_with_stubs(
+        tmp_path, [PYTHON_REPOSITORY, RUST_REPOSITORY], fail_login=True
+    )
+
+    assert result.returncode != 0
+    assert not any(call.startswith("docker push") for call in calls)
