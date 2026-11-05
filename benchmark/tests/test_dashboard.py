@@ -233,3 +233,33 @@ def test_launch_cost_basis_ignores_runs_with_other_planned_conditions(tmp_path, 
     assert _costs(tmp_path)["health"]["sources"] == {"python": "planned", "rust": "planned"}
     # 予定と異なる条件の実測は、古い料金として目安に使わない。
     assert _costs(tmp_path, **overrides) == {}
+
+
+def test_launch_cost_basis_reads_each_run_once_per_request(tmp_path, monkeypatch):
+    from benchmark_runner.dashboard import catalog
+
+    for name in ("first", "second"):
+        _write_run(tmp_path, name, metadata_overrides={"experiment_id": "sha256:health"})
+    calls = []
+    original = catalog.build_report
+
+    def counting(**kwargs):
+        calls.append(kwargs["run_id"])
+        return original(**kwargs)
+
+    monkeypatch.setattr(catalog, "build_report", counting)
+
+    _costs(tmp_path)
+
+    # 一覧の概要と料金の根拠のために、同じrunを読み直さない。
+    assert sorted(calls) == ["first", "second"]
+
+
+def test_next_request_reflects_updated_results(tmp_path):
+    run_dir = _write_run(tmp_path, "planned", metadata_overrides={"experiment_id": "sha256:health"})
+    assert _costs(tmp_path)["health"]["sources"]["python"] == "planned"
+
+    # 要求をまたいで保持しないため、結果の変更は次の要求で反映される。
+    (run_dir / "merged.jsonl").unlink()
+
+    assert _costs(tmp_path) == {}
