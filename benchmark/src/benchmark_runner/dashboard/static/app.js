@@ -47,7 +47,7 @@ const METRICS = {
   },
   max_memory_used_mb: {
     label: "最大メモリ使用量",
-    description: "1回の実行で使ったメモリの最大値です。",
+    description: "実行環境ごとに観測されたメモリ使用量の最大値です。同じ実行環境で前に処理したリクエストの分も含みうるため、1回の処理に必要な量そのものではありません。",
     insight: "Lambda のメモリ設定をどこまで下げられるかの目安になります。",
     unit: "MB",
     lower: "少ない",
@@ -200,9 +200,8 @@ function renderRunList() {
   if (state.runs.length === 0) {
     runListBody.append(
       el("p", { class: "muted", text: "計測結果はまだありません。" }),
-      el("p", { class: "muted" }, [
-        "make benchmark で計測すると、ここに表示されます。",
-      ]),
+      el("p", { class: "muted", text: "画面上部の「＋ 新しく計測する」から計測すると、ここに表示されます。" }),
+      el("button", { type: "button", class: "ghost-button", text: "新しく計測する", onclick: openLaunch }),
     );
     return;
   }
@@ -303,7 +302,7 @@ const SUMMARY_COLUMNS = [
   {
     key: "memory",
     label: "メモリ使用量",
-    hint: "1回の実行で使ったメモリの最大値。メモリ設定をどこまで下げられるかの目安です。",
+    hint: "実行環境ごとの最大メモリ使用量（同じ環境で前に処理したリクエストの分を含みうる）。メモリ設定をどこまで下げられるかの目安です。",
     read: (values) => values?.metrics?.max_memory_used_mb?.p50,
     format: (value) => formatValue(value, "MB"),
   },
@@ -1036,7 +1035,7 @@ function renderLaunchForm(options) {
         el("ul", {}, settings.missing.map((item) => el("li", { text: item }))),
         el("p", {
           class: "section-note",
-          text: "接続先と条件は、Terraform の出力と AWS 上の Lambda の設定から自動で読み取ります。原因を解消したら、画面を起動し直さずに再確認できます。",
+          text: "接続先と条件は、デプロイ済みの環境から自動で読み取ります。上の原因を解消したら、画面を起動し直さずに再確認できます。",
         }),
         el("div", { class: "form-actions" }, [
           el("button", { type: "button", class: "ghost-button", text: "設定を再確認", onclick: openLaunch }),
@@ -1049,7 +1048,7 @@ function renderLaunchForm(options) {
       el("div", { class: "section-head" }, el("h3", { text: "固定の条件" })),
       el("p", {
         class: "section-note",
-        text: "AWS 上の Lambda から読み取った実際の設定です。この条件で計測し、結果に記録します。",
+        text: "今の Lambda の設定です。この条件で計測し、結果に記録します（画面からは変えられません）。",
       }),
       fixed,
     ]),
