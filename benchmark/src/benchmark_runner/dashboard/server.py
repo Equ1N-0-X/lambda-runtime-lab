@@ -200,7 +200,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             raise RequestRejected(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "JSON形式で送信してください。")
 
     def _read_json(self) -> dict[str, Any]:
-        length = int(self.headers.get("Content-Length") or 0)
+        raw_length = (self.headers.get("Content-Length") or "0").strip()
+        # 本文の長さは0以上の10進整数だけを受け付ける。
+        # 数字以外や負数は、読み込む前に入力誤りとする。
+        if not raw_length.isascii() or not raw_length.isdigit():
+            raise RequestRejected(HTTPStatus.BAD_REQUEST, "Content-Length が正しくありません。")
+        length = int(raw_length)
         # 本文が大きすぎる要求は、読み込む前に拒否する。
         if length > MAX_BODY_BYTES:
             raise RequestRejected(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "入力が大きすぎます。")
