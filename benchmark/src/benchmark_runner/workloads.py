@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -62,6 +63,26 @@ def apply_profile(workload: Workload, profile: str | None) -> Workload:
             f"profile は {' または '.join(KNOWN_PROFILES)} を指定してください: {profile}"
         )
     return replace(workload, body={**body, "profile": profile}, profile=profile)
+
+
+def experiment_id(workload: Workload) -> str:
+    """処理の内容（方式・経路・本文）と同時要求数から、同じ実験かを照合する識別子を返す。
+
+    反復回数とウォームアップは標本の数を変えるだけで1リクエストの処理は変えないため含めない。
+    同時要求数は同じ実行環境での競合や再利用に影響するため含める。
+    """
+    document = json.dumps(
+        {
+            "method": workload.method,
+            "path": workload.path,
+            "body": workload.body,
+            "client_concurrency": workload.client_concurrency,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return "sha256:" + hashlib.sha256(document.encode()).hexdigest()
 
 
 def _positive_int(value: object, field: str, *, allow_zero: bool = False) -> int:

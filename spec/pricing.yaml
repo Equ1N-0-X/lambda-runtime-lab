@@ -7,6 +7,11 @@ request_price_per_million: 0.20
 compute_price_per_gb_second:
   arm64: 0.0000133334
   x86_64: 0.0000166667
+# 上の実行時間単価（Tier 1）を適用できる、1か月あたりの実行時間の使用量（GB秒）の上限。
+# これを超える使用量では段階料金で単価が下がるため、見込みは参考値として扱う。
+tier1_max_gb_seconds_per_month:
+  arm64: 7500000000
+  x86_64: 6000000000
 notes:
   - Tier 1 on-demand rates for Asia Pacific (Tokyo), verified against the AWS Price List API on 2026-09-11.
   - Values exclude the AWS Free Tier, Savings Plans, taxes, data transfer, API Gateway, DynamoDB, and other service charges.

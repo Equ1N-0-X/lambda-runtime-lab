@@ -853,17 +853,21 @@ function validateCount(value, limit) {
 }
 
 // この計測そのものにかかる Lambda 料金の見込み。作りたいAPIの月額の見込みとは別のもの。
-function costEstimate(workload, iterations, warmup, targets, implementations) {
+// 根拠の実測は、サーバーが計測予定のLambdaの条件（方式・メモリ・地域）と処理内容で選ぶ。
+function costEstimate(workload, iterations, warmup, concurrency, targets, implementations) {
   const basis = workload.cost_basis;
   const missing = targets.filter((key) => !isNumber(basis?.cost_per_request?.[key]));
-  // 選んだ言語のいずれかに同じワークロードの実測がなければ、一部だけの合計で過小に見せないよう算出しない。
+  // 選んだ言語のいずれかに同じ条件の実測がなければ、一部だけの合計で過小に見せないよう算出しない。
   if (!basis || missing.length > 0) {
     const labels = implementations.filter(({ key }) => missing.includes(key)).map(({ label }) => label);
-    return `この計測にかかる料金: ${labels.join("・")} はこのワークロードを計測したことがないため、見込みを出せません（計測は開始できます）。`;
+    return `この計測にかかる料金: ${labels.join("・")} は、今の Lambda の条件（アーキテクチャ・メモリ・リージョン）でこのワークロードを比較に使える形で計測したことがないため、見込みを出せません（計測は開始できます）。`;
   }
   const perImplementation = iterations + warmup;
   const total = targets.reduce((sum, key) => sum + basis.cost_per_request[key] * perImplementation, 0);
-  return `この計測にかかる Lambda 料金: 約 ${formatCost(total)}（${formatDate(basis.started_at)} の同じワークロードの実測から算出。API Gateway・DynamoDB・CloudWatch は含みません）`;
+  // 同時実行数が根拠と違えば料金も変わりうるため、根拠の条件を併記する。
+  const concurrencyNote =
+    basis.client_concurrency === concurrency ? "" : `根拠の同時実行数は ${basis.client_concurrency} で、今の入力と異なります。`;
+  return `この計測にかかる Lambda 料金: 約 ${formatCost(total)}（${formatDate(basis.started_at)} の同じ条件の実測から算出。${concurrencyNote}ウォームアップで起きるコールドスタートの初期化料金と、API Gateway・DynamoDB・CloudWatch は含みません）`;
 }
 
 function renderLaunchForm(options) {
@@ -969,7 +973,8 @@ function renderLaunchForm(options) {
     const languages = settings.implementations.filter(({ key }) => targets.includes(key));
     summary.textContent = `${languages.map(({ label }) => label).join("・")} にそれぞれ ${perImplementation.toLocaleString("ja-JP")} 回（ウォームアップ ${warmup.toLocaleString("ja-JP")} 回を含む）、合計 ${(perImplementation * languages.length).toLocaleString("ja-JP")} リクエストを送ります。`;
     const workload = workloads.find((item) => item.name === workloadSelect.value);
-    estimate.textContent = costEstimate(workload, iterations, warmup, targets, settings.implementations);
+    const concurrency = Number(inputs.client_concurrency.value);
+    estimate.textContent = costEstimate(workload, iterations, warmup, concurrency, targets, settings.implementations);
   };
 
   workloadSelect.addEventListener("change", applyDefaults);
@@ -1230,7 +1235,9 @@ function formatMonthlyCost(value) {
 function renderEstimateResult(result) {
   const estimable = result.languages.filter((language) => language.estimable);
   const ranked = [...estimable].sort((left, right) => left.monthly_cost - right.monthly_cost);
-  const best = ranked[0];
+  // 料金表の単価を適用できる使用量を超える言語があれば、金額は参考値のため最安を断定しない。
+  const outsideTier = estimable.filter((language) => !language.within_pricing_tier);
+  const best = outsideTier.length ? null : ranked[0];
   const series = Object.fromEntries(result.languages.map(({ key }, index) => [key, `series-${(index % 6) + 1}`]));
   const header = el("tr", {}, [
     el("th", { class: "text", scope: "col", text: "言語" }),
@@ -1245,7 +1252,12 @@ function renderEstimateResult(result) {
         el("th", { class: "text", scope: "row" }, el("span", { class: `series-key ${series[language.key]}`, text: language.label })),
         el("td", { class: language === best ? "best" : "" }, [
           el("span", { text: formatMonthlyCost(language.monthly_cost) }),
-          el("span", { class: "cell-note", text: language === best ? "★ 最も安い" : formatRatio(language.monthly_cost, best.monthly_cost) }),
+          el("span", {
+            class: "cell-note",
+            text: !best
+              ? language.within_pricing_tier ? "△ 参考値" : "△ 参考値（単価の適用範囲外）"
+              : language === best ? "★ 最も安い" : formatRatio(language.monthly_cost, best.monthly_cost),
+          }),
         ]),
         el("td", { text: formatMonthlyCost(language.monthly_compute_cost) }),
         el("td", { text: formatValue(language.warm_duration_ms, "ms") }),
@@ -1261,7 +1273,10 @@ function renderEstimateResult(result) {
           el("td", {
             colspan: "4",
             class: "text muted",
-            text: `見込めません: ${language.missing_workloads.join("・")} の実測がありません（この言語を含めて計測すると見込めます）`,
+            text:
+              language.reason === "inconsistent_versions"
+                ? "見込めません: ワークロードごとの根拠の計測で、この言語のイメージの版が異なります（同じ版で各ワークロードを計測し直すと見込めます）"
+                : `見込めません: ${language.missing_workloads.join("・")} の、比較に使える実測がありません（この言語を含めて、今の条件で計測すると見込めます）`,
           }),
         ]),
       ),
@@ -1269,8 +1284,13 @@ function renderEstimateResult(result) {
 
   const notes = [
     "Lambda の料金（リクエスト料金と実行時間分）だけの見込みです。API Gateway・DynamoDB・データ転送・Free Tier は含みません。",
-    `料金表: ${result.pricing.region} ${result.pricing.updated_at} 時点。実測の平均を構成割合で重み付けしています。`,
+    `料金表: ${result.pricing.region} ${result.pricing.updated_at} 時点。同じリージョン・同じ処理内容で比較に使える計測の、成功した要求の平均を構成割合で重み付けしています。`,
   ];
+  if (outsideTier.length) {
+    notes.push(
+      `${outsideTier.map(({ label }) => label).join("・")}: 月間の実行時間の使用量が、料金表の単価（Tier 1）を適用できる範囲を超えるか、範囲を確かめられません。実際は段階料金で単価が下がるため、金額は参考値です（最も安い言語は示していません）。`,
+    );
+  }
   const approximated = estimable.filter((language) => language.approximated_cold_workloads.length);
   if (approximated.length) {
     notes.push(
