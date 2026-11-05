@@ -258,3 +258,14 @@ def test_aborted_run_is_not_comparable(tmp_path):
 
     assert report["quality"]["comparable"] is False
     assert "中断" in "\n".join(report["quality"]["issues"])
+
+
+def test_reason_that_decides_the_status_comes_first(tmp_path):
+    # 失敗（参考値）とコールドスタートの観測なし（比較不可）が重なる場合、重い理由を先に示す。
+    records = [_record(name, index) for name in ("python", "rust") for index in (1, 2)]
+    records.append(_record("rust", 3, success=False, start_type=None))
+
+    init = _report(tmp_path, records)["quality"]["columns"]["init"]
+
+    assert init["status"] == "unusable"
+    assert "コールドスタートを観測していません" in init["reasons"][0]

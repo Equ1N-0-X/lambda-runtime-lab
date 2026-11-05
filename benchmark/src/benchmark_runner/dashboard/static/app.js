@@ -200,7 +200,7 @@ function renderRunList() {
   if (state.runs.length === 0) {
     runListBody.append(
       el("p", { class: "muted", text: "計測結果はまだありません。" }),
-      el("p", { class: "muted", text: "画面上部の「＋ 新しく計測する」から計測すると、ここに表示されます。" }),
+      el("p", { class: "muted", text: "下の「新しく計測する」から計測すると、ここに表示されます。" }),
       el("button", { type: "button", class: "ghost-button", text: "新しく計測する", onclick: openLaunch }),
     );
     return;
@@ -1506,7 +1506,7 @@ async function loadRuns(preferred = null, { keepView = false } = {}) {
         el("h3", { text: "表示できる計測結果がありません" }),
         el("p", {
           class: "section-note",
-          text: "計測すると results/raw に結果が保存され、ここで比較できるようになります。",
+          text: "「＋ 新しく計測する」から計測すると、結果がここに表示され、言語ごとに比較できるようになります。",
         }),
       ]),
     );
