@@ -342,3 +342,20 @@ def test_incomplete_log_collection_still_reports_but_does_not_succeed(tmp_path):
     assert job["state"] == "failed"
     assert any(line.startswith("report") for line in job["output"])
     assert "make collect" in job["message"]
+
+
+@pytest.mark.parametrize(
+    ("length", "expected"),
+    [("abc", 400), ("-1", 400), ("1e3", 400), ("5000", 413), ("0", 400)],
+)
+def test_post_rejects_invalid_content_length_before_reading(server, length, expected):
+    # 長さ0は空のオブジェクトとして読み、必須の入力がないため入力エラー（400）になる。
+    status, payload = _call(
+        server,
+        "POST",
+        "/api/estimate",
+        headers={"Content-Type": "application/json", "Content-Length": length},
+    )
+
+    assert status == expected
+    assert payload["error"]
