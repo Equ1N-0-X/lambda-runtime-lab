@@ -1,5 +1,7 @@
 # Python vs Rust AWS Lambda Lambdalith Benchmark - 仕様書
 
+> **この資料の位置付け（2026-11 追記）**: 本書は比較方針・API 契約・計測仕様の正本です。当初の Python と Rust の2言語を前提に書かれていますが、現在は TypeScript と Java を加えた4言語を比較しています。比較する言語の正本は `spec/implementations.yaml` で、本書の「Python版とRust版」「Python/Rust」は、そこに登録した各言語と読み替えてください。言語を増やす手順は [ワークロードと言語の追加手順](08_ワークロードと言語の追加手順.md)、現在の構成は [全体構成と操作の地図](10_全体構成と操作の地図.md) にあります。API 契約そのもの（`spec/openapi.yaml`・`spec/testcases/`）は全言語で共通です。
+
 ## 1. 目的
 
 本書は要件書に基づき、Python LambdalithとRust Lambdalith、Benchmark Runner、Analyzer、Terraform、Docker、テスト、CIの具体仕様を定義する。
