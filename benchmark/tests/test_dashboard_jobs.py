@@ -294,3 +294,34 @@ def test_post_returns_400_for_invalid_input(server):
 
     assert status == 400
     assert "iterations" in payload["error"]
+
+
+def test_missing_command_finishes_as_failed_and_allows_next_job(tmp_path):
+    manager = _manager(tmp_path)
+    manager.command_prefix = [str(tmp_path / "no-such-command")]
+
+    manager.start(_request())
+    job = _wait_until_finished(manager)
+
+    # 子プロセスを起動できなくても、実行中のまま残さず失敗で終える。
+    assert job["state"] == "failed"
+    assert "想定外のエラー" in job["message"]
+    assert "FileNotFoundError" in job["message"]
+    manager.command_prefix = [sys.executable, str(tmp_path / "fake_cli.py")]
+    manager.start(_request())
+    assert _wait_until_finished(manager)["state"] == "succeeded"
+
+
+def test_command_build_failure_finishes_as_failed(tmp_path):
+    # ロググループが欠けた設定でコマンドを組み立てると、工程の前に例外になる。
+    manager = _manager(tmp_path)
+
+    def broken_commands(job):
+        raise KeyError("python")
+
+    manager._commands = broken_commands
+    manager.start(_request())
+
+    job = _wait_until_finished(manager)
+    assert job["state"] == "failed"
+    assert "KeyError" in job["message"]

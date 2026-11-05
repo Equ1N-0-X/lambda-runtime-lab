@@ -288,22 +288,53 @@ class JobManager:
         }
 
     def _execute(self, job: Job) -> None:
-        commands = self._commands(job)
+        """全工程を実行し、成功・失敗・中止のいずれかで必ず終える。
+
+        この処理は別スレッドで動くため、例外が漏れるとジョブが実行中のまま残り、
+        画面を再起動するまで次の計測を開始できなくなる。想定外の例外も失敗として終える。
+        """
         try:
-            for step, _label in STEPS:
-                self._set(job, step=step)
-                # ログ反映待ちは中止要求で即座に抜けられるよう、イベント待ちで実装する。
-                if step == "wait":
-                    if self._cancel.wait(self.log_wait_seconds):
-                        break
-                    continue
-                self._run_command(job, commands[step])
-                # 計測コマンドの終了直後に中止要求があれば、後続の工程へ進まない。
-                if self._cancel.is_set():
-                    break
+            self._run_steps(job)
         except LaunchError as exc:
             self._finish(job, "failed", str(exc))
-            return
+        # 子プロセスを起動できない・コマンドを組み立てられないなどの想定外の失敗も、成功へ変えず
+        # 失敗として終える。原因はログに残し、画面には種類だけを示す（URL等を出さない）。
+        except Exception as exc:
+            logger.exception("計測工程で想定外のエラーが発生しました: run_id=%s", job.run_id)
+            self._finish(
+                job,
+                "failed",
+                f"{dict(STEPS).get(job.step, job.step)}で想定外のエラーが発生しました"
+                f"（{type(exc).__name__}）。画面を起動したターミナルのログを確認してください。",
+            )
+        finally:
+            self._stop_process()
+
+    def _stop_process(self) -> None:
+        """例外で抜けた場合も、実行中の子プロセスを残さない。"""
+        with self._lock:
+            process, self._process = self._process, None
+        if process is not None and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=10)
+            # 終了要求に応じない子プロセスは、次の計測と重ならないよう強制終了する。
+            except subprocess.TimeoutExpired:
+                process.kill()
+
+    def _run_steps(self, job: Job) -> None:
+        commands = self._commands(job)
+        for step, _label in STEPS:
+            self._set(job, step=step)
+            # ログ反映待ちは中止要求で即座に抜けられるよう、イベント待ちで実装する。
+            if step == "wait":
+                if self._cancel.wait(self.log_wait_seconds):
+                    break
+                continue
+            self._run_command(job, commands[step])
+            # 計測コマンドの終了直後に中止要求があれば、後続の工程へ進まない。
+            if self._cancel.is_set():
+                break
         # 中止要求で抜けた場合は、途中までの結果を残したまま中止として終える。
         if self._cancel.is_set():
             self._finish(job, "cancelled", "計測を中止しました。途中までの結果は比較に使えません。")
