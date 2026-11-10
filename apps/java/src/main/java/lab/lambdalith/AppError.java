@@ -13,6 +13,12 @@ import java.util.Map;
  */
 public final class AppError extends RuntimeException {
 
+  /**
+   * 本文の上限（バイト）。有効な要求の最大（約2.45MB）に余裕を持たせ、Lambdaの呼び出しデータの上限（6MB）より
+   * 手前で、全言語が同じエラーを返せる大きさにしている。
+   */
+  public static final int MAX_BODY_BYTES = 4_194_304;
+
   private final int status;
   private final String code;
   private final String publicMessage;
@@ -37,6 +43,15 @@ public final class AppError extends RuntimeException {
   /** JSON構文・UTF-8・重複キーの不正を、本文全体の検証エラーとして返す。 */
   public static AppError invalidJson() {
     return validation(List.of(new ErrorDetail("$", "invalid_json")));
+  }
+
+  /** 本文が上限を超える場合の413応答を作る。本文は解析しない。 */
+  public static AppError payloadTooLarge() {
+    return new AppError(
+        413,
+        "PAYLOAD_TOO_LARGE",
+        "request body too large",
+        List.of(new ErrorDetail("$", "max_bytes:" + MAX_BODY_BYTES)));
   }
 
   /** 未対応プロファイルを、利用可能な候補付きの400応答として返す。 */

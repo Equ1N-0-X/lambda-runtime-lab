@@ -1,6 +1,6 @@
 {
   "contract_version": "1.0.0",
-  "description": "生の本文で送る、JSON・数値・profileの共通境界。request.raw_body はUTF-8の文字列のまま、raw_body_base64 はデコードしたバイト列のまま送る（JSONとして組み立て直さない）。",
+  "description": "生の本文で送る、JSON・数値・profileの共通境界。request.raw_body はUTF-8の文字列のまま、raw_body_base64 はデコードしたバイト列のまま送る（JSONとして組み立て直さない）。raw_body_repeat は text を count 回つなげた本文を送る。",
   "cases": [
     {
       "name": "long-unsupported-profile-is-unsupported-profile",
@@ -278,6 +278,58 @@
           "processed": 1,
           "iterations": 1,
           "checksum": "ed48e9e4ea7f6e2c72eb7470e8b4c3f7250d50a39634e9fa2bdc210c3e53e58b"
+        }
+      }
+    },
+    {
+      "name": "body-over-the-limit-is-payload-too-large",
+      "request": {
+        "method": "POST",
+        "path": "/compute",
+        "raw_body_repeat": {
+          "text": "x",
+          "count": 4194305
+        }
+      },
+      "expected": {
+        "status": 413,
+        "body": {
+          "error": {
+            "code": "PAYLOAD_TOO_LARGE",
+            "message": "request body too large",
+            "details": [
+              {
+                "field": "$",
+                "reason": "max_bytes:4194304"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "body-at-the-limit-is-validated-normally",
+      "request": {
+        "method": "POST",
+        "path": "/compute",
+        "raw_body_repeat": {
+          "text": " ",
+          "count": 4194304
+        }
+      },
+      "expected": {
+        "status": 422,
+        "body": {
+          "error": {
+            "code": "VALIDATION_ERROR",
+            "message": "request validation failed",
+            "details": [
+              {
+                "field": "$",
+                "reason": "invalid_json"
+              }
+            ]
+          }
         }
       }
     }

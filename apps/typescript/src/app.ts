@@ -7,7 +7,7 @@ import { Hono, type Context } from "hono";
 import type { LambdaContext, LambdaEvent } from "hono/aws-lambda";
 
 import * as domain from "./domain.js";
-import { AppError, type DependencyCause } from "./errors.js";
+import { AppError, MAX_BODY_BYTES, type DependencyCause } from "./errors.js";
 import { parseStrictJson, type JsonValue } from "./json.js";
 import { logRequestCompleted } from "./logging.js";
 import type { ItemRepository } from "./repository.js";
@@ -112,7 +112,10 @@ function checkBenchmarkRunId(c: Context<AppEnv>): void {
 }
 
 async function parseBody(c: Context<AppEnv>): Promise<JsonValue> {
-  const parsed = parseStrictJson(new Uint8Array(await c.req.arrayBuffer()));
+  const body = new Uint8Array(await c.req.arrayBuffer());
+  // 上限を超える本文は、解析に時間とメモリを使う前に413として拒否する。
+  if (body.byteLength > MAX_BODY_BYTES) throw AppError.payloadTooLarge();
+  const parsed = parseStrictJson(body);
   // 構文、UTF-8、重複キーのいずれかが不正なら、本文全体のinvalid_jsonとして扱う。
   if (!parsed) throw AppError.invalidJson();
   return parsed.value;

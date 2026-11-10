@@ -13,7 +13,7 @@ from mangum import Mangum
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from app.domain import compute_checksum, transform_records
-from app.errors import ApplicationError, validation_error
+from app.errors import MAX_BODY_BYTES, ApplicationError, payload_too_large, validation_error
 from app.logging import log_dependency_error, log_internal_error, log_request_completed
 from app.models import (
     AggregateRequest,
@@ -146,6 +146,10 @@ def _reject_lone_surrogates(value: object) -> None:
 
 def _parse_body[RequestModel: BaseModel](model: type[RequestModel], body: bytes) -> RequestModel:
     """本文を一度だけ解析し、JSON・構造・境界の失敗を共通エラー形式へ変換する。"""
+    # 上限を超える本文は、解析に時間とメモリを使う前に413として拒否する。
+    if len(body) > MAX_BODY_BYTES:
+        raise payload_too_large()
+
     try:
         payload = json.loads(
             body.decode("utf-8"),

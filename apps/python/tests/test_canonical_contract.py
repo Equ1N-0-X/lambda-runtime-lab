@@ -50,6 +50,10 @@ def _cases() -> list[tuple[str, dict[str, Any]]]:
 def _request_content(request: dict[str, Any]) -> bytes | None:
     """ケースの本文を送信するバイト列へ変換する。生の本文は組み立て直さずにそのまま送る。"""
     # raw_body・raw_body_base64は、JSONとして不正な本文や数値の表記をそのまま送るために使う。
+    # raw_body_repeatは、上限を超える大きな本文を、文字列とその繰り返し回数で表す。
+    if "raw_body_repeat" in request:
+        repeat = request["raw_body_repeat"]
+        return repeat["text"].encode("utf-8") * repeat["count"]
     if "raw_body_base64" in request:
         return base64.b64decode(request["raw_body_base64"])
     if "raw_body" in request:

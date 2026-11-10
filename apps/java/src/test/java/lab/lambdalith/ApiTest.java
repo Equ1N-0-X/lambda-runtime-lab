@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -56,6 +57,32 @@ class ApiTest {
         .isEqualTo(
             "[{\"field\":\"items\",\"reason\":\"maximum:1000\"},"
                 + "{\"field\":\"iterations\",\"reason\":\"minimum:1\"}]");
+  }
+
+  @Test
+  void bodyOverTheLimitIsRejectedBeforeParsing() throws Exception {
+    // JSONとして不正な本文でも、上限を超えていれば invalid_json ではなく413を返す。
+    byte[] body = new byte[4_194_305];
+    Arrays.fill(body, (byte) 'x');
+    MockHttpServletResponse response = TestApp.sendBytes(mvc, "POST", "/compute", body, Map.of());
+
+    assertThat(response.getStatus()).isEqualTo(413);
+    JsonNode error = MAPPER.readTree(response.getContentAsByteArray()).get("error");
+    assertThat(error.get("code").asString()).isEqualTo("PAYLOAD_TOO_LARGE");
+    assertThat(error.get("message").asString()).isEqualTo("request body too large");
+    assertThat(error.get("details").toString())
+        .isEqualTo("[{\"field\":\"$\",\"reason\":\"max_bytes:4194304\"}]");
+  }
+
+  @Test
+  void bodyAtTheLimitIsValidatedNormally() throws Exception {
+    byte[] body = new byte[4_194_304];
+    Arrays.fill(body, (byte) ' ');
+    MockHttpServletResponse response = TestApp.sendBytes(mvc, "POST", "/compute", body, Map.of());
+
+    assertThat(response.getStatus()).isEqualTo(422);
+    assertThat(details(response).toString())
+        .isEqualTo("[{\"field\":\"$\",\"reason\":\"invalid_json\"}]");
   }
 
   @Test

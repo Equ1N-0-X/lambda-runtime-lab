@@ -67,8 +67,17 @@ class CanonicalContractTest {
    * ケースの本文を送信するバイト列へ変換する。生の本文は組み立て直さずにそのまま送る。
    *
    * <p>raw_body・raw_body_base64は、JSONとして不正な本文や数値の表記をそのまま送るために使う。
+   * raw_body_repeatは、上限を超える大きな本文を、文字列とその繰り返し回数で表す。
    */
   private static byte[] requestBody(JsonNode request) throws IOException {
+    if (request.has("raw_body_repeat")) {
+      JsonNode repeat = request.get("raw_body_repeat");
+      return repeat
+          .get("text")
+          .asString()
+          .repeat(repeat.get("count").asInt())
+          .getBytes(StandardCharsets.UTF_8);
+    }
     if (request.has("raw_body_base64")) {
       return Base64.getDecoder().decode(request.get("raw_body_base64").asString());
     }
