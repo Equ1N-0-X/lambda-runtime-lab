@@ -8,8 +8,8 @@
 - reference: 値は示すが、比較の結論（最良・倍率）には使わない参考値。
 - unusable: 値がない、または比べる前提を満たさない。
 
-成功・失敗の正式な採用基準（許容する失敗率）と、コールドスタートの正式な比較に必要な
-件数・集め方は未決定のため、失敗を含むrunとコールドスタートの指標は参考値として扱う。
+失敗した要求が1件でもあるrunは正式な比較に使わず、成功分を参考値として示す。
+コールドスタートの正式な比較に必要な件数・集め方は未決定のため、その指標は参考値として扱う。
 """
 
 from __future__ import annotations
@@ -128,19 +128,24 @@ def assess_run(report: dict[str, Any], *, run_dir: Path) -> dict[str, Any]:
             f"{'・'.join(all_failed)} はすべての要求が失敗しました。"
             "失敗の速さは性能として比べられません。",
         )
-    failing = {name: values for name, values in implementations.items() if values["error_count"]}
-    # 一部の要求が失敗した言語があれば、成功分の統計は示すが比較の結論には使わない。
-    if failing and not all_failed:
-        detail = "、".join(
-            f"{labels.get(name, name)} {values['sample_count']}件中{values['error_count']}件"
-            for name, values in failing.items()
-        )
-        lower(
-            COLUMNS,
-            REFERENCE,
-            f"失敗した要求があります（{detail}）。数値は成功した要求だけの参考値です。"
-            "失敗を含む計測を比較に採用する基準は決まっていません。",
-        )
+    failures = [
+        {
+            "implementation": name,
+            "label": labels.get(name, name),
+            "error_count": values["error_count"],
+            "sample_count": values["sample_count"],
+        }
+        for name, values in implementations.items()
+        if values["error_count"]
+    ]
+    failure_reason = None
+    # 失敗が1件でもある言語があれば、成功分の統計は示すが正式な比較の結論には使わない。
+    # 件数と内訳は failures として画面とレポートの先頭で一度だけ示すため、指標ごとの理由は
+    # 短くし、run全体の注意点には重ねて載せない。
+    if failures and not all_failed:
+        failed_labels = "・".join(failure["label"] for failure in failures)
+        failure_reason = f"{failed_labels} に失敗した要求があるため、成功した要求だけの参考値です。"
+        lower(COLUMNS, REFERENCE, failure_reason)
     unchecked = [
         labels.get(name, name)
         for name, values in implementations.items()
@@ -209,12 +214,13 @@ def assess_run(report: dict[str, Any], *, run_dir: Path) -> dict[str, Any]:
     for name in ISSUE_COLUMNS:
         for reason in columns[name].reasons:
             # 同じ理由が複数の指標に付いていても、run全体の注意点としては一度だけ示す。
-            if reason not in issues:
+            if reason not in issues and reason != failure_reason:
                 issues.append(reason)
     return {
         "columns": {name: column.public() for name, column in columns.items()},
         "comparable": all(columns[name].status == USABLE for name in PERFORMANCE_COLUMNS),
         "issues": issues,
+        "failures": failures,
     }
 
 

@@ -121,6 +121,20 @@ def test_load_run_explains_stale_deployment_when_app_logs_lack_request_index(tmp
     assert "デプロイ" in issues
 
 
+def test_run_list_shows_failure_counts_per_language(tmp_path):
+    failed = {**_record("rust", 2), "success": False, "start_type": None}
+    records = [_record("python", 1), _record("rust", 1), failed]
+    _write_run(tmp_path, "partial", records=records)
+
+    (summary,) = list_runs(results_dir=tmp_path, pricing_path=tmp_path / "missing.yaml")
+
+    # 履歴でも失敗を含む計測を見分けられるよう、言語ごとの失敗件数を返す。
+    assert summary["failures"] == [
+        {"implementation": "rust", "label": "Rust", "error_count": 1, "sample_count": 2}
+    ]
+    assert summary["comparable"] is False
+
+
 @pytest.mark.parametrize("run_id", ["../secret", "missing", ".hidden", ""])
 def test_load_run_rejects_unknown_or_unsafe_ids(tmp_path, run_id):
     _write_run(tmp_path, "complete")

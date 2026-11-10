@@ -190,9 +190,17 @@ async function fetchJson(path, body) {
 
 // --- 計測履歴 ----------------------------------------------------------------
 
+// 失敗した要求の合計件数。失敗の記録がない計測は 0 件として扱う。
+function failureTotal(failures) {
+  return (failures ?? []).reduce((total, failure) => total + failure.error_count, 0);
+}
+
 // 比較に使えない計測だけに印を付け、通常の計測は印なしにして注意を目立たせる。
-function statusBadge(comparable) {
-  return comparable ? null : el("span", { class: "badge badge-warning", text: "要確認" });
+// 失敗を含む計測は、他の注意点より重い印として失敗の件数を示す。
+function statusBadge(run) {
+  const failed = failureTotal(run.failures);
+  if (failed > 0) return el("span", { class: "badge badge-error", text: `失敗 ${failed.toLocaleString("ja-JP")}件` });
+  return run.comparable ? null : el("span", { class: "badge badge-warning", text: "要確認" });
 }
 
 function renderRunList() {
@@ -223,7 +231,7 @@ function renderRunList() {
       [
         el("span", { class: "run-item-title" }, [
           el("span", { text: run.workload ?? run.run_id }),
-          statusBadge(run.comparable),
+          statusBadge(run),
         ]),
         el("span", { class: "run-item-meta", text: formatDate(run.started_at) }),
         el("span", { class: "run-item-languages", text: (run.languages ?? []).join(" · ") }),
@@ -236,6 +244,26 @@ function renderRunList() {
 }
 
 // --- 詳細 --------------------------------------------------------------------
+
+// 失敗した要求があるときだけ、件数と言語ごとの内訳を詳細の先頭に示す。
+// 失敗が1件でもある計測は正式な比較に使わないため、他の注意点と分けて目立たせる。
+function renderFailureNotice(run) {
+  const failed = failureTotal(run.failures);
+  if (failed === 0) return null;
+  return el("div", { class: "card notice notice-error", role: "alert" }, [
+    el("h3", { class: "badge badge-error", text: `失敗した要求が ${failed.toLocaleString("ja-JP")} 件あります` }),
+    el(
+      "ul",
+      {},
+      run.failures.map((failure) =>
+        el("li", {
+          text: `${failure.label}: ${failure.sample_count.toLocaleString("ja-JP")} 件中 ${failure.error_count.toLocaleString("ja-JP")} 件が失敗`,
+        }),
+      ),
+    ),
+    el("p", { text: "失敗が1件でもある計測は正式な比較に使えません。数値は成功した要求だけの参考値です。再計測してください。" }),
+  ]);
+}
 
 // 確認が必要な点があるときだけ注意を出す。問題がない計測では何も出さない。
 // 性能を比べられない場合と、料金だけに問題がある場合とで見出しを分ける。
@@ -701,7 +729,10 @@ function renderSampleTable(run) {
       el("td", { class: "text", text: label }),
       el("td", { text: values.sample_count.toLocaleString("ja-JP") }),
       el("td", { text: (values.success_count ?? 0).toLocaleString("ja-JP") }),
-      el("td", { text: (values.error_count ?? 0).toLocaleString("ja-JP") }),
+      // 失敗が1件でもあれば、色だけでなく記号でも0件の行と区別する。
+      values.error_count
+        ? el("td", { class: "cell-error", text: `✕ ${values.error_count.toLocaleString("ja-JP")}` })
+        : el("td", { text: "0" }),
       el("td", { text: values.cold_count.toLocaleString("ja-JP") }),
       el("td", { text: values.warm_count.toLocaleString("ja-JP") }),
       el("td", { text: values.unclassified_count.toLocaleString("ja-JP") }),
@@ -797,6 +828,7 @@ function renderDetail() {
         el("h2", { text: `${workload.name ?? "ワークロード不明"} の比較結果` }),
         el("p", { text: conditions.join(" · ") }),
       ]),
+      renderFailureNotice(run),
       renderNotice(run),
       run.unsupported?.length
         ? el("p", {
