@@ -16,6 +16,7 @@ from urllib.parse import urljoin
 import boto3
 import httpx
 
+from benchmark_runner.cold_start import ColdStartError
 from benchmark_runner.response_contract import validate_success_response
 from benchmark_runner.sigv4 import SigningError, credential_source, sign_headers, snapshot
 from benchmark_runner.workloads import Workload, experiment_id
@@ -42,6 +43,9 @@ class RunConfig:
     transport: httpx.AsyncBaseTransport | None = None
     # 計測先の確認結果や定義ファイルの内容識別子など、runの証跡として保存する追加の記録。
     evidence: dict[str, Any] = field(default_factory=dict)
+    # コールドスタート計測で設定を更新するLambda関数名（実装キーごと）と、更新を行う部品。
+    function_names: dict[str, str] = field(default_factory=dict)
+    cold_starter: Any | None = None
 
 
 def utc_now() -> str:
@@ -94,6 +98,14 @@ def build_plan(config: RunConfig, workload: Workload) -> dict[str, Any]:
         # 接続先が不足している場合は、一部実装だけを測定して比較結果を不完全にしない。
         if missing:
             raise ValueError(f"接続先が設定されていません: {', '.join(missing)}")
+        # コールドスタート計測は関数の設定を更新するため、全実装の関数名と更新部品を要求する。
+        if workload.cold_start:
+            unknown = [name for name in targets if not config.function_names.get(name)]
+            if unknown or config.cold_starter is None:
+                raise ValueError(
+                    "コールドスタートの計測には、AWS上のLambda関数名が必要です"
+                    f"（不足: {', '.join(unknown) or '更新の設定'}）"
+                )
     return {
         "run_id": config.run_id,
         "targets": list(targets),
@@ -235,6 +247,46 @@ async def _execute_target(
     )
 
 
+async def _execute_cold_target(
+    *,
+    client: httpx.AsyncClient,
+    endpoint: str,
+    implementation: str,
+    workload: Workload,
+    config: RunConfig,
+    credentials: object | None,
+    records: list[dict[str, Any]],
+) -> None:
+    """要求の前に毎回新しい実行環境を起こし、すべての要求をコールドスタートとして測る。
+
+    中断されてもそこまでの結果を残せるよう、測った要求は一件ずつ records へ追加する。
+    """
+    function_name = config.function_names[implementation]
+    starter = config.cold_starter
+    try:
+        for index in range(1, workload.iterations + 1):
+            # 設定の更新は数秒かかるため別スレッドで待ち、他の言語の計測を止めない。
+            await asyncio.to_thread(starter.force, function_name)
+            record = await _send_one(
+                client,
+                endpoint=endpoint,
+                implementation=implementation,
+                workload=workload,
+                run_id=config.run_id,
+                request_index=index,
+                region=config.region,
+                credentials=credentials,
+            )
+            # 設定の更新でコールドスタートを起こした要求であることを記録する。
+            # 実際にコールドスタートだったかは、ログ収集後にLambdaの実行レポートで確かめる。
+            record["forced_cold_start"] = True
+            records.append(record)
+    finally:
+        # 中断・失敗の場合も、計測用の設定をTerraformで管理する状態へ戻す。
+        # 取り消しで待ちが中断されないよう、戻す処理は同期的に実行する。
+        starter.restore(function_name)
+
+
 def _write_json(path: Path, value: object) -> None:
     """人が確認できる整形済みJSONとしてメタデータを書き込む。"""
     path.write_text(
@@ -279,21 +331,49 @@ async def run_benchmark(config: RunConfig, workload: Workload) -> dict[str, Any]
         async with httpx.AsyncClient(
             timeout=config.timeout_seconds, transport=config.transport
         ) as client:
-            for implementation in config.targets:
-                records.extend(
-                    await _execute_target(
-                        client=client,
-                        endpoint=config.endpoints[implementation],
-                        implementation=implementation,
-                        workload=workload,
-                        config=config,
-                        credentials=credentials,
-                    )
+            # コールドスタート計測は言語ごとに別の関数を更新するため、全言語を同時に進めて
+            # 待ち時間を短くする。通常の計測は言語ごとに順に行い、互いの負荷を重ねない。
+            if workload.cold_start:
+                try:
+                    # 一つの言語が失敗したら、他の言語も止めて設定を戻してから中断する。
+                    async with asyncio.TaskGroup() as group:
+                        for implementation in config.targets:
+                            group.create_task(
+                                _execute_cold_target(
+                                    client=client,
+                                    endpoint=config.endpoints[implementation],
+                                    implementation=implementation,
+                                    workload=workload,
+                                    config=config,
+                                    credentials=credentials,
+                                    records=records,
+                                )
+                            )
+                except ExceptionGroup as group_error:
+                    raise group_error.exceptions[0] from group_error
+                # 言語ごとに同時に測った結果を、実装一覧の順・要求番号の順にそろえる。
+                order = {name: position for position, name in enumerate(config.targets)}
+                records.sort(
+                    key=lambda record: (order[record["implementation"]], record["request_index"])
                 )
-    # 署名できなくなった場合は、そこまでの結果を中断したrunとして残し、呼び出し元へ知らせる。
-    except SigningError as exc:
+            else:
+                for implementation in config.targets:
+                    records.extend(
+                        await _execute_target(
+                            client=client,
+                            endpoint=config.endpoints[implementation],
+                            implementation=implementation,
+                            workload=workload,
+                            config=config,
+                            credentials=credentials,
+                        )
+                    )
+    # 署名できなくなった場合や、コールドスタートを起こせなかった場合は、そこまでの結果を
+    # 中断したrunとして残し、呼び出し元へ知らせる。
+    except (SigningError, ColdStartError) as exc:
+        reason = "署名" if isinstance(exc, SigningError) else "Lambda の設定の更新"
         metadata["completed_at"] = utc_now()
-        metadata["aborted"] = f"署名に失敗したため計測を中断しました: {exc}"
+        metadata["aborted"] = f"{reason}に失敗したため計測を中断しました: {exc}"
         metadata["sample_count"] = len(records)
         _write_jsonl(run_dir / "samples.jsonl", records)
         _write_json(run_dir / "metadata.json", metadata)

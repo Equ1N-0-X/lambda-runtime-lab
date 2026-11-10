@@ -120,9 +120,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif path == "/api/estimate/options":
             self._send_json(
                 {
+                    # コールドスタート計測は毎回起動を起こす特殊な条件で、実運用の要求の構成に
+                    # 含められないため、月額の見込みの選択肢から外す。
                     "workloads": [
                         {"name": item["name"], "description": item["description"]}
                         for item in load_workloads(self.jobs.workload_file)
+                        if not item["cold_start"]
                     ],
                     "conditions": available_conditions(
                         results_dir=self.results_dir, pricing_path=self.pricing_path

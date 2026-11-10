@@ -81,9 +81,11 @@ Duration、メモリ、コストは完全な比較として扱えません。
 ### Comparability
 
 指標（cost・compute_cost・duration・init・latency・memory）ごとに、比較の根拠として使えるか
-（`usable`・`reference`・`unusable`）と理由を示します。コールドスタート（init）は、通常の計測で
-偶然起きた少数の観測しかないため、正式に比べるための件数と集め方が決まるまでは `reference` か
-`unusable` になります。
+（`usable`・`reference`・`unusable`）と理由を示します。コールドスタート（init）は、専用の
+ワークロード `cold-start`（毎回新しい実行環境を起こす計測）で各言語20件以上そろった場合だけ
+`usable` になります。通常の計測で偶然起きたものは `reference` か `unusable` です。
+`cold-start` で、設定を更新しても既存の実行環境で処理された要求があれば、全指標が `reference` に
+なります。
 
 ### Percentiles
 

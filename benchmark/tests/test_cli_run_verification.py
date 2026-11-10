@@ -109,3 +109,18 @@ def test_dry_run_plan_contains_request_identity(capsys):
     plan = json.loads(capsys.readouterr().out)
     assert plan["experiment_id"].startswith("sha256:")
     assert plan["verification"] == {"mode": "local"}
+
+
+def test_cold_start_run_updates_the_verified_lambda_functions(resolved):
+    assert cli.main(["run", "--workload", "cold-start", "--run-id", "verify"]) == 0
+
+    config = resolved["captured"]["config"]
+    # 設定を更新する関数は、計測前に確かめたデプロイ済みの関数と同じにする。
+    assert config.function_names["rust"] == "lab-rust"
+    assert config.cold_starter is not None
+
+
+def test_cold_start_run_is_rejected_for_unsigned_local_apis(resolved, capsys):
+    assert cli.main(["run", "--workload", "cold-start", "--unsigned"]) == 2
+
+    assert "AWS 上の Lambda に対してだけ" in capsys.readouterr().err

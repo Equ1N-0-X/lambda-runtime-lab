@@ -4,6 +4,9 @@
 # implementations: このワークロードを実装済みの言語（spec/implementations.yaml の実装キー）。
 #                  省略すると全言語が対応しているものとして扱う。新しいワークロードを一部の言語
 #                  だけで先に計測したい場合に指定する（docs/08_ワークロードと言語の追加手順.md）。
+# mode: 計測の方式。standard（既定）は通常の計測。cold-start は要求の前に毎回 Lambda の設定を
+#       更新して新しい実行環境を起こし、すべての要求をコールドスタートとして測る。
+#       cold-start では warmup は 0、client_concurrency は 1、iterations は 100 以下にする。
 version: 1
 contract: openapi.yaml
 defaults:
@@ -120,3 +123,12 @@ workloads:
         - item-004
         - item-005
       profile: concurrent
+
+  cold-start:
+    description: 毎回新しい実行環境を起こし、起動から最初の応答まで（コールドスタート）の時間を比べます。
+    mode: cold-start
+    method: GET
+    path: /health
+    warmup: 0
+    iterations: 20
+    client_concurrency: 1
