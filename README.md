@@ -135,8 +135,8 @@ AWS の操作は料金が発生します。使い終わったら `make destroy` 
 
 ## CI
 
-- `.github/workflows/ci.yml`: push とプルリクエストで、全言語の書式・テスト、arm64 のイメージビルドと Contract Test、Terraform の検証を行います。AWS にはデプロイしません。
-- `.github/workflows/benchmark.yml`: 手動実行の AWS 計測です。Terraform の state を安全に管理できることを確認するまで、AWS 操作の前に停止するようにしています（再開の条件は [全体構成と操作の地図](docs/10_全体構成と操作の地図.md#7-ci)）。
+- `.github/workflows/ci.yml`: main への push、プルリクエスト、手動実行で、全言語の書式・テスト、arm64 のイメージビルドと Contract Test、Terraform の検証を行います。AWS にはデプロイしません。
+- AWS 上での計測は CI では行いません。手元から `make benchmark-matrix` で行います（以前の手動の AWS 計測 workflow は廃止しました）。
 
 ## 資料
 

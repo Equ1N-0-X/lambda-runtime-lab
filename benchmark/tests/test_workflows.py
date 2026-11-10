@@ -1,4 +1,4 @@
-"""AWSを操作するworkflowが、安全な状態管理が確認されるまでAWS操作へ進まないことを検証する。"""
+"""CIのworkflowが、AWSを使わずに一度だけ、lockの食い違いを検出して動くことを検証する。"""
 
 from pathlib import Path
 
@@ -7,19 +7,13 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_aws_benchmark_workflow_is_suspended_before_any_aws_step():
-    workflow = yaml.safe_load((ROOT / ".github/workflows/benchmark.yml").read_text())
-    jobs = workflow["jobs"]
+def test_no_workflow_operates_aws():
+    workflows = sorted((ROOT / ".github/workflows").glob("*.yml"))
 
-    suspended = jobs["suspended"]
-    commands = "\n".join(step.get("run", "") for step in suspended["steps"])
-    # 停止用のジョブはAWSの認証もTerraformも使わず、必ず失敗する。
-    assert "exit 1" in commands
-    assert not any("uses" in step for step in suspended["steps"])
-    assert "make" not in commands and "terraform" not in commands
-    # デプロイ・削除を含むジョブは停止用のジョブに依存し、always() の工程も含めて動かない。
-    assert jobs["benchmark"]["needs"] == "suspended"
-    assert set(jobs) == {"suspended", "benchmark"}
+    # CIは挙動の確認に限り、AWSの環境を作る手動計測のworkflowは置かない（D02で廃止）。
+    assert [path.name for path in workflows] == ["ci.yml"]
+    text = workflows[0].read_text()
+    assert "configure-aws-credentials" not in text and "id-token" not in text
 
 
 def test_ci_checks_lock_consistency_instead_of_only_freezing():
@@ -74,16 +68,3 @@ def test_locked_mode_fails_without_rewriting_a_stale_lock(tmp_path):
 
     assert result.returncode != 0
     assert (tmp_path / "uv.lock").read_text(encoding="utf-8") == lock
-
-
-def test_aws_workflow_pins_every_action_to_a_full_commit_sha():
-    import re
-
-    workflow = yaml.safe_load((ROOT / ".github/workflows/benchmark.yml").read_text())
-    uses = [
-        step["uses"] for job in workflow["jobs"].values() for step in job["steps"] if "uses" in step
-    ]
-
-    # AWSの権限を持つworkflowでは、移動できるタグではなくコミットで固定する。
-    assert uses
-    assert all(re.fullmatch(r"[\w.-]+/[\w.-]+@[0-9a-f]{40}", ref) for ref in uses), uses
