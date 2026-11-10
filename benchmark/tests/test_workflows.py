@@ -68,3 +68,24 @@ def test_locked_mode_fails_without_rewriting_a_stale_lock(tmp_path):
 
     assert result.returncode != 0
     assert (tmp_path / "uv.lock").read_text(encoding="utf-8") == lock
+
+
+def test_ci_pins_every_action_to_a_full_commit_sha():
+    import re
+
+    workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
+    uses = [
+        step["uses"] for job in workflow["jobs"].values() for step in job["steps"] if "uses" in step
+    ]
+
+    # 移動できるタグではなくコミットで固定し、取得する部品が知らないうちに変わらないようにする。
+    assert uses
+    assert all(re.fullmatch(r"[\w.-]+/[\w.-]+@[0-9a-f]{40}", ref) for ref in uses), uses
+
+
+def test_rust_toolchain_installer_is_pinned_and_verified():
+    dockerfile = (ROOT / "apps/rust/Dockerfile").read_text()
+
+    # 取得の都度変わりうるインストーラースクリプトを、そのまま実行しない。
+    assert "sh.rustup.rs" not in dockerfile
+    assert "sha256sum --check" in dockerfile
