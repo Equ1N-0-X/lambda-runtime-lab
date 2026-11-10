@@ -63,12 +63,14 @@ make contract-test   # 全言語のイメージを起動し、応答を正本と
 
 ```bash
 cp .env.example .env          # 初回だけ。AWS_PROFILE などを書く
+source ./.env.export.sh       # 新しいシェルでは毎回、AWS を操作する前に読み込む
+aws sts get-caller-identity   # 操作する AWS アカウントを確認
 make bootstrap-ecr            # ECR を作る（初回・言語追加時）
 make publish-images           # 全言語をビルドして ECR へ登録（Lambda はまだ変わらない）
 terraform -chdir=infrastructure/terraform plan \
   -var="aws_region=ap-northeast-1" -var="environment=benchmark"   # 変更予定の確認
 make deploy                   # Lambda・API Gateway・DynamoDB などを作成・更新
-# terraform output -raw dynamodb_table_name の値を .env の DYNAMODB_TABLE_NAME へ
+# terraform output -raw dynamodb_table_name の値を .env の DYNAMODB_TABLE_NAME へ書き、読み込み直す
 source ./.env.export.sh
 make seed                     # 比較用のデータを投入
 make ui                       # http://127.0.0.1:8765/ で計測・比較
