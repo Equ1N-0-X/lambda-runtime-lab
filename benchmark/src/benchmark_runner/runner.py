@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -15,8 +16,10 @@ from urllib.parse import urljoin
 import boto3
 import httpx
 
-from benchmark_runner.sigv4 import frozen_credentials, sign_headers
-from benchmark_runner.workloads import Workload
+from benchmark_runner.cold_start import ColdStartError
+from benchmark_runner.response_contract import validate_success_response
+from benchmark_runner.sigv4 import SigningError, credential_source, sign_headers, snapshot
+from benchmark_runner.workloads import Workload, experiment_id
 
 RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
@@ -38,6 +41,11 @@ class RunConfig:
     # ワークロードが未対応のため計測しない実装のキー。結果で「未対応」と欠損を区別するために残す。
     unsupported_targets: tuple[str, ...] = ()
     transport: httpx.AsyncBaseTransport | None = None
+    # 計測先の確認結果や定義ファイルの内容識別子など、runの証跡として保存する追加の記録。
+    evidence: dict[str, Any] = field(default_factory=dict)
+    # コールドスタート計測で設定を更新するLambda関数名（実装キーごと）と、更新を行う部品。
+    function_names: dict[str, str] = field(default_factory=dict)
+    cold_starter: Any | None = None
 
 
 def utc_now() -> str:
@@ -64,6 +72,19 @@ def _request_body(workload: Workload) -> bytes | None:
     ).encode()
 
 
+def content_id(value: bytes) -> str:
+    """内容が同じかを照合するための識別子（SHA-256）を返す。"""
+    return "sha256:" + hashlib.sha256(value).hexdigest()
+
+
+def file_content_id(path: Path) -> str | None:
+    """ファイルの内容識別子を返す。読めなければ推測せず不明（None）とする。"""
+    try:
+        return content_id(path.read_bytes())
+    except OSError:
+        return None
+
+
 def build_plan(config: RunConfig, workload: Workload) -> dict[str, Any]:
     """実行前に対象と接続先を検証し、保存可能な実行計画へ変換する。"""
     targets = config.targets
@@ -77,6 +98,14 @@ def build_plan(config: RunConfig, workload: Workload) -> dict[str, Any]:
         # 接続先が不足している場合は、一部実装だけを測定して比較結果を不完全にしない。
         if missing:
             raise ValueError(f"接続先が設定されていません: {', '.join(missing)}")
+        # コールドスタート計測は関数の設定を更新するため、全実装の関数名と更新部品を要求する。
+        if workload.cold_start:
+            unknown = [name for name in targets if not config.function_names.get(name)]
+            if unknown or config.cold_starter is None:
+                raise ValueError(
+                    "コールドスタートの計測には、AWS上のLambda関数名が必要です"
+                    f"（不足: {', '.join(unknown) or '更新の設定'}）"
+                )
     return {
         "run_id": config.run_id,
         "targets": list(targets),
@@ -88,6 +117,9 @@ def build_plan(config: RunConfig, workload: Workload) -> dict[str, Any]:
         "dry_run": config.dry_run,
         "requests_per_target": workload.iterations,
         "warmup_per_target": workload.warmup,
+        # 処理の内容と同時要求数の識別子。料金の根拠を選ぶとき、同じ実験かを照合するために使う。
+        "experiment_id": experiment_id(workload),
+        **config.evidence,
     }
 
 
@@ -142,7 +174,7 @@ async def _send_one(
             url=url,
             headers=headers,
             body=body,
-            credentials=credentials,  # type: ignore[arg-type]
+            credentials=snapshot(credentials),
             region=region,
         )
 
@@ -153,18 +185,18 @@ async def _send_one(
     request_id: str | None = None
     try:
         response = await client.request(workload.method, url, headers=headers, content=body)
-        status_code = response.status_code
-        request_id = _lambda_request_id(response)
-        success = 200 <= status_code < 400
-        # HTTP状態が200以上400未満なら成功、それ以外は応答を受け取れた失敗として記録する。
-        if not success:
-            error = f"HTTP状態 {status_code}"
-
     # 通信・タイムアウトなどHTTP応答を得られなかった場合は、例外種別と内容を測定失敗へ記録する。
     except httpx.HTTPError as exc:
-        success = False
+        response = None
         error = f"{type(exc).__name__}: {exc}"
     latency_ms = (time.perf_counter() - started) * 1000
+
+    # 応答本文の確認は計測区間の外で行い、確認の処理時間を応答時間へ含めない。
+    if response is not None:
+        status_code = response.status_code
+        request_id = _lambda_request_id(response)
+        error = validate_success_response(workload.path, status_code, response.content)
+    success = response is not None and error is None
     return {
         "run_id": run_id,
         "implementation": implementation,
@@ -175,6 +207,8 @@ async def _send_one(
         "latency_ms": round(latency_ms, 6),
         "status_code": status_code,
         "success": success,
+        # 成功を状態コードだけでなく本文の内容でも確かめたことを示す。古い計測との区別に使う。
+        "response_checked": True,
         "error": error,
         "lambda_request_id": request_id,
     }
@@ -213,6 +247,46 @@ async def _execute_target(
     )
 
 
+async def _execute_cold_target(
+    *,
+    client: httpx.AsyncClient,
+    endpoint: str,
+    implementation: str,
+    workload: Workload,
+    config: RunConfig,
+    credentials: object | None,
+    records: list[dict[str, Any]],
+) -> None:
+    """要求の前に毎回新しい実行環境を起こし、すべての要求をコールドスタートとして測る。
+
+    中断されてもそこまでの結果を残せるよう、測った要求は一件ずつ records へ追加する。
+    """
+    function_name = config.function_names[implementation]
+    starter = config.cold_starter
+    try:
+        for index in range(1, workload.iterations + 1):
+            # 設定の更新は数秒かかるため別スレッドで待ち、他の言語の計測を止めない。
+            await asyncio.to_thread(starter.force, function_name)
+            record = await _send_one(
+                client,
+                endpoint=endpoint,
+                implementation=implementation,
+                workload=workload,
+                run_id=config.run_id,
+                request_index=index,
+                region=config.region,
+                credentials=credentials,
+            )
+            # 設定の更新でコールドスタートを起こした要求であることを記録する。
+            # 実際にコールドスタートだったかは、ログ収集後にLambdaの実行レポートで確かめる。
+            record["forced_cold_start"] = True
+            records.append(record)
+    finally:
+        # 中断・失敗の場合も、計測用の設定をTerraformで管理する状態へ戻す。
+        # 取り消しで待ちが中断されないよう、戻す処理は同期的に実行する。
+        starter.restore(function_name)
+
+
 def _write_json(path: Path, value: object) -> None:
     """人が確認できる整形済みJSONとしてメタデータを書き込む。"""
     path.write_text(
@@ -248,28 +322,81 @@ async def run_benchmark(config: RunConfig, workload: Workload) -> dict[str, Any]
     }
     _write_json(run_dir / "metadata.json", metadata)
 
-    credentials = None
-    # 署名ありの設定の場合だけAWS認証情報を取得し、署名なしの場合はローカルAPIへそのまま送る。
-    if config.sign_requests:
-        credentials = frozen_credentials(boto3.Session(region_name=config.region))
     records: list[dict[str, Any]] = []
-    async with httpx.AsyncClient(
-        timeout=config.timeout_seconds, transport=config.transport
-    ) as client:
-        for implementation in config.targets:
-            records.extend(
-                await _execute_target(
-                    client=client,
-                    endpoint=config.endpoints[implementation],
-                    implementation=implementation,
-                    workload=workload,
-                    config=config,
-                    credentials=credentials,
+    try:
+        credentials = None
+        # 署名ありの設定の場合だけAWS認証情報を取得し、署名なしの場合はローカルAPIへそのまま送る。
+        if config.sign_requests:
+            credentials = credential_source(boto3.Session(region_name=config.region))
+        async with httpx.AsyncClient(
+            timeout=config.timeout_seconds, transport=config.transport
+        ) as client:
+            # コールドスタート計測は言語ごとに別の関数を更新するため、全言語を同時に進めて
+            # 待ち時間を短くする。通常の計測は言語ごとに順に行い、互いの負荷を重ねない。
+            if workload.cold_start:
+                try:
+                    # 一つの言語が失敗したら、他の言語も止めて設定を戻してから中断する。
+                    async with asyncio.TaskGroup() as group:
+                        for implementation in config.targets:
+                            group.create_task(
+                                _execute_cold_target(
+                                    client=client,
+                                    endpoint=config.endpoints[implementation],
+                                    implementation=implementation,
+                                    workload=workload,
+                                    config=config,
+                                    credentials=credentials,
+                                    records=records,
+                                )
+                            )
+                except ExceptionGroup as group_error:
+                    raise group_error.exceptions[0] from group_error
+                # 言語ごとに同時に測った結果を、実装一覧の順・要求番号の順にそろえる。
+                order = {name: position for position, name in enumerate(config.targets)}
+                records.sort(
+                    key=lambda record: (order[record["implementation"]], record["request_index"])
                 )
-            )
+            else:
+                for implementation in config.targets:
+                    records.extend(
+                        await _execute_target(
+                            client=client,
+                            endpoint=config.endpoints[implementation],
+                            implementation=implementation,
+                            workload=workload,
+                            config=config,
+                            credentials=credentials,
+                        )
+                    )
+    # 署名できなくなった場合や、コールドスタートを起こせなかった場合は、そこまでの結果を
+    # 中断したrunとして残し、呼び出し元へ知らせる。
+    except (SigningError, ColdStartError) as exc:
+        reason = "署名" if isinstance(exc, SigningError) else "Lambda の設定の更新"
+        metadata["completed_at"] = utc_now()
+        metadata["aborted"] = f"{reason}に失敗したため計測を中断しました: {exc}"
+        metadata["sample_count"] = len(records)
+        _write_jsonl(run_dir / "samples.jsonl", records)
+        _write_json(run_dir / "metadata.json", metadata)
+        raise
 
     metadata["completed_at"] = utc_now()
     metadata["sample_count"] = len(records)
+    # 実装ごとの成功・失敗件数を残し、全件失敗した計測を工程の失敗として扱えるようにする。
+    metadata["outcomes"] = {
+        implementation: {
+            "success_count": sum(
+                1
+                for record in records
+                if record["implementation"] == implementation and record["success"]
+            ),
+            "failure_count": sum(
+                1
+                for record in records
+                if record["implementation"] == implementation and not record["success"]
+            ),
+        }
+        for implementation in config.targets
+    }
     _write_jsonl(run_dir / "samples.jsonl", records)
     _write_json(run_dir / "metadata.json", metadata)
     return metadata

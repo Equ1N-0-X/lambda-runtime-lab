@@ -70,7 +70,12 @@ const TAG: StringSpec = {
   pattern: (text) => PRINTABLE_ASCII_PATTERN.test(text),
 };
 const SEED: StringSpec = { minLength: 1, maxLength: 256, pattern: () => true };
-const PROFILE: StringSpec = { minLength: 0, maxLength: 256, pattern: () => true };
+// 正本では、対応していないprofileは長さによらずUNSUPPORTED_PROFILEになるため、長さを制限しない。
+const PROFILE: StringSpec = {
+  minLength: 0,
+  maxLength: Number.POSITIVE_INFINITY,
+  pattern: () => true,
+};
 
 export function transformRequest(document: JsonValue): TransformRequest {
   const details: ErrorDetail[] = [];

@@ -36,66 +36,6 @@ def _run_dirs(results_dir: Path) -> list[Path]:
     ]
 
 
-def _unlinked_cause(run_dir: Path) -> str:
-    """収集済みLambdaログの内容から、計測と結び付けられなかった理由と対処を返す。"""
-    events_path = run_dir / "cloudwatch.jsonl"
-    events = []
-    # 収集イベントがあれば読み、なければ理由を特定できないため一般的な文言に任せる。
-    if events_path.is_file():
-        with events_path.open(encoding="utf-8") as stream:
-            events = [json.loads(line) for line in stream if line.strip()]
-    reports = [event for event in events if event.get("type") == "report"]
-    app_logs = [event for event in events if event.get("type") == "structured"]
-
-    # 実行レポートが一件もなければ、実行時間・メモリ・課金時間の元データ自体を読めていない。
-    if not reports:
-        return (
-            "Lambdaの実行レポート（実行時間・課金時間・メモリ）をログから読み取れませんでした。"
-            "ログを再収集してください。"
-        )
-    # アプリログに計測番号がなければ、デプロイ中のLambdaが計測番号を出力しない古い版である。
-    if app_logs and all(event.get("benchmark_request_index") is None for event in app_logs):
-        return (
-            "デプロイ中のLambdaが計測番号をログに出力していないため、どのリクエストの記録か特定できません。"
-            "最新のアプリをデプロイしてから計測し直してください。"
-        )
-    return "対応するLambdaのログが見つかりませんでした。"
-
-
-def _issues(report: dict[str, Any], *, collected: bool, run_dir: Path) -> list[str]:
-    """各実装を同じ条件で比較できない理由を、利用者が対処できる文言で列挙する。"""
-    metadata = report["metadata"]
-    implementations = report["implementations"]
-    issues: list[str] = []
-
-    # ドライランは実際のAPIを呼んでいないため、どの数値も性能比較に使えない。
-    if metadata.get("dry_run"):
-        issues.append("ドライランの結果です。実際のAPIは呼び出していません。")
-    # 実装が一つしかなければ、比べる相手がいないため差分を計算できない。
-    if len(implementations) < 2:
-        issues.append("計測した言語が一つだけのため、比較できません。")
-    # アーキテクチャかメモリが記録されていなければ、条件の再現とコスト計算ができない。
-    if metadata.get("architecture") is None or metadata.get("memory_mb") is None:
-        issues.append(
-            "アーキテクチャまたはメモリ設定が記録されていません。コストは比較できません。"
-        )
-    # ログ未収集なら、Lambda内部の実行時間・メモリ・コストはまだ存在しない。
-    if not collected:
-        issues.append(
-            "Lambdaのログを収集していません。応答時間以外の指標とコストは表示できません。"
-        )
-    else:
-        unclassified = sum(values["unclassified_count"] for values in implementations.values())
-        # 収集後もログと結合できない計測が残れば、Lambda内部の指標は一部欠けている。
-        if unclassified:
-            total = sum(values["sample_count"] for values in implementations.values())
-            issues.append(
-                f"{total}件中{unclassified}件の計測で、Lambda側の記録（実行時間・メモリ・料金）が"
-                f"得られていません。{_unlinked_cause(run_dir)}"
-            )
-    return issues
-
-
 def _public_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     """画面に返してよい実行条件だけを残したメタデータを返す。"""
     return {key: value for key, value in metadata.items() if key not in HIDDEN_METADATA_KEYS}
@@ -110,84 +50,154 @@ def load_run(run_id: str, *, results_dir: Path, pricing_path: Path) -> dict[str,
         raise RunNotFound(run_id)
 
     run_dir = results_dir / "raw" / run_id
-    collected = (run_dir / "merged.jsonl").is_file()
     report = build_report(run_id=run_id, results_dir=results_dir, pricing_path=pricing_path)
-    issues = _issues(report, collected=collected, run_dir=run_dir)
+    # 比較可否と注意点は、Markdownレポートと同じ判定（quality.assess_run）の結果を使う。
     return {
         **report,
         "metadata": _public_metadata(report["metadata"]),
-        "collected": collected,
-        "issues": issues,
-        "comparable": not issues,
+        "collected": (run_dir / "merged.jsonl").is_file(),
+        "issues": report["quality"]["issues"],
+        "failures": report["quality"]["failures"],
+        "comparable": report["quality"]["comparable"],
     }
 
 
 def list_runs(*, results_dir: Path, pricing_path: Path) -> list[dict[str, Any]]:
     """全runを開始日時の新しい順に並べ、一覧表示に必要な概要だけを返す。"""
-    runs: list[dict[str, Any]] = []
+    return [summary for summary, _run in _scan_runs(results_dir, pricing_path)]
+
+
+def _scan_runs(
+    results_dir: Path, pricing_path: Path
+) -> list[tuple[dict[str, Any], dict[str, Any] | None]]:
+    """全runを一度だけ読み、新しい順の概要と、読み込んだ比較結果の組を返す。
+
+    同じ要求の中で概要と詳細の両方が必要な処理（料金の目安など）が、同じrunを読み直さない
+    ようにする。要求をまたいで保持はしないため、結果や料金表の更新は次の要求で反映される。
+    読み込めなかったrunの比較結果はNoneとする。
+    """
+    scanned: list[tuple[dict[str, Any], dict[str, Any] | None]] = []
     for run_dir in _run_dirs(results_dir):
         try:
             run = load_run(run_dir.name, results_dir=results_dir, pricing_path=pricing_path)
         # 壊れたrunが一つあっても一覧全体は表示し、そのrunだけ読込失敗として示す。
         except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
-            runs.append(
-                {
-                    "run_id": run_dir.name,
-                    "started_at": None,
-                    "workload": None,
-                    "architecture": None,
-                    "memory_mb": None,
-                    "iterations": None,
-                    "languages": [],
-                    "comparable": False,
-                    "issues": [f"結果ファイルを読み込めません: {exc}"],
-                }
+            scanned.append(
+                (
+                    {
+                        "run_id": run_dir.name,
+                        "started_at": None,
+                        "workload": None,
+                        "architecture": None,
+                        "memory_mb": None,
+                        "iterations": None,
+                        "region": None,
+                        "experiment_id": None,
+                        "client_concurrency": None,
+                        "image_digests": {},
+                        "languages": [],
+                        "comparable": False,
+                        "issues": [f"結果ファイルを読み込めません: {exc}"],
+                        "failures": [],
+                    },
+                    None,
+                )
             )
             continue
 
         metadata = run["metadata"]
         workload = metadata.get("workload") or {}
-        runs.append(
-            {
-                "run_id": run["run_id"],
-                "started_at": metadata.get("started_at"),
-                "workload": workload.get("name"),
-                "architecture": metadata.get("architecture"),
-                "memory_mb": metadata.get("memory_mb"),
-                "iterations": workload.get("iterations"),
-                # 履歴で計測同士を見分けられるよう、計測した言語の表示名を表示順で返す。
-                "languages": list(run["labels"].values()),
-                "comparable": run["comparable"],
-                "issues": run["issues"],
-            }
+        scanned.append(
+            (
+                {
+                    "run_id": run["run_id"],
+                    "started_at": metadata.get("started_at"),
+                    "workload": workload.get("name"),
+                    "architecture": metadata.get("architecture"),
+                    "memory_mb": metadata.get("memory_mb"),
+                    "iterations": workload.get("iterations"),
+                    # 料金の根拠を選ぶとき、同じ地域・同じ実験・同じ版の計測かを照合するために使う。
+                    # 記録がない古い計測ではNoneのままとし、推測で補わない。
+                    "region": metadata.get("region"),
+                    "experiment_id": metadata.get("experiment_id"),
+                    "client_concurrency": workload.get("client_concurrency"),
+                    "image_digests": _image_digests(metadata),
+                    # 履歴で計測同士を見分けられるよう、計測した言語の表示名を表示順で返す。
+                    "languages": list(run["labels"].values()),
+                    "comparable": run["comparable"],
+                    "issues": run["issues"],
+                    # 履歴でも失敗を含む計測を見分けられるよう、言語ごとの失敗件数を返す。
+                    "failures": run["failures"],
+                },
+                run,
+            )
         )
     # 開始日時がないrunは並べようがないため、一覧の末尾へ置く。
-    runs.sort(key=lambda run: run["started_at"] or "", reverse=True)
-    return runs
+    scanned.sort(key=lambda entry: entry[0]["started_at"] or "", reverse=True)
+    return scanned
 
 
-def latest_costs_by_workload(*, results_dir: Path, pricing_path: Path) -> dict[str, Any]:
-    """ワークロードごとに、言語別の最新の実測から1リクエストあたり推定料金を返す。
+def _image_digests(metadata: dict[str, Any]) -> dict[str, str]:
+    """計測前に確かめた、言語ごとのイメージdigestを返す。記録がない言語は含めない。"""
+    deployments = (metadata.get("verification") or {}).get("deployments") or {}
+    return {
+        key: deployment["image_digest"]
+        for key, deployment in deployments.items()
+        if isinstance(deployment, dict) and deployment.get("image_digest")
+    }
 
-    計測開始前の料金の目安は、同じワークロードの実測から算出する。言語を後から追加した場合も
-    目安を出せるよう、言語ごとに比較可能な最新runの値を使う。実測がない言語は含めない。
+
+def latest_costs_by_workload(
+    *,
+    results_dir: Path,
+    pricing_path: Path,
+    architecture: str | None,
+    memory_mb: int | None,
+    region: str,
+    experiments: dict[str, str],
+) -> dict[str, Any]:
+    """これから計測する条件に合う実測から、ワークロード・言語ごとの1リクエストあたり料金を返す。
+
+    計測開始前の料金の目安に使う。方式・メモリ・地域が予定と同じで、処理の内容
+    （experiments: ワークロード名から実験の識別子）が同じ計測だけを根拠にする。
+    言語を後から追加した場合も目安を出せるよう、言語ごとに条件に合う最新の値を使う。
+    条件に合う実測がない言語は含めない（古い条件の料金で代用しない）。
     """
     basis: dict[str, Any] = {}
+    # 予定の方式・メモリが分からなければ、どの実測が予定と同じ条件か決められない。
+    if architecture is None or memory_mb is None:
+        return basis
     # 一覧は新しい順なので、各ワークロード・言語で最初に見つかった値が最新になる。
-    for summary in list_runs(results_dir=results_dir, pricing_path=pricing_path):
-        # 比較不能なrunは料金や条件が欠けるため使わない。
-        if not summary["comparable"]:
+    for summary, run in _scan_runs(results_dir, pricing_path):
+        workload = summary["workload"]
+        # 比較不能な計測や、予定と異なる条件・処理内容の計測は料金の根拠に使わない。
+        if (
+            not summary["comparable"]
+            or workload not in experiments
+            or summary["experiment_id"] != experiments[workload]
+            or summary["architecture"] != architecture
+            or summary["memory_mb"] != memory_mb
+            or summary["region"] != region
+        ):
             continue
-        run = load_run(summary["run_id"], results_dir=results_dir, pricing_path=pricing_path)
+        # 料金の指標を根拠に使えない計測（料金表の地域違いなど）は採用しない。
+        if run is None or run["quality"]["columns"]["cost"]["status"] != "usable":
+            continue
         entry = basis.setdefault(
-            summary["workload"],
-            {"started_at": summary["started_at"], "cost_per_request": {}},
+            workload,
+            {
+                "started_at": summary["started_at"],
+                "client_concurrency": summary["client_concurrency"],
+                "cost_per_request": {},
+                "sources": {},
+            },
         )
         for name, values in run["implementations"].items():
             cost = (values.get("cost") or {}).get("estimated_cost_per_request")
             # 料金を計算できた言語のうち、まだ値がない（より新しい実測がない）ものだけ採用する。
             if cost is not None and name not in entry["cost_per_request"]:
                 entry["cost_per_request"][name] = cost
+                entry["sources"][name] = summary["run_id"]
                 # 目安の根拠として、採用した実測のうち最も古い日時を示す。
                 entry["started_at"] = summary["started_at"]
     return basis

@@ -53,28 +53,44 @@ def metric_summary(records: list[dict[str, Any]], field: str) -> dict[str, Any]:
     }
 
 
+def is_successful(record: dict[str, Any]) -> bool:
+    """成功した要求かを返す。真偽値のTrueだけを成功とし、欠損や文字列は失敗とする。"""
+    return record.get("success") is True
+
+
 def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
-    """測定レコードを実装別、さらにCold/Warm別に集計する。"""
+    """測定レコードを実装別、さらにCold/Warm別に集計する。
+
+    時間・メモリの統計は成功した要求だけから求める。失敗した要求の速さを成功の速さとして
+    比べないためで、失敗は件数・率と別の統計（failed_metrics）で示す。
+    Cold/Warm/未分類の件数も、統計と同じ成功した要求について数える。
+    """
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for record in records:
         groups[str(record["implementation"])].append(record)
 
     implementations: dict[str, Any] = {}
     for implementation, samples in sorted(groups.items()):
-        # start_type が cold/warm と明示された測定を分け、分類不能な件数も失わず集計する。
-        cold = [record for record in samples if record.get("start_type") == "cold"]
-        warm = [record for record in samples if record.get("start_type") == "warm"]
-        error_count = sum(not bool(record.get("success")) for record in samples)
+        succeeded = [record for record in samples if is_successful(record)]
+        failed = [record for record in samples if not is_successful(record)]
+        # start_type が cold/warm と明示された成功を分け、分類不能な件数も失わず集計する。
+        cold = [record for record in succeeded if record.get("start_type") == "cold"]
+        warm = [record for record in succeeded if record.get("start_type") == "warm"]
         implementations[implementation] = {
             "sample_count": len(samples),
-            "error_count": error_count,
-            "error_rate": error_count / len(samples) if samples else None,
+            "success_count": len(succeeded),
+            "error_count": len(failed),
+            "error_rate": len(failed) / len(samples) if samples else None,
+            # 本文まで確かめた成功かどうか。確認前の版で計測した結果は、成功の内容が分からない。
+            "response_checked": bool(samples)
+            and all(record.get("response_checked") is True for record in samples),
             "cold_count": len(cold),
             "warm_count": len(warm),
-            "unclassified_count": len(samples) - len(cold) - len(warm),
-            "metrics": {field: metric_summary(samples, field) for field in METRICS},
+            "unclassified_count": len(succeeded) - len(cold) - len(warm),
+            "metrics": {field: metric_summary(succeeded, field) for field in METRICS},
             "cold_metrics": {field: metric_summary(cold, field) for field in METRICS},
             "warm_metrics": {field: metric_summary(warm, field) for field in METRICS},
+            "failed_metrics": {field: metric_summary(failed, field) for field in METRICS},
         }
     return {"implementations": implementations}
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -223,19 +224,46 @@ def _epoch(iso_value: str, offset_seconds: int) -> int:
     return int(value.timestamp()) + offset_seconds
 
 
+# Logs Insightsが一回のクエリで返す結果行の上限。これに達した結果は末尾が欠けている。
+INSIGHTS_RESULT_LIMIT = 10_000
+
+
+class InsightsTruncated(RuntimeError):
+    """Logs Insightsの結果が上限に達し、全件を取得できていないことを表す。"""
+
+
+def _insights_query(run_id: str) -> str:
+    """結合に必要な行（実行レポートと、このrunのアプリログ）だけを時系列で取り出すクエリ。
+
+    実行レポートにはrun IDが含まれないため、REPORTは全件を残し、アプリログはrun IDで絞る。
+    REPORTだけに絞ると、計測番号からLambdaのリクエストIDを引けなくなり結合できない。
+    """
+    return (
+        "fields @timestamp, @message"
+        ' | filter @message like "REPORT RequestId"'
+        ' or @message like "platform.report"'
+        f' or @message like "{run_id}"'
+        " | sort @timestamp asc"
+    )
+
+
 def _insights_messages(
     logs_client: object,
     log_group: str,
     start_time: int,
     end_time: int,
+    run_id: str,
 ) -> list[str]:
-    """Logs Insightsを開始し、最大60秒ポーリングして時系列のメッセージを返す。"""
+    """Logs Insightsを開始し、最大60秒ポーリングして時系列のメッセージを返す。
+
+    結果が上限件数に達した場合は末尾が欠けているため、InsightsTruncatedを送出する。
+    """
     response = logs_client.start_query(  # type: ignore[attr-defined]
         logGroupName=log_group,
         startTime=start_time,
         endTime=end_time,
-        queryString="fields @timestamp, @message | sort @timestamp asc",
-        limit=10_000,
+        queryString=_insights_query(run_id),
+        limit=INSIGHTS_RESULT_LIMIT,
     )
     query_id = response["queryId"]
     for _ in range(120):
@@ -243,12 +271,18 @@ def _insights_messages(
         status = result["status"]
         # 状態がCompleteになった場合だけ結果行から@messageを抽出して返す。
         if status == "Complete":
+            rows = result.get("results", [])
+            # 上限件数ちょうどの結果は、それ以降の行が返されていない可能性がある。
+            if len(rows) >= INSIGHTS_RESULT_LIMIT:
+                raise InsightsTruncated(
+                    f"Logs Insightsの結果が上限（{INSIGHTS_RESULT_LIMIT}件）に達しました"
+                )
             return [
                 next(
                     (field["value"] for field in row if field["field"] == "@message"),
                     "",
                 )
-                for row in result.get("results", [])
+                for row in rows
             ]
         # 終了系の失敗状態なら再試行せず、状態を示してフォールバック判断へ渡す。
         if status in {"Cancelled", "Failed", "Timeout", "Unknown"}:
@@ -284,6 +318,73 @@ def _filter_messages(
         token = next_token
 
 
+def _messages(
+    logs_client: object,
+    log_group: str,
+    *,
+    strategy: str,
+    start_time: int,
+    end_time: int,
+    run_id: str,
+) -> tuple[list[str], str, str | None]:
+    """ロググループのメッセージを取得し、取得方法と、切り替えた理由を返す。"""
+    # filter固定時はInsightsを使わず、ページングで全件を取得する。
+    if strategy == "filter":
+        return _filter_messages(logs_client, log_group, start_time, end_time), "filter", None
+    try:
+        messages = _insights_messages(logs_client, log_group, start_time, end_time, run_id)
+        return messages, "insights", None
+    # Insightsが利用不能、または上限で末尾が欠ける場合は、全件をページングで取得し直す。
+    # insights固定のときは、欠けた結果で結合しないよう失敗をそのまま返す。
+    except Exception as exc:
+        if strategy == "insights":
+            raise
+        reason = str(exc) if isinstance(exc, InsightsTruncated) else type(exc).__name__
+        return _filter_messages(logs_client, log_group, start_time, end_time), "filter", reason
+
+
+def _collect_once(
+    *,
+    run_id: str,
+    samples: list[dict[str, Any]],
+    log_groups: dict[str, str],
+    logs_client: object,
+    strategy: str,
+    start_time: int,
+    end_time: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    """全ロググループを一度取得して結合し、結合結果・イベント・実装別の収集状況を返す。"""
+    all_events: list[dict[str, Any]] = []
+    all_merged: list[dict[str, Any]] = []
+    status: dict[str, Any] = {}
+    for implementation in sorted(log_groups):
+        messages, source, fallback_reason = _messages(
+            logs_client,
+            log_groups[implementation],
+            strategy=strategy,
+            start_time=start_time,
+            end_time=end_time,
+            run_id=run_id,
+        )
+        selected = [row for row in samples if row["implementation"] == implementation]
+        merged, events = correlate_samples(selected, messages, run_id=run_id)
+        all_merged.extend(merged)
+        all_events.extend(
+            {"implementation": implementation, "source": source, **event} for event in events
+        )
+        # 成功した要求はLambdaが処理しているため、実行レポートが必ずあるはずの要求として数える。
+        # 失敗した要求は、API Gatewayで止まりLambdaが動いていない場合もあるため数えない。
+        expected = [row for row in merged if row.get("success") is True]
+        status[implementation] = {
+            "source": source,
+            "fallback_reason": fallback_reason,
+            "message_count": len(messages),
+            "expected_reports": len(expected),
+            "matched_reports": sum(1 for row in expected if row["report_matched"]),
+        }
+    return all_merged, all_events, status
+
+
 def collect_run(
     *,
     run_id: str,
@@ -292,8 +393,17 @@ def collect_run(
     logs_client: object,
     strategy: str = "auto",
     dry_run: bool = False,
+    wait_seconds: float = 0,
+    poll_seconds: float = 10,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
-    """指定実行のログを実装別に収集し、API測定へ結合したJSONLを保存する。"""
+    """指定実行のログを実装別に収集し、API測定へ結合したJSONLを保存する。
+
+    CloudWatchへの反映には時間がかかるため、成功した要求のすべてに実行レポートが
+    結び付くまで、wait_seconds を期限として取得し直す。期限を過ぎても欠けていれば
+    status=incomplete として返し、欠けた値は0で埋めずに未結合のまま残す。
+    """
     run_dir = results_dir / "raw" / run_id
     metadata_path = run_dir / "metadata.json"
     samples_path = run_dir / "samples.jsonl"
@@ -306,6 +416,7 @@ def collect_run(
         "strategy": strategy,
         "start_time": start_time,
         "end_time": end_time,
+        "wait_seconds": wait_seconds,
         "dry_run": dry_run,
     }
     # ドライランではCloudWatchや結果ファイルへアクセスせず、検索条件だけを返す。
@@ -313,31 +424,30 @@ def collect_run(
         return plan
 
     samples = _read_jsonl(samples_path)
-    all_events: list[dict[str, Any]] = []
-    all_merged: list[dict[str, Any]] = []
-    for implementation in sorted(log_groups):
-        log_group = log_groups[implementation]
-        try:
-            # filter固定時はInsightsを意図的に使わず、共通のフォールバック経路へ進める。
-            if strategy == "filter":
-                raise RuntimeError("filter方式が指定されました")
-            messages = _insights_messages(logs_client, log_group, start_time, end_time)
-            source = "insights"
-        # Insightsが利用不能な場合はfilterへ切り替える。ただしinsights固定なら失敗をそのまま返す。
-        except Exception:
-            if strategy == "insights":
-                raise
-            messages = _filter_messages(logs_client, log_group, start_time, end_time)
-            source = "filter"
-        selected = [row for row in samples if row["implementation"] == implementation]
-        merged, events = correlate_samples(selected, messages, run_id=run_id)
-        all_merged.extend(merged)
-        all_events.extend(
-            {"implementation": implementation, "source": source, **event} for event in events
+    deadline = clock() + wait_seconds
+    attempts = 0
+    while True:
+        attempts += 1
+        merged, events, status = _collect_once(
+            run_id=run_id,
+            samples=samples,
+            log_groups=log_groups,
+            logs_client=logs_client,
+            strategy=strategy,
+            start_time=start_time,
+            end_time=end_time,
         )
+        missing = sum(
+            item["expected_reports"] - item["matched_reports"] for item in status.values()
+        )
+        remaining = deadline - clock()
+        # 欠けがなければ完了。期限を過ぎていれば、欠けたまま未完了として終える。
+        if not missing or remaining <= 0:
+            break
+        sleep(min(poll_seconds, remaining))
 
     implementations = set(log_groups)
-    all_merged.extend(
+    merged.extend(
         {
             **sample,
             "duration_ms": None,
@@ -352,7 +462,17 @@ def collect_run(
         for sample in samples
         if sample["implementation"] not in implementations
     )
-    all_merged.sort(key=lambda row: (row["implementation"], row["request_index"]))
-    _write_jsonl(run_dir / "cloudwatch.jsonl", all_events)
-    _write_jsonl(run_dir / "merged.jsonl", all_merged)
-    return {**plan, "sample_count": len(all_merged), "event_count": len(all_events)}
+    merged.sort(key=lambda row: (row["implementation"], row["request_index"]))
+    collection = {
+        "status": "incomplete" if missing else "complete",
+        "attempts": attempts,
+        "missing_reports": missing,
+        "implementations": status,
+    }
+    _write_jsonl(run_dir / "cloudwatch.jsonl", events)
+    _write_jsonl(run_dir / "merged.jsonl", merged)
+    (run_dir / "collection.json").write_text(
+        json.dumps(collection, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return {**plan, "sample_count": len(merged), "event_count": len(events), **collection}

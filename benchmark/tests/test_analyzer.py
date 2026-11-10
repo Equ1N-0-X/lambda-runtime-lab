@@ -38,9 +38,29 @@ def test_summary_separates_cold_warm_and_errors():
     result = summarize(records)["implementations"]["python"]
 
     assert result["sample_count"] == 3
+    assert result["success_count"] == 2
+    assert result["error_count"] == 1
     assert result["error_rate"] == 1 / 3
+    # 起動の種類と統計は成功した要求だけで数え、失敗は別の統計に分ける。
     assert result["cold_count"] == 1
-    assert result["warm_count"] == 1
+    assert result["warm_count"] == 0
     assert result["unclassified_count"] == 1
     assert result["metrics"]["latency_ms"]["p50"] == 20
+    assert result["metrics"]["latency_ms"]["count"] == 2
+    assert result["failed_metrics"]["latency_ms"]["p50"] == 20
     assert result["metrics"]["duration_ms"]["count"] == 1
+
+
+def test_failed_requests_do_not_enter_success_statistics():
+    records = [
+        {"implementation": "python", "success": False, "latency_ms": 1, "start_type": "warm"},
+        {"implementation": "python", "success": True, "latency_ms": 50, "start_type": "warm"},
+        # 真偽値以外のsuccessは成功とみなさない。
+        {"implementation": "python", "success": "true", "latency_ms": 2, "start_type": "warm"},
+    ]
+
+    result = summarize(records)["implementations"]["python"]
+
+    assert result["success_count"] == 1
+    assert result["metrics"]["latency_ms"]["p50"] == 50
+    assert result["response_checked"] is False

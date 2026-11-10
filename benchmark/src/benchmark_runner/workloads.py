@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -28,12 +29,92 @@ class Workload:
     description: str | None = None
     # このワークロードを実装済みの言語（実装キー）。Noneなら実装一覧の全言語が対応している。
     implementations: tuple[str, ...] | None = None
+    # 毎回の要求の前に新しい実行環境を起こし、すべての要求をコールドスタートとして計測するか。
+    cold_start: bool = False
 
     def supported(self, available: tuple[str, ...]) -> tuple[str, ...]:
         """実装一覧の表示順のまま、このワークロードに対応する言語だけを返す。"""
         if self.implementations is None:
             return available
         return tuple(key for key in available if key in self.implementations)
+
+
+# 公開API契約（spec/openapi.yaml の x-supported-values）で処理方式として受け付けるprofile。
+KNOWN_PROFILES = ("sequential", "concurrent")
+
+
+def apply_profile(workload: Workload, profile: str | None) -> Workload:
+    """送信本文のprofileを指定値へ置き換え、記録するprofileを本文と一致させて返す。
+
+    profileは本文の項目としてAPIへ送られる。記録だけを変えると、記録と異なる処理方式で
+    計測したrunになるため、本文と記録を必ず同じ値にする。
+    """
+    body = workload.body
+    body_profile = body.get("profile") if isinstance(body, dict) else None
+    # 上書きがなければ、本文のprofileをそのまま記録する（本文にないなら記録もしない）。
+    if profile is None:
+        return replace(workload, profile=body_profile)
+    # 本文がprofileを持たないワークロードでは、指定しても送られないため誤りとして止める。
+    if body_profile is None:
+        raise WorkloadError(
+            f"ワークロード {workload.name} の本文にはprofileがないため、profileを指定できません"
+        )
+    # 契約にない処理方式を送ると、全件がUNSUPPORTED_PROFILEになり比較にならない。
+    if profile not in KNOWN_PROFILES:
+        raise WorkloadError(
+            f"profile は {' または '.join(KNOWN_PROFILES)} を指定してください: {profile}"
+        )
+    return replace(workload, body={**body, "profile": profile}, profile=profile)
+
+
+# コールドスタート計測の反復回数の上限。1回ごとに関数の設定を更新して待つため時間がかかる。
+MAX_COLD_START_ITERATIONS = 100
+
+
+def check_cold_start(workload: Workload) -> None:
+    """コールドスタート計測の条件（ウォームアップなし・同時要求1・回数の上限）を確かめる。
+
+    ウォームアップや同時要求があると、新しく起こした実行環境が計測前に使われ、
+    計測した要求がコールドスタートにならない。
+    """
+    # 通常の計測には、この制約を課さない。
+    if not workload.cold_start:
+        return
+    if workload.warmup != 0 or workload.client_concurrency != 1:
+        raise WorkloadError(
+            f"ワークロード {workload.name} はコールドスタートの計測のため、"
+            "warmupは0、client_concurrencyは1で指定してください"
+        )
+    if workload.iterations > MAX_COLD_START_ITERATIONS:
+        raise WorkloadError(
+            f"ワークロード {workload.name} の反復回数は {MAX_COLD_START_ITERATIONS} 回以下で"
+            "指定してください（1回ごとに関数の設定を更新するため）"
+        )
+
+
+def experiment_id(workload: Workload) -> str:
+    """処理の内容（方式・経路・本文）と同時要求数から、同じ実験かを照合する識別子を返す。
+
+    反復回数とウォームアップは標本の数を変えるだけで1リクエストの処理は変えないため含めない。
+    同時要求数は同じ実行環境での競合や再利用に影響するため含める。
+    """
+    conditions: dict[str, Any] = {
+        "method": workload.method,
+        "path": workload.path,
+        "body": workload.body,
+        "client_concurrency": workload.client_concurrency,
+    }
+    # 同じ処理でも、毎回コールドスタートさせた計測は別の実験として扱う。
+    # 通常の計測では項目を加えず、これまでの識別子を変えない。
+    if workload.cold_start:
+        conditions["cold_start"] = True
+    document = json.dumps(
+        conditions,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return "sha256:" + hashlib.sha256(document.encode()).hexdigest()
 
 
 def _positive_int(value: object, field: str, *, allow_zero: bool = False) -> int:
@@ -121,7 +202,23 @@ def load_workload(config_path: Path, name: str) -> Workload:
         except json.JSONDecodeError as exc:
             raise WorkloadError(f"payloadのJSONが不正です: {path}: {exc}") from exc
 
-    return Workload(
+    configured_profile = raw.get("profile")
+    body_profile = body.get("profile") if isinstance(body, dict) else None
+    # 定義のprofileと本文のprofileが食い違えば、どちらで計測したと記録すべきか決められない。
+    if configured_profile is not None and configured_profile != body_profile:
+        raise WorkloadError(
+            f"ワークロード {name} のprofile（{configured_profile}）が本文のprofile"
+            f"（{body_profile}）と一致しません"
+        )
+
+    mode = raw.get("mode", "standard")
+    # 計測方式は、通常（standard）と毎回コールドスタートさせる方式（cold-start）だけを受け付ける。
+    if mode not in ("standard", "cold-start"):
+        raise WorkloadError(
+            f"ワークロード {name} のmodeは standard または cold-start で指定してください: {mode}"
+        )
+
+    workload = Workload(
         name=name,
         method=method,
         path=route,
@@ -129,7 +226,10 @@ def load_workload(config_path: Path, name: str) -> Workload:
         iterations=_positive_int(raw.get("iterations"), "iterations"),
         client_concurrency=_positive_int(raw.get("client_concurrency", 1), "client_concurrency"),
         body=body,
-        profile=raw.get("profile") or (body.get("profile") if isinstance(body, dict) else None),
+        profile=body_profile,
         description=raw.get("description"),
         implementations=_implementations(raw.get("implementations"), name),
+        cold_start=mode == "cold-start",
     )
+    check_cold_start(workload)
+    return workload

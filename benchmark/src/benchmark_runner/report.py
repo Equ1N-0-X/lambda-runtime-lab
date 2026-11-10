@@ -7,9 +7,15 @@ import json
 from pathlib import Path
 from typing import Any
 
-from benchmark_runner.analyzer import METRICS, read_records, summarize
-from benchmark_runner.cost import PricingUnavailable, load_pricing, summarize_costs
+from benchmark_runner.analyzer import METRICS, is_successful, read_records, summarize
+from benchmark_runner.cost import (
+    PricingUnavailable,
+    check_pricing_region,
+    load_pricing,
+    summarize_costs,
+)
 from benchmark_runner.implementations import DEFAULT_REGISTRY, load_implementations
+from benchmark_runner.quality import assess_run
 
 PERCENTILES = ("p50", "p95", "p99")
 
@@ -79,10 +85,21 @@ def build_report(
     pricing_note: str | None = None
     pricing_metadata: dict[str, Any] | None = None
     # 料金が確認済みなら推定コストを計算し、未設定なら理由を注記して性能レポートは継続する。
+    succeeded = [record for record in records if is_successful(record)]
+    failed = [record for record in records if not is_successful(record)]
+    failed_costs: dict[str, Any] = {}
     try:
         pricing = load_pricing(pricing_path)
+        check_pricing_region(pricing, metadata.get("region"))
+        # 比べる料金は成功した要求だけから求め、失敗した要求に課金された分は別に示す。
         costs = summarize_costs(
-            records,
+            succeeded,
+            architecture=metadata.get("architecture"),
+            default_memory_mb=metadata.get("memory_mb"),
+            pricing=pricing,
+        )
+        failed_costs = summarize_costs(
+            failed,
             architecture=metadata.get("architecture"),
             default_memory_mb=metadata.get("memory_mb"),
             pricing=pricing,
@@ -102,6 +119,7 @@ def build_report(
     for name, values in implementations.items():
         # 対応する料金集計がない実装は、ゼロではなく未計算としてNoneを保持する。
         values["cost"] = costs.get(name)
+        values["failed_cost"] = failed_costs.get(name)
 
     baseline = next(iter(implementations), None)
     differences: dict[str, dict[str, dict[str, float | None]]] = {}
@@ -123,7 +141,7 @@ def build_report(
                 for metric in METRICS
             }
 
-    return {
+    report = {
         "run_id": run_id,
         "metadata": metadata,
         "implementations": implementations,
@@ -137,6 +155,8 @@ def build_report(
         "pricing_note": pricing_note,
         "image_metrics": image_metrics,
     }
+    report["quality"] = assess_run(report, run_dir=run_dir)
+    return report
 
 
 def generate_report(
@@ -186,19 +206,24 @@ def generate_report(
         "",
         "## Summary（概要）",
         "",
-        "測定件数、Cold/Warm分類、エラー率を確認する入口です。`Unclassified`が1件でもある場合は、",
-        "CloudWatchの実行情報と結合できていないため、Lambda実行時間・メモリ・コストを判断しません。",
+        "測定件数、成功・失敗、Cold/Warm分類を確認する入口です。成功は状態200と応答本文の内容で",
+        "判定し、統計とコストは成功した要求だけから求めます。Cold/Warm/Unclassifiedも成功した要求の件数です。",
+        "`Unclassified`が1件でもある場合は、CloudWatchの実行情報と結合できていないため、",
+        "Lambda実行時間・メモリ・コストを判断しません。",
         "",
-        "| Implementation | Samples | Cold | Warm | Unclassified | Error rate |",
-        "|---|---:|---:|---:|---:|---:|",
+        "| Implementation | Samples | Succeeded | Failed | Error rate | Cold | Warm | Unclassified "
+        "| Failed cost |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for name, values in implementations.items():
         error_rate = values["error_rate"]
         rendered_rate = "null" if error_rate is None else f"{error_rate:.2%}"
+        failed_cost = (values.get("failed_cost") or {}).get("estimated_total_cost")
         lines.append(
-            f"| {name} | {values['sample_count']} | {values['cold_count']} | "
+            f"| {name} | {values['sample_count']} | {values['success_count']} | "
+            f"{values['error_count']} | {rendered_rate} | {values['cold_count']} | "
             f"{values['warm_count']} | {values['unclassified_count']} | "
-            f"{rendered_rate} |"
+            f"{_display(failed_cost, 10)} |"
         )
 
     # 未分類が残るレポートでは、クライアント側レイテンシー以外を比較しないよう明示する。
@@ -211,20 +236,54 @@ def generate_report(
             ]
         )
 
+    quality = report["quality"]
+    # 失敗が1件でもあれば正式な比較に使えないため、件数を比較表より前に目立たせる。
+    if quality["failures"]:
+        total = sum(failure["error_count"] for failure in quality["failures"])
+        detail = "、".join(
+            f"{failure['label']} {failure['sample_count']}件中{failure['error_count']}件"
+            for failure in quality["failures"]
+        )
+        lines.extend(
+            [
+                "",
+                f"> 失敗: 失敗した要求が {total} 件あります（{detail}）。"
+                "正式な比較には使えない参考値です。再計測してください。",
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            "## Comparability（比較に使えるか）",
+            "",
+            "指標ごとに、言語間の比較の根拠として使えるかを示します。`usable`は比較の根拠に使える、",
+            "`reference`は参考値（優劣を断定しない）、`unusable`は比較できないことを表します。",
+            "画面の結論・最良の表示も同じ判定に従います。",
+            "",
+            "| Metric | Status | Reasons |",
+            "|---|---|---|",
+        ]
+    )
+    for column, values in quality["columns"].items():
+        reasons = " ".join([*values["reasons"], *values["notes"]]) or "-"
+        lines.append(f"| {column} | {values['status']} | {reasons} |")
+
     lines.extend(
         [
             "",
             "## Percentiles（パーセンタイル）",
             "",
             "値の分布をP50（中央値）、P95、P99で示します。`all`は全件、`cold`と`warm`は",
-            "Lambda REPORTによる分類別です。Countが0の行の`null`は、",
+            "Lambda REPORTによる分類別で、いずれも成功した要求だけを対象にします。",
+            "Countが0の行の`null`は、",
             "ゼロではなく未取得を意味します。",
             "",
             "- `latency_ms`: クライアントから見たAPI全体の応答時間",
             "- `duration_ms`: Lambda内でハンドラーを実行した時間",
             "- `billed_duration_ms`: Lambda料金計算に使われる課金対象時間",
             "- `init_duration_ms`: Cold Start時の初期化時間",
-            "- `max_memory_used_mb`: 実行中に観測された最大メモリ使用量",
+            "- `max_memory_used_mb`: 実行環境ごとに観測された最大メモリ使用量。同じ実行環境で",
+            "  前に処理した要求の分も含みうるため、1要求の処理に必要な量そのものではありません",
             "",
             "| Implementation | Scope | Metric | Count | P50 | P95 | P99 |",
             "|---|---|---|---:|---:|---:|---:|",
@@ -362,6 +421,7 @@ def generate_report(
         "cold_count",
         "warm_count",
         "unclassified_count",
+        "success_count",
         "error_count",
         "error_rate",
     ]
@@ -387,6 +447,7 @@ def generate_report(
                 "cold_count": values["cold_count"],
                 "warm_count": values["warm_count"],
                 "unclassified_count": values["unclassified_count"],
+                "success_count": values["success_count"],
                 "error_count": values["error_count"],
                 "error_rate": values["error_rate"],
             }

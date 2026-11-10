@@ -8,6 +8,12 @@ export interface ErrorDetail {
   reason: string;
 }
 
+/** 保存先障害を調査するために内部ログへ残す、原因の分類とAWSのエラーコード。 */
+export interface DependencyCause {
+  category: string;
+  errorCode: string | null;
+}
+
 export interface ErrorBody {
   error: {
     code: string;
@@ -16,10 +22,16 @@ export interface ErrorBody {
   };
 }
 
+/**
+ * 本文の上限（バイト）。有効な要求の最大（約2.45MB）に余裕を持たせ、Lambdaの呼び出しデータの
+ * 上限（6MB）より手前で、全言語が同じエラーを返せる大きさにしている。
+ */
+export const MAX_BODY_BYTES = 4_194_304;
+
 /** 契約で定めたHTTP状態と本文を持つ、利用者へ返すエラー。 */
 export class AppError extends Error {
   private constructor(
-    readonly status: 400 | 404 | 422 | 500 | 502,
+    readonly status: 400 | 404 | 413 | 422 | 500 | 502,
     readonly code: string,
     readonly publicMessage: string,
     readonly details: ErrorDetail[],
@@ -38,6 +50,13 @@ export class AppError extends Error {
   /** JSON構文・UTF-8・重複キーの不正を、本文全体の検証エラーとして返す。 */
   static invalidJson(): AppError {
     return AppError.validation([{ field: "$", reason: "invalid_json" }]);
+  }
+
+  /** 本文が上限を超える場合の413応答を作る。本文は解析しない。 */
+  static payloadTooLarge(): AppError {
+    return new AppError(413, "PAYLOAD_TOO_LARGE", "request body too large", [
+      { field: "$", reason: `max_bytes:${MAX_BODY_BYTES}` },
+    ]);
   }
 
   /** 未対応プロファイルを、利用可能な候補付きの400応答として返す。 */
@@ -59,10 +78,15 @@ export class AppError extends Error {
     return new AppError(404, "NOT_FOUND", "item not found", []);
   }
 
-  /** DynamoDBなど外部依存先の障害を502応答へ変換する。 */
-  static dependency(): AppError {
-    return new AppError(502, "DEPENDENCY_ERROR", "dependency error", []);
+  /** DynamoDBなど外部依存先の障害を502応答へ変換する。原因は内部ログ用にだけ保持する。 */
+  static dependency(cause?: DependencyCause): AppError {
+    const error = new AppError(502, "DEPENDENCY_ERROR", "dependency error", []);
+    error.dependencyCause = cause;
+    return error;
   }
+
+  /** 保存先障害の原因の分類。公開する本文には含めない。 */
+  dependencyCause?: DependencyCause;
 
   /** 内部計算などの予期しない障害を500応答へ変換する。 */
   static internal(): AppError {

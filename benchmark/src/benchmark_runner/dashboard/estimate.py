@@ -12,6 +12,11 @@
 （中央値）の分の実行時間料金を足して近似する（Lambdaは初期化時間も課金対象のため）。
 その言語に初期化時間の実測が一つもなければ近似できないため、コールドスタート分を含めず、
 含めていないことを結果に示す（見込みは実際より低くなる）。
+
+根拠にする計測は、比較可能で、選んだ条件（アーキテクチャ・メモリ）と料金表の地域が同じ計測に限る。
+ワークロードごとに最新の計測と同じ処理内容（実験の識別子）の計測だけを使い、
+言語ごとに、構成に含む全ワークロードの根拠が同じイメージ（digest）であることを求める。
+料金表の単価を適用できる月間使用量（Tier 1）を超える見込みは参考値として示す。
 """
 
 from __future__ import annotations
@@ -21,8 +26,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from benchmark_runner.analyzer import read_records
-from benchmark_runner.cost import Pricing, calculate_cost, load_pricing
+from benchmark_runner.analyzer import is_successful, read_records
+from benchmark_runner.cost import Pricing, PricingUnavailable, calculate_cost, load_pricing
 from benchmark_runner.dashboard.catalog import list_runs
 from benchmark_runner.implementations import DEFAULT_REGISTRY, load_implementations
 
@@ -45,6 +50,10 @@ class WorkloadBasis:
     cold_cost: float | None
     warm_duration_ms: float
     init_duration_ms: float | None
+    # 月間の使用量（GB秒）を求めるための、課金対象時間の平均。
+    warm_billed_ms: float = 0.0
+    cold_billed_ms: float | None = None
+    image_digest: str | None = None
 
 
 def _numbers(records: list[dict[str, Any]], field: str) -> list[float]:
@@ -75,8 +84,11 @@ def _basis_for_run(
     run_dir: Path, language: str, *, memory_mb: int, architecture: str, pricing: Pricing
 ) -> WorkloadBasis | None:
     """一つの計測から、言語のウォーム・コールド別の料金と時間を求める。"""
+    # 失敗した要求の料金・時間は、成功した処理の見込みに混ぜない。
     records = [
-        record for record in read_records(run_dir) if record.get("implementation") == language
+        record
+        for record in read_records(run_dir)
+        if record.get("implementation") == language and is_successful(record)
     ]
     warm = [record for record in records if record.get("start_type") == "warm"]
     cold = [record for record in records if record.get("start_type") == "cold"]
@@ -86,6 +98,7 @@ def _basis_for_run(
     if warm_cost is None or not warm_durations:
         return None
     init = _numbers(cold, "init_duration_ms")
+    cold_billed = _numbers(cold, "billed_duration_ms")
     return WorkloadBasis(
         run_id=run_dir.name,
         started_at=None,
@@ -93,20 +106,44 @@ def _basis_for_run(
         cold_cost=_mean_cost(cold, memory_mb=memory_mb, architecture=architecture, pricing=pricing),
         warm_duration_ms=statistics.fmean(warm_durations),
         init_duration_ms=statistics.median(init) if init else None,
+        warm_billed_ms=statistics.fmean(_numbers(warm, "billed_duration_ms")),
+        cold_billed_ms=statistics.fmean(cold_billed) if cold_billed else None,
     )
 
 
+def _eligible_runs(*, results_dir: Path, pricing_path: Path, region: str) -> list[dict[str, Any]]:
+    """見込みの根拠に使える計測を新しい順に返す。
+
+    比較可能で、料金表と同じ地域で計測し、処理内容の識別子が記録された計測に限る。
+    識別子のない古い計測は、同じ処理内容か確かめられないため使わない。
+    """
+    return [
+        summary
+        for summary in list_runs(results_dir=results_dir, pricing_path=pricing_path)
+        if summary["comparable"] and summary["region"] == region and summary["experiment_id"]
+    ]
+
+
 def available_conditions(*, results_dir: Path, pricing_path: Path) -> list[dict[str, Any]]:
-    """見込みに使える計測条件（アーキテクチャとメモリの組）を、新しい計測の多い順に返す。"""
+    """見込みに使える計測条件（アーキテクチャとメモリの組）を、計測の多い順に返す。
+
+    同じ件数なら、アーキテクチャ名・メモリの順に並べて表示順を安定させる。
+    """
+    try:
+        region = load_pricing(pricing_path).region
+    # 料金表がなければ見込みを計算できないため、選べる条件もない。
+    except PricingUnavailable:
+        return []
     seen: dict[tuple[str, int], int] = {}
-    for summary in list_runs(results_dir=results_dir, pricing_path=pricing_path):
-        # 比較可能な計測だけを根拠にするため、条件の候補もそれに限る。
-        if summary["comparable"]:
-            key = (summary["architecture"], summary["memory_mb"])
-            seen[key] = seen.get(key, 0) + 1
+    for summary in _eligible_runs(
+        results_dir=results_dir, pricing_path=pricing_path, region=region
+    ):
+        key = (summary["architecture"], summary["memory_mb"])
+        seen[key] = seen.get(key, 0) + 1
+    ordered = sorted(seen.items(), key=lambda item: (-item[1], item[0][0], item[0][1]))
     return [
         {"architecture": architecture, "memory_mb": memory_mb, "run_count": count}
-        for (architecture, memory_mb), count in seen.items()
+        for (architecture, memory_mb), count in ordered
     ]
 
 
@@ -166,14 +203,22 @@ def build_estimate(
     cold_ratio = float(cold_start_percent) / 100
     pricing = load_pricing(pricing_path)
 
-    # 指定した条件の比較可能な計測を、新しい順に集める。
+    # 指定した条件の、根拠に使える計測を新しい順に集める。
     runs = [
         summary
-        for summary in list_runs(results_dir=results_dir, pricing_path=pricing_path)
-        if summary["comparable"]
-        and summary["architecture"] == architecture
+        for summary in _eligible_runs(
+            results_dir=results_dir, pricing_path=pricing_path, region=pricing.region
+        )
+        if summary["architecture"] == architecture
         and summary["memory_mb"] == memory_mb
         and summary["workload"] in shares
+    ]
+    # ワークロードごとに最新の計測の処理内容を基準にし、本文や同時要求数が違う計測を混ぜない。
+    reference: dict[str, str] = {}
+    for summary in runs:
+        reference.setdefault(summary["workload"], summary["experiment_id"])
+    runs = [
+        summary for summary in runs if summary["experiment_id"] == reference[summary["workload"]]
     ]
 
     languages = []
@@ -191,7 +236,11 @@ def build_estimate(
                     pricing=pricing,
                 )
                 if found:
-                    basis[workload] = replace(found, started_at=summary["started_at"])
+                    basis[workload] = replace(
+                        found,
+                        started_at=summary["started_at"],
+                        image_digest=summary["image_digests"].get(key),
+                    )
                     break
         missing = [workload for workload in shares if workload not in basis]
         languages.append(
@@ -237,7 +286,12 @@ def _language_estimate(
 ) -> dict[str, Any]:
     """一つの言語について、割合で重み付けした料金・処理時間を求める。"""
     sources = [
-        {"workload": workload, "run_id": item.run_id, "started_at": item.started_at}
+        {
+            "workload": workload,
+            "run_id": item.run_id,
+            "started_at": item.started_at,
+            "image_digest": item.image_digest,
+        }
         for workload, item in basis.items()
     ]
     # 構成に含むワークロードの一つでも実測がなければ、一部だけの合算で誤った見込みを出さない。
@@ -247,6 +301,18 @@ def _language_estimate(
             "label": label,
             "estimable": False,
             "missing_workloads": missing,
+            "reason": "missing",
+            "sources": sources,
+        }
+    digests = {item.image_digest for item in basis.values()}
+    # ワークロードごとの根拠が別の版（イメージ）なら、同じ実装の料金として合算できない。
+    if None in digests or len(digests) > 1:
+        return {
+            "key": key,
+            "label": label,
+            "estimable": False,
+            "missing_workloads": [],
+            "reason": "inconsistent_versions",
             "sources": sources,
         }
 
@@ -256,6 +322,7 @@ def _language_estimate(
 
     per_request = 0.0
     warm_duration = 0.0
+    billed_ms = 0.0
     approximated = []
     cold_excluded = []
     for workload, share in shares.items():
@@ -280,8 +347,15 @@ def _language_estimate(
                 cold_excluded.append(workload)
         per_request += share * ((1 - cold_ratio) * item.warm_cost + cold_ratio * cold_cost)
         warm_duration += share * item.warm_duration_ms
+        # 使用量も料金と同じ近似で求める（コールドの実測がなければ初期化時間を足す）。
+        cold_billed = item.cold_billed_ms
+        if cold_billed is None:
+            cold_billed = item.warm_billed_ms + (language_init or 0.0)
+        billed_ms += share * ((1 - cold_ratio) * item.warm_billed_ms + cold_ratio * cold_billed)
 
     request_cost = float(pricing.request_price_per_million) / 1_000_000
+    monthly_gb_seconds = billed_ms / 1000 * memory_mb / 1024 * monthly_requests
+    limit = pricing.tier1_max_gb_seconds_per_month.get(architecture)
     return {
         "key": key,
         "label": label,
@@ -292,5 +366,8 @@ def _language_estimate(
         "init_duration_ms": language_init,
         "approximated_cold_workloads": approximated,
         "cold_excluded_workloads": cold_excluded,
+        "monthly_gb_seconds": monthly_gb_seconds,
+        # 料金表の単価を適用できる使用量の範囲内か。上限が分からない場合も範囲内とは扱わない。
+        "within_pricing_tier": limit is not None and monthly_gb_seconds <= float(limit),
         "sources": sources,
     }

@@ -2,6 +2,8 @@ locals {
   # 全リソースで共有する名前接頭辞とログ保持期間を一箇所で管理する。
   name_prefix        = "${var.project_name}-${var.environment}"
   log_retention_days = 14
+  # ECRに残す、make publish-images で登録したイメージの数（言語ごと）。ecr.tf の自動削除ルールで使う。
+  retained_image_count = 3
 
   common_tags = {
     Project     = var.project_name

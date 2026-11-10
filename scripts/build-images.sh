@@ -10,7 +10,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "${ROOT}/scripts/lib/implementations.sh"
 PLATFORM="${PLATFORM:-linux/arm64}"
 TAG="${TAG:-benchmark}"
-RUN_ID="${RUN_ID:-image-build-$(date -u +%Y%m%dT%H%M%SZ)}"
+# ビルドの記録はAPI計測の結果（results/raw）と分けて results/builds/<BUILD_ID> に保存する。
+# 互換のため、BUILD_ID がなく RUN_ID があればその値を使う。
+BUILD_ID="${BUILD_ID:-${RUN_ID:-image-build-$(date -u +%Y%m%dT%H%M%SZ)}}"
 FINAL_BASE_REPOSITORY="${FINAL_BASE_REPOSITORY:-public.ecr.aws/lambda/provided}"
 FINAL_BASE_TAG="${FINAL_BASE_TAG:-al2023}"
 BUILD_DATE="${BUILD_DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
@@ -18,6 +20,8 @@ GIT_REVISION="${GIT_REVISION:-$(git -C "${ROOT}" rev-parse --verify --quiet HEAD
 BUILD_PROGRESS="${BUILD_PROGRESS:-auto}"
 DRY_RUN=false
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=true
+# ビルドの前に実装一覧を確定する。読めなければ、イメージを作らずに成功しないよう止める。
+KEYS="$(implementation_keys)"
 
 resolve_final_base() {
   # FINAL_BASEが明示された場合はその参照を使い、未指定ならタグから現在のdigestを一度だけ解決する。
@@ -34,6 +38,23 @@ resolve_final_base() {
   echo "${FINAL_BASE_REPOSITORY}@${digest}"
 }
 
+resolved_base_images() {
+  # Dockerfileが参照する外部のベースイメージを、ビルド時点のdigestと組にして一行ずつ出力する。
+  # digestを解決できない参照は空とし、推測で補わない。
+  local dockerfile="$1" final_base="$2" reference digest
+  while IFS= read -r reference; do
+    [[ -n "${reference}" ]] || continue
+    # digestで指定済みの参照は、そのdigestがそのまま使った実体である。
+    if [[ "${reference}" == *@sha256:* ]]; then
+      digest="${reference##*@}"
+    else
+      digest="$(docker buildx imagetools inspect "${reference}" --format '{{.Manifest.Digest}}' 2>/dev/null || true)"
+    fi
+    printf '%s\t%s\n' "${reference}" "${digest}"
+  done < <(uv run --quiet --project "${ROOT}/benchmark" python -m benchmark_runner build-inputs \
+    --dockerfile "${dockerfile}" --build-arg "FINAL_BASE=${final_base}" 2>/dev/null)
+}
+
 build_image() {
   # 指定実装のイメージを作成し、ビルド時間・サイズ・使用ベースを結果JSONへ保存する。
   local implementation="$1"
@@ -45,7 +66,7 @@ build_image() {
   [[ -n "${app_dir}" ]] || { echo "実装一覧にない実装です: ${implementation}" >&2; exit 2; }
   local dockerfile="${ROOT}/${app_dir}/Dockerfile"
   local context="${ROOT}/${app_dir}"
-  local output="${ROOT}/results/raw/${RUN_ID}/${implementation}-build.json"
+  local output="${ROOT}/results/builds/${BUILD_ID}/${implementation}-build.json"
   # Lambdaは単一イメージマニフェストを受け付けるため、証明書付きOCI indexを作らず、
   # pushしたタグをそのままLambdaイメージURIに使えるようprovenanceを無効化する。
   local command=(docker buildx build --progress "${BUILD_PROGRESS}" --platform "${PLATFORM}" --provenance=false --load
@@ -72,14 +93,20 @@ build_image() {
   duration="$((ended - started))"
   image_id="$(docker image inspect --format '{{.Id}}' "${image}")"
   size="$(docker image inspect --format '{{.Size}}' "${image}")"
+  local base_images
+  base_images="$(resolved_base_images "${dockerfile}" "${final_base}")"
   python3 - "${output}" "${implementation}" "${image}" "${image_id}" "${size}" \
-    "${duration}" "${PLATFORM}" "${final_base}" "${GIT_REVISION}" "${BUILD_DATE}" <<'PY'
+    "${duration}" "${PLATFORM}" "${final_base}" "${GIT_REVISION}" "${BUILD_DATE}" \
+    "${base_images}" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
+# 参照ごとの解決済みdigest。同じGitでもタグが移ればここが変わり、ビルド元の変化を識別できる。
+base_images = dict(line.split("\t", 1) for line in sys.argv[11].splitlines() if "\t" in line)
 value = {
+    "base_images": base_images,
     "implementation": sys.argv[2],
     "image": sys.argv[3],
     "image_id": sys.argv[4],
@@ -102,6 +129,6 @@ else
   echo "共通ベースイメージ: ${FINAL_BASE_RESOLVED}"
 fi
 
-for implementation in $(implementation_keys); do
+for implementation in ${KEYS}; do
   build_image "${implementation}" "${FINAL_BASE_RESOLVED}"
 done

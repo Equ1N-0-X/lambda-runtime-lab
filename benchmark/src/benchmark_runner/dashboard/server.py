@@ -25,6 +25,7 @@ from benchmark_runner.dashboard.jobs import (
     JobManager,
     LaunchError,
     load_workloads,
+    workload_experiments,
 )
 
 logger = logging.getLogger(__name__)
@@ -119,9 +120,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif path == "/api/estimate/options":
             self._send_json(
                 {
+                    # コールドスタート計測は毎回起動を起こす特殊な条件で、実運用の要求の構成に
+                    # 含められないため、月額の見込みの選択肢から外す。
                     "workloads": [
                         {"name": item["name"], "description": item["description"]}
                         for item in load_workloads(self.jobs.workload_file)
+                        if not item["cold_start"]
                     ],
                     "conditions": available_conditions(
                         results_dir=self.results_dir, pricing_path=self.pricing_path
@@ -157,15 +161,22 @@ class DashboardHandler(BaseHTTPRequestHandler):
             raise RequestRejected(HTTPStatus.NOT_FOUND, "ページが見つかりません。")
 
     def _launch_options(self) -> dict[str, Any]:
+        settings = self.jobs.resolve_settings()
+        definitions = load_workloads(self.jobs.workload_file)
+        # 料金の目安は、これから計測するLambdaの条件と同じ処理内容の実測だけから求める。
         costs = latest_costs_by_workload(
-            results_dir=self.results_dir, pricing_path=self.pricing_path
+            results_dir=self.results_dir,
+            pricing_path=self.pricing_path,
+            architecture=settings.architecture,
+            memory_mb=settings.memory_mb,
+            region=settings.region,
+            experiments=workload_experiments(self.jobs.workload_file, definitions),
         )
         workloads = [
-            {**workload, "cost_basis": costs.get(workload["name"])}
-            for workload in load_workloads(self.jobs.workload_file)
+            {**workload, "cost_basis": costs.get(workload["name"])} for workload in definitions
         ]
         return {
-            "settings": self.jobs.resolve_settings().public(),
+            "settings": settings.public(),
             "workloads": workloads,
             "limits": {name: {"min": low, "max": high} for name, (low, high) in LIMITS.items()},
             "log_wait_seconds": self.jobs.log_wait_seconds,
@@ -192,7 +203,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             raise RequestRejected(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "JSON形式で送信してください。")
 
     def _read_json(self) -> dict[str, Any]:
-        length = int(self.headers.get("Content-Length") or 0)
+        raw_length = (self.headers.get("Content-Length") or "0").strip()
+        # 本文の長さは0以上の10進整数だけを受け付ける。
+        # 数字以外や負数は、読み込む前に入力誤りとする。
+        if not raw_length.isascii() or not raw_length.isdigit():
+            raise RequestRejected(HTTPStatus.BAD_REQUEST, "Content-Length が正しくありません。")
+        length = int(raw_length)
         # 本文が大きすぎる要求は、読み込む前に拒否する。
         if length > MAX_BODY_BYTES:
             raise RequestRejected(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "入力が大きすぎます。")

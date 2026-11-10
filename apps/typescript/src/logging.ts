@@ -10,6 +10,8 @@ export interface RequestLog {
   route: string;
   profile: string;
   statusCode: number;
+  // 502のときだけ、保存先障害の原因の分類とAWSのエラーコードを残す（本文や例外の全文は出さない）。
+  dependencyCause?: { category: string; errorCode: string | null };
 }
 
 export function logRequestCompleted(log: RequestLog, write = writeLine): void {
@@ -32,6 +34,14 @@ export function logRequestCompleted(log: RequestLog, write = writeLine): void {
       route: log.route,
       profile: log.profile,
       status_code: log.statusCode,
+      ...(log.statusCode === 502 && log.dependencyCause
+        ? {
+            dependency: "dynamodb",
+            dependency_operation: "GetItem",
+            dependency_error_category: log.dependencyCause.category,
+            dependency_error_code: log.dependencyCause.errorCode,
+          }
+        : {}),
     }),
   );
 }

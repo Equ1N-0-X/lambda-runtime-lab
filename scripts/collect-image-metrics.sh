@@ -77,9 +77,16 @@ for implementation, image in images.items():
         "ecr": None,
         "artifacts": {},
     }
-    build_path = output.parent / f"{implementation}-build.json"
-    # 同じ実行IDのビルド記録がある場合だけ結合し、ない場合は未収集としてNoneを維持する。
-    if build_path.is_file():
+    # ビルドの記録は results/builds/<BUILD_ID> にある（BUILD_IDがなければ計測と同じID）。
+    # 以前の版は results/raw/<ID> に保存していたため、互換のためそちらも読む。
+    build_id = os.environ.get("BUILD_ID") or run_id
+    build_paths = [
+        Path(root) / "results" / "builds" / build_id / f"{implementation}-build.json",
+        Path(root) / "results" / "raw" / build_id / f"{implementation}-build.json",
+    ]
+    build_path = next((path for path in build_paths if path.is_file()), None)
+    # ビルド記録がある場合だけ結合し、ない場合は未収集としてNoneを維持する。
+    if build_path is not None:
         item["build"] = json.loads(build_path.read_text(encoding="utf-8"))
     # 言語ごとに成果物の構成が異なるため、実装一覧で定義したパスごとに容量を測る。
     item["artifacts"] = {

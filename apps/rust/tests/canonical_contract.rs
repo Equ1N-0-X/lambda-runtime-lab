@@ -58,6 +58,52 @@ fn fixture_items(documents: &[Value]) -> Vec<Item> {
     items
 }
 
+/// ケースの本文を送信するバイト列へ変換する。生の本文は組み立て直さずにそのまま送る。
+///
+/// raw_body・raw_body_base64は、JSONとして不正な本文や数値の表記をそのまま送るために使う。
+/// raw_body_repeatは、上限を超える大きな本文を、文字列とその繰り返し回数で表す。
+fn request_body(request: &Value) -> Option<Vec<u8>> {
+    if let Some(repeat) = request.get("raw_body_repeat") {
+        let text = repeat["text"]
+            .as_str()
+            .expect("raw_body_repeat.text must be a string");
+        let count = repeat["count"]
+            .as_u64()
+            .expect("raw_body_repeat.count must be an integer");
+        return Some(text.repeat(count as usize).into_bytes());
+    }
+    if let Some(encoded) = request["raw_body_base64"].as_str() {
+        return Some(decode_base64(encoded));
+    }
+    if let Some(raw) = request["raw_body"].as_str() {
+        return Some(raw.as_bytes().to_vec());
+    }
+    let body = &request["body"];
+    (!body.is_null()).then(|| body.to_string().into_bytes())
+}
+
+/// テストケースの短いbase64（パディング付きの標準形式）だけを読む。依存を増やさないための最小実装。
+fn decode_base64(encoded: &str) -> Vec<u8> {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = Vec::new();
+    let mut buffer = 0u32;
+    let mut bits = 0;
+    for byte in encoded.bytes().filter(|byte| *byte != b'=') {
+        let value = ALPHABET
+            .iter()
+            .position(|candidate| *candidate == byte)
+            .expect("raw_body_base64 must be standard base64") as u32;
+        buffer = (buffer << 6) | value;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            output.push((buffer >> bits) as u8);
+            buffer &= (1 << bits) - 1;
+        }
+    }
+    output
+}
+
 #[tokio::test]
 async fn every_canonical_case_matches() {
     let documents = testcase_documents();
@@ -67,6 +113,7 @@ async fn every_canonical_case_matches() {
     };
 
     let mut executed = 0;
+    let mut mismatches = Vec::new();
     for document in &documents {
         // 一部の言語だけで実装済みのケースファイルは、Rustが対象に含まれる場合だけ使う。
         if let Some(implementations) = document["implementations"].as_array()
@@ -84,14 +131,14 @@ async fn every_canonical_case_matches() {
 
             let method = request["method"].as_str().unwrap();
             let path = request["path"].as_str().unwrap();
-            let body = &request["body"];
 
             let mut builder = Request::builder().method(method).uri(path);
-            let http_request = if body.is_null() {
-                builder.body(Body::empty()).unwrap()
-            } else {
-                builder = builder.header(header::CONTENT_TYPE, "application/json");
-                builder.body(Body::from(body.to_string())).unwrap()
+            let http_request = match request_body(request) {
+                None => builder.body(Body::empty()).unwrap(),
+                Some(bytes) => {
+                    builder = builder.header(header::CONTENT_TYPE, "application/json");
+                    builder.body(Body::from(bytes)).unwrap()
+                }
             };
 
             let response = build_router(state.clone())
@@ -105,12 +152,22 @@ async fn every_canonical_case_matches() {
 
             let expected_status =
                 StatusCode::from_u16(expected["status"].as_u64().unwrap() as u16).unwrap();
-            assert_eq!(status, expected_status, "{name}: unexpected status");
-            assert_eq!(actual, expected["body"], "{name}: unexpected body");
+            // 一つの不一致で止めず、全ケースの不一致をまとめて報告する。
+            if status != expected_status || actual != expected["body"] {
+                mismatches.push(format!(
+                    "{name}: expected {expected_status} {}, got {status} {actual}",
+                    expected["body"]
+                ));
+            }
             executed += 1;
         }
     }
 
+    assert!(
+        mismatches.is_empty(),
+        "contract mismatches:\n{}",
+        mismatches.join("\n")
+    );
     assert!(
         executed >= 12,
         "expected the full canonical suite, ran {executed}"

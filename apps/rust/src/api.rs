@@ -8,7 +8,7 @@ use std::sync::Arc;
 use axum::{
     Json, Router,
     body::Bytes,
-    extract::{MatchedPath, Path, Request, State},
+    extract::{DefaultBodyLimit, MatchedPath, Path, Request, State},
     http::HeaderMap,
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -18,7 +18,7 @@ use lambda_http::RequestExt;
 
 use crate::{
     domain,
-    error::{AppError, ErrorDetail},
+    error::{AppError, DependencyCause, ErrorDetail},
     json,
     model::{HealthResponse, ItemResponse},
     repository::ItemRepository,
@@ -45,6 +45,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/aggregate", post(aggregate))
         .fallback(route_not_found)
         .with_state(state)
+        // axumは本文を既定で2MBまでに制限するが、正本は本文の大きさの上限を定めておらず、
+        // 他の言語は契約上有効な本文を大きさで拒否しない。言語間で応答をそろえるため既定の制限を外す
+        // （API GatewayとLambdaの要求サイズの上限は、この処理の前にプラットフォームが適用する）。
+        .layer(DefaultBodyLimit::disable())
         .layer(middleware::from_fn(log_request))
 }
 
@@ -122,6 +126,10 @@ async fn route_not_found() -> AppError {
 }
 
 fn parse_body(body: &[u8]) -> Result<serde_json::Value, AppError> {
+    // 上限を超える本文は、解析に時間とメモリを使う前に413として拒否する。
+    if body.len() > crate::error::MAX_BODY_BYTES {
+        return Err(AppError::payload_too_large());
+    }
     // 構文、UTF-8、重複キーのいずれかが不正なら、本文全体のinvalid_jsonとして扱う。
     json::parse(body).ok_or_else(AppError::invalid_json)
 }
@@ -194,6 +202,10 @@ async fn log_request(request: Request, next: Next) -> Response {
         .unwrap_or("unknown");
 
     let status_code = response.status().as_u16();
+    // 保存先障害の原因は、本文ではなく応答の拡張から読む（本文・例外の全文はログへ出さない）。
+    let cause = response.extensions().get::<DependencyCause>();
+    let dependency_error_category = cause.map(|cause| cause.category);
+    let dependency_error_code = cause.and_then(|cause| cause.error_code.as_deref());
 
     // 502は外部依存先の障害としてWARN、500以上（502以外）は内部障害としてERROR、
     // それ以外は仕様どおり応答できた処理としてINFOに分類する。全分類で相関項目は共通に保つ。
@@ -206,6 +218,10 @@ async fn log_request(request: Request, next: Next) -> Response {
             route,
             profile,
             status_code,
+            dependency = "dynamodb",
+            dependency_operation = "GetItem",
+            dependency_error_category,
+            dependency_error_code,
             "外部データストアへのアクセスに失敗しました"
         ),
         500..=599 => tracing::error!(

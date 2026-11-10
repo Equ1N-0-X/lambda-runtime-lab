@@ -42,6 +42,8 @@ results/raw/*
 !results/raw/.gitkeep
 results/reports/*
 !results/reports/.gitkeep
+results/builds/*
+!results/builds/.gitkeep
 
 # Editors and operating systems
 .DS_Store

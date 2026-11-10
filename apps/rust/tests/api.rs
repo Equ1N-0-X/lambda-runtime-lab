@@ -411,3 +411,67 @@ async fn an_invalid_benchmark_run_id_header_is_rejected() {
         json!([{"field": "headers.X-Benchmark-Run-Id", "reason": "pattern"}])
     );
 }
+
+/// 契約上有効な最大級の変換要求（約2.45MB）を、本文の大きさで拒否しないことを確かめる。
+///
+/// レビューで報告された2,448,013バイトの413を回帰として残す。正本の上限（4,194,304バイト）より
+/// 小さいため、有効な本文として受理する。
+#[tokio::test]
+async fn large_valid_transform_body_is_not_rejected_by_size() {
+    let tag = "t".repeat(64);
+    let records: Vec<Value> = (0..1000)
+        .map(|index| {
+            json!({
+                "id": format!("item-{index:04}"),
+                "name": "n".repeat(256),
+                "tags": vec![tag.clone(); 32],
+                "value": index,
+            })
+        })
+        .collect();
+    let body = json!({ "records": records }).to_string();
+    assert!(body.len() > 2_448_013, "body is {} bytes", body.len());
+
+    let response = app()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/transform")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+/// 正本の上限を1バイトでも超える本文は、解析せずに共通形式の413で拒否する。
+#[tokio::test]
+async fn body_over_the_limit_is_rejected_before_parsing() {
+    // JSONとして不正な本文でも、上限を超えていれば invalid_json ではなく413を返す。
+    let (status, body) = send(raw_post("/compute", vec![b'x'; 4_194_305])).await;
+
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(
+        body,
+        json!({"error": {
+            "code": "PAYLOAD_TOO_LARGE",
+            "message": "request body too large",
+            "details": [{"field": "$", "reason": "max_bytes:4194304"}],
+        }})
+    );
+}
+
+/// 上限ちょうどの本文は大きさでは拒否せず、通常の検証へ進む。
+#[tokio::test]
+async fn body_at_the_limit_is_validated_normally() {
+    let (status, body) = send(raw_post("/compute", vec![b' '; 4_194_304])).await;
+
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        body["error"]["details"],
+        json!([{"field": "$", "reason": "invalid_json"}])
+    );
+}

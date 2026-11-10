@@ -13,7 +13,7 @@ from mangum import Mangum
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from app.domain import compute_checksum, transform_records
-from app.errors import ApplicationError, validation_error
+from app.errors import MAX_BODY_BYTES, ApplicationError, payload_too_large, validation_error
 from app.logging import log_dependency_error, log_internal_error, log_request_completed
 from app.models import (
     AggregateRequest,
@@ -120,12 +120,46 @@ def _reject_duplicate_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
+def _reject_non_json_constant(name: str) -> None:
+    """NaN・Infinityは標準のJSONではないため、Pythonの拡張として受け付けない。"""
+    raise ValueError(f"JSONではない数値です: {name}")
+
+
+def _reject_lone_surrogates(value: object) -> None:
+    """文字列がUnicodeのスカラー値だけでできているか確かめる。
+
+    \\ud800 のような対になっていないサロゲートのエスケープは、Pythonでは文字列に残るが、
+    正本ではUnicodeのスカラー値ではないためJSONの解析失敗として扱う。
+    """
+    # キーと値の文字列を再帰的に確かめ、数値・真偽値・nullは対象外とする。
+    if isinstance(value, str):
+        if any(0xD800 <= ord(character) <= 0xDFFF for character in value):
+            raise ValueError("Unicodeのスカラー値ではない文字が含まれています")
+    elif isinstance(value, dict):
+        for key, member in value.items():
+            _reject_lone_surrogates(key)
+            _reject_lone_surrogates(member)
+    elif isinstance(value, list):
+        for member in value:
+            _reject_lone_surrogates(member)
+
+
 def _parse_body[RequestModel: BaseModel](model: type[RequestModel], body: bytes) -> RequestModel:
     """本文を一度だけ解析し、JSON・構造・境界の失敗を共通エラー形式へ変換する。"""
-    try:
-        payload = json.loads(body.decode("utf-8"), object_pairs_hook=_reject_duplicate_members)
+    # 上限を超える本文は、解析に時間とメモリを使う前に413として拒否する。
+    if len(body) > MAX_BODY_BYTES:
+        raise payload_too_large()
 
-    # UTF-8でない本文、JSON構文不正、または重複キーは、すべて本文全体のJSON不正として返す。
+    try:
+        payload = json.loads(
+            body.decode("utf-8"),
+            object_pairs_hook=_reject_duplicate_members,
+            parse_constant=_reject_non_json_constant,
+        )
+        _reject_lone_surrogates(payload)
+
+    # UTF-8でない本文、JSON構文不正、重複キー、JSONではない数値、対のないサロゲートは、
+    # すべて本文全体のJSON不正として返す。
     except (UnicodeDecodeError, ValueError):
         raise validation_error([ErrorDetail(field="$", reason="invalid_json")]) from None
 
@@ -182,9 +216,9 @@ def create_app(repository: ItemRepository | None = None) -> FastAPI:
         )
 
     @application.exception_handler(RepositoryError)
-    async def repository_error_handler(request: Request, _error: RepositoryError) -> JSONResponse:
-        """DynamoDB障害を502へ変換し、運用調査用のWARNログを残す。"""
-        log_dependency_error(request)
+    async def repository_error_handler(request: Request, error: RepositoryError) -> JSONResponse:
+        """DynamoDB障害を502へ変換し、原因の分類を運用調査用のWARNログに残す。"""
+        log_dependency_error(request, category=error.category, error_code=error.error_code)
         return _error_response(502, "DEPENDENCY_ERROR", "dependency error")
 
     @application.exception_handler(Exception)

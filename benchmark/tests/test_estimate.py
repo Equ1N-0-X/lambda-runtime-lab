@@ -27,6 +27,7 @@ def _record(language, index, *, billed, start_type="warm", init=None):
         "implementation": language,
         "request_index": index,
         "success": True,
+        "response_checked": True,
         "latency_ms": 10.0,
         "duration_ms": billed - 0.5,
         "billed_duration_ms": billed,
@@ -37,18 +38,38 @@ def _record(language, index, *, billed, start_type="warm", init=None):
     }
 
 
-def _write_run(results, run_id, workload, records, started_at="2026-10-01T00:00:00+00:00"):
+def _write_run(
+    results,
+    run_id,
+    workload,
+    records,
+    started_at="2026-10-01T00:00:00+00:00",
+    *,
+    experiment=None,
+    digests=None,
+    region="ap-northeast-1",
+    memory_mb=1024,
+):
     run_dir = results / "raw" / run_id
     run_dir.mkdir(parents=True)
+    digests = digests or {"python": "sha256:python-v1", "rust": "sha256:rust-v1"}
     (run_dir / "metadata.json").write_text(
         json.dumps(
             {
                 "run_id": run_id,
                 "started_at": started_at,
                 "architecture": "arm64",
-                "memory_mb": 1024,
+                "memory_mb": memory_mb,
+                "region": region,
                 "dry_run": False,
-                "workload": {"name": workload, "iterations": 2},
+                "experiment_id": experiment or f"sha256:{workload}",
+                "verification": {
+                    "mode": "aws",
+                    "deployments": {
+                        key: {"image_digest": digest} for key, digest in digests.items()
+                    },
+                },
+                "workload": {"name": workload, "iterations": 2, "client_concurrency": 1},
             }
         ),
         encoding="utf-8",
@@ -188,3 +209,111 @@ def test_only_runs_with_the_selected_conditions_are_used(tmp_path, results):
 def test_rejects_invalid_inputs_with_actionable_messages(tmp_path, results, overrides, message):
     with pytest.raises(EstimateError, match=message):
         _estimate(tmp_path, **overrides)
+
+
+def test_runs_of_the_same_workload_with_another_payload_are_not_mixed(tmp_path, results):
+    # 新しい計測は本文を変えたもので、Rustにはウォームの実測がない。古い本文のRustの値で補わない。
+    _write_run(
+        results,
+        "health-new-payload",
+        "health",
+        [
+            _record("python", 1, billed=12),
+            _record("python", 2, billed=12),
+            _record("rust", 1, billed=30, start_type="cold", init=25),
+        ],
+        started_at="2026-10-02T00:00:00+00:00",
+        experiment="sha256:health-other-body",
+    )
+
+    languages = {item["key"]: item for item in _estimate(tmp_path)["languages"]}
+
+    assert languages["rust"]["estimable"] is False
+    assert languages["rust"]["missing_workloads"] == ["health"]
+    health = next(item for item in languages["python"]["sources"] if item["workload"] == "health")
+    assert health["run_id"] == "health-new-payload"
+
+
+def test_language_whose_basis_comes_from_different_images_is_not_estimated(tmp_path, results):
+    # healthだけを計測し直したとき、Rustは別の版になっていてaggregateの根拠と版が食い違う。
+    _write_run(
+        results,
+        "health-rust-v2",
+        "health",
+        [
+            _record("python", 1, billed=10),
+            _record("python", 2, billed=10),
+            _record("rust", 1, billed=3),
+            _record("rust", 2, billed=3),
+        ],
+        started_at="2026-10-02T00:00:00+00:00",
+        digests={"python": "sha256:python-v1", "rust": "sha256:rust-v2"},
+    )
+
+    languages = {item["key"]: item for item in _estimate(tmp_path)["languages"]}
+
+    assert languages["rust"]["estimable"] is False
+    assert languages["rust"]["reason"] == "inconsistent_versions"
+    assert languages["python"]["estimable"] is True
+
+
+def test_runs_measured_in_another_region_are_not_used(tmp_path):
+    results = tmp_path / "results"
+    for workload in ("health", "aggregate"):
+        _write_run(
+            results,
+            workload,
+            workload,
+            [_record("python", 1, billed=10), _record("rust", 1, billed=2)],
+            region="us-east-1",
+        )
+
+    languages = _estimate(tmp_path)["languages"]
+
+    assert not any(item["estimable"] for item in languages)
+    assert available_conditions(results_dir=results, pricing_path=_pricing(tmp_path)) == []
+
+
+def test_usage_beyond_tier1_is_flagged_as_outside_the_pricing_model(tmp_path, results):
+    pricing = _pricing(tmp_path)
+    pricing.write_text(
+        pricing.read_text(encoding="utf-8") + "tier1_max_gb_seconds_per_month:\n  arm64: 1000\n",
+        encoding="utf-8",
+    )
+
+    # 同じ回数でも、実行時間が長いPythonの方が先に上限（1000 GB秒）を超える。
+    result = build_estimate(
+        mix={"health": 25, "aggregate": 75},
+        monthly_requests=40_000,
+        cold_start_percent=0,
+        architecture="arm64",
+        memory_mb=1024,
+        results_dir=results,
+        pricing_path=pricing,
+        registry_path=REGISTRY,
+    )
+    languages = {item["key"]: item for item in result["languages"]}
+
+    assert languages["python"]["monthly_gb_seconds"] == pytest.approx(40_000 * 0.0325)
+    assert languages["python"]["within_pricing_tier"] is False
+    assert languages["rust"]["within_pricing_tier"] is True
+
+
+def test_conditions_are_ordered_by_run_count_then_stably(tmp_path):
+    results = tmp_path / "results"
+    for index, memory in enumerate((512, 1024, 1024, 256)):
+        _write_run(
+            results,
+            f"run-{index}",
+            "health",
+            [_record("python", 1, billed=1), _record("rust", 1, billed=1)],
+            memory_mb=memory,
+        )
+
+    conditions = available_conditions(results_dir=results, pricing_path=_pricing(tmp_path))
+
+    assert [(item["memory_mb"], item["run_count"]) for item in conditions] == [
+        (1024, 2),
+        (256, 1),
+        (512, 1),
+    ]

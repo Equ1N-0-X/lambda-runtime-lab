@@ -49,7 +49,8 @@ public final class Validation {
   private static final StringSpec TAG =
       new StringSpec(0, 64, text -> PRINTABLE_ASCII_PATTERN.matcher(text).matches());
   private static final StringSpec SEED = new StringSpec(1, 256, text -> true);
-  private static final StringSpec PROFILE = new StringSpec(0, 256, text -> true);
+  // 正本では、対応していないprofileは長さによらずUNSUPPORTED_PROFILEになるため、長さを制限しない。
+  private static final StringSpec PROFILE = new StringSpec(0, Integer.MAX_VALUE, text -> true);
 
   private Validation() {}
 

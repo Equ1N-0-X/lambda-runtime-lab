@@ -75,7 +75,7 @@ pub async fn get_item(repository: &dyn ItemRepository, id: &str) -> Result<Item,
     repository
         .get(id)
         .await
-        .map_err(|_| AppError::dependency())?
+        .map_err(AppError::dependency)?
         .ok_or_else(|| AppError::not_found(id))
 }
 
@@ -89,11 +89,7 @@ pub async fn aggregate_sequential(
 
     for id in ids {
         // 保存先が項目を返した場合は集約候補へ、未登録の場合は後で404を決める候補へ分ける。
-        match repository
-            .get(id)
-            .await
-            .map_err(|_| AppError::dependency())?
-        {
+        match repository.get(id).await.map_err(AppError::dependency)? {
             Some(item) => found.push(item),
             None => missing.push(id.clone()),
         }
@@ -124,7 +120,7 @@ pub async fn aggregate_concurrent(
         let (id, result) = read.map_err(|_| AppError::internal())?;
 
         // 保存先が項目を返した場合は集約候補へ、未登録の場合は404候補へ分ける。
-        match result.map_err(|_| AppError::dependency())? {
+        match result.map_err(AppError::dependency)? {
             Some(item) => found.push(item),
             None => missing.push(id),
         }
