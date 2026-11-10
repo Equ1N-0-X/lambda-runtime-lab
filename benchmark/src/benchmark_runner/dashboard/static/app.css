@@ -264,6 +264,15 @@ button:focus-visible,
   border-left-color: var(--critical);
 }
 
+.notice p {
+  margin: 8px 0 0;
+}
+
+.cell-error {
+  color: var(--critical);
+  font-weight: 600;
+}
+
 /* 詳細 */
 .run-detail {
   display: grid;

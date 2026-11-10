@@ -159,7 +159,19 @@ def test_mixed_run_keeps_success_statistics_as_reference(tmp_path):
     assert rust["cost"]["priced_sample_count"] == 2
     assert report["quality"]["columns"]["duration"]["status"] == "reference"
     assert report["quality"]["comparable"] is False
-    assert "3件中1件" in "\n".join(report["quality"]["issues"])
+    # 失敗が1件でもあれば正式な比較に使わず、指標の理由に失敗した言語を示す。
+    assert "Rust に失敗した要求がある" in report["quality"]["columns"]["duration"]["reasons"][0]
+    # 失敗の件数は専用の欄で示し、run全体の注意点には重ねない。
+    assert report["quality"]["failures"] == [
+        {"implementation": "rust", "label": "Rust", "error_count": 1, "sample_count": 3}
+    ]
+    assert not any("失敗した要求" in issue for issue in report["quality"]["issues"])
+
+
+def test_run_without_failures_has_no_failure_entries(tmp_path):
+    records = [_record(name, index) for name in ("python", "rust") for index in (1, 2)]
+
+    assert _report(tmp_path, records)["quality"]["failures"] == []
 
 
 def test_run_measured_before_body_check_is_reference(tmp_path):
@@ -218,6 +230,10 @@ def test_markdown_report_shows_success_counts_and_metric_status(tmp_path):
     assert "| Implementation | Samples | Succeeded | Failed |" in content
     assert "## Comparability（比較に使えるか）" in content
     assert "reference" in content
+    # 失敗の件数を比較表より前に示し、再計測を促す。
+    failure_line = "> 失敗: 失敗した要求が 1 件あります（Python 2件中1件）"
+    assert failure_line in content
+    assert content.index(failure_line) < content.index("## Comparability")
 
 
 def test_cli_run_fails_when_a_language_has_no_success():

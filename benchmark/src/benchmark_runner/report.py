@@ -237,6 +237,20 @@ def generate_report(
         )
 
     quality = report["quality"]
+    # 失敗が1件でもあれば正式な比較に使えないため、件数を比較表より前に目立たせる。
+    if quality["failures"]:
+        total = sum(failure["error_count"] for failure in quality["failures"])
+        detail = "、".join(
+            f"{failure['label']} {failure['sample_count']}件中{failure['error_count']}件"
+            for failure in quality["failures"]
+        )
+        lines.extend(
+            [
+                "",
+                f"> 失敗: 失敗した要求が {total} 件あります（{detail}）。"
+                "正式な比較には使えない参考値です。再計測してください。",
+            ]
+        )
     lines.extend(
         [
             "",

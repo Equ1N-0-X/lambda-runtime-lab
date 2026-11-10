@@ -57,6 +57,7 @@ def load_run(run_id: str, *, results_dir: Path, pricing_path: Path) -> dict[str,
         "metadata": _public_metadata(report["metadata"]),
         "collected": (run_dir / "merged.jsonl").is_file(),
         "issues": report["quality"]["issues"],
+        "failures": report["quality"]["failures"],
         "comparable": report["quality"]["comparable"],
     }
 
@@ -97,6 +98,7 @@ def _scan_runs(
                         "languages": [],
                         "comparable": False,
                         "issues": [f"結果ファイルを読み込めません: {exc}"],
+                        "failures": [],
                     },
                     None,
                 )
@@ -124,6 +126,8 @@ def _scan_runs(
                     "languages": list(run["labels"].values()),
                     "comparable": run["comparable"],
                     "issues": run["issues"],
+                    # 履歴でも失敗を含む計測を見分けられるよう、言語ごとの失敗件数を返す。
+                    "failures": run["failures"],
                 },
                 run,
             )
