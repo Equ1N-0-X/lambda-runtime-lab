@@ -21,7 +21,8 @@
           <button type="button" id="reload" class="ghost-button">再読み込み</button>
         </div>
         <button type="button" id="open-launch" class="primary-button">＋ 新しく計測する</button>
-        <button type="button" id="open-estimate" class="ghost-button wide-button">作りたいAPIの料金を見込む</button>
+        <button type="button" id="open-estimate" class="ghost-button wide-button" aria-describedby="open-estimate-note">作りたいAPIの月額料金を見込む</button>
+        <p id="open-estimate-note" class="run-list-note">計測済みの結果から、これから作るAPIの月額料金を言語ごとに見積もります。</p>
         <div id="run-list-body" aria-live="polite">
           <p class="muted">読み込み中…</p>
         </div>

@@ -168,7 +168,9 @@ def build_parser() -> argparse.ArgumentParser:
     implementations = subparsers.add_parser(
         "implementations", help="比較対象の実装一覧を表示する（スクリプトから使う）"
     )
-    implementations.add_argument("--format", choices=("keys", "tsv", "json"), default="keys")
+    implementations.add_argument(
+        "--format", choices=("keys", "tsv", "pathspecs", "json"), default="keys"
+    )
 
     ui = subparsers.add_parser("ui", help="計測結果の閲覧と計測開始の画面を手元で起動する")
     ui.add_argument("--port", type=int, default=8765)
@@ -275,11 +277,14 @@ def _report_command(args: argparse.Namespace) -> int:
 def _implementations_command(args: argparse.Namespace) -> int:
     """実装一覧を、シェルで扱いやすい行形式、または全項目のJSONで出力する。"""
     implementations = load_implementations(DEFAULT_REGISTRY)
-    # keysはforループ用に一行一キー、tsvはキーとアプリのディレクトリの組、jsonは全項目を出す。
+    # keysはforループ用に一行一キー、tsvはキーとアプリのディレクトリの組、
+    # pathspecsは全言語のイメージの元になるファイルを一行一つのGit pathspecで、jsonは全項目を出す。
     if args.format == "keys":
         print("\n".join(implementation.key for implementation in implementations))
     elif args.format == "tsv":
         print("\n".join(f"{item.key}\t{item.app_dir}" for item in implementations))
+    elif args.format == "pathspecs":
+        print("\n".join(spec for item in implementations for spec in item.image_source_pathspecs))
     else:
         print(
             json.dumps(
@@ -289,6 +294,7 @@ def _implementations_command(args: argparse.Namespace) -> int:
                         "label": item.label,
                         "app_dir": item.app_dir,
                         "artifact_paths": item.artifact_paths,
+                        "test_paths": list(item.test_paths),
                     }
                     for item in implementations
                 ],

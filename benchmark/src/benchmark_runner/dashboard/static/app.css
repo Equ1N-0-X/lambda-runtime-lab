@@ -885,6 +885,26 @@ code {
   margin-top: 8px;
 }
 
+/* 計測履歴の欄では、上の「新しく計測する」と同じ幅・余白にそろえる。 */
+.run-list > .wide-button {
+  display: block;
+  width: calc(100% - 16px);
+  margin: 0 8px 4px;
+}
+
+.run-list-note {
+  margin: 0 8px 12px;
+  font-size: 12px;
+  color: var(--ink-secondary);
+}
+
+.estimate-howto {
+  margin: 0 0 12px;
+  padding-left: 20px;
+  font-size: 13px;
+  color: var(--ink-secondary);
+}
+
 .estimate-mix td {
   vertical-align: middle;
 }
