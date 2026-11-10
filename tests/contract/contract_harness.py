@@ -270,7 +270,23 @@ def _parse_case(file_path: Path, raw: dict[str, Any]) -> ContractCase:
 
 
 def _raw_request_body(file_path: Path, request: dict[str, Any]) -> bytes | None:
-    """raw_body（UTF-8の文字列）またはraw_body_base64（任意のバイト列）を送信用に変換する。"""
+    """raw_body（UTF-8の文字列）、raw_body_base64（任意のバイト列）、
+    raw_body_repeat（同じ文字列の繰り返し）のいずれかを送信用に変換する。"""
+    # 上限を超える大きな本文はケース定義に書き切れないため、文字列と回数で表す。
+    if "raw_body_repeat" in request:
+        repeat = request["raw_body_repeat"]
+        if (
+            not isinstance(repeat, dict)
+            or not isinstance(repeat.get("text"), str)
+            or not repeat["text"]
+            or not isinstance(repeat.get("count"), int)
+            or repeat["count"] < 1
+        ):
+            raise ValueError(
+                f"{file_path}: raw_body_repeatは、空でない文字列textと"
+                "1以上の整数countで指定してください"
+            )
+        return repeat["text"].encode("utf-8") * repeat["count"]
     if "raw_body_base64" in request:
         try:
             return base64.b64decode(request["raw_body_base64"], validate=True)

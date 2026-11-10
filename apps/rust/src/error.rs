@@ -12,6 +12,10 @@ use serde::Serialize;
 
 use crate::repository::RepositoryError;
 
+/// 本文の上限（バイト）。有効な要求の最大（約2.45MB）に余裕を持たせ、Lambdaの呼び出しデータの
+/// 上限（6MB）より手前で、全言語が同じエラーを返せる大きさにしている。
+pub const MAX_BODY_BYTES: usize = 4_194_304;
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ErrorDetail {
     pub field: String,
@@ -70,6 +74,19 @@ impl AppError {
     /// JSON構文・UTF-8・重複キーの不正を、本文全体の検証エラーとして返す。
     pub fn invalid_json() -> Self {
         Self::validation(vec![ErrorDetail::new("$", "invalid_json")])
+    }
+
+    /// 本文が上限を超える場合の413応答を作る。本文は解析しない。
+    pub fn payload_too_large() -> Self {
+        Self {
+            status: StatusCode::PAYLOAD_TOO_LARGE,
+            content: ErrorContent {
+                code: "PAYLOAD_TOO_LARGE",
+                message: "request body too large",
+                details: vec![ErrorDetail::new("$", format!("max_bytes:{MAX_BODY_BYTES}"))],
+            },
+            dependency_cause: None,
+        }
     }
 
     /// 未対応プロファイルを、利用可能な候補付きの400応答として返す。

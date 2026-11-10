@@ -126,6 +126,10 @@ async fn route_not_found() -> AppError {
 }
 
 fn parse_body(body: &[u8]) -> Result<serde_json::Value, AppError> {
+    // 上限を超える本文は、解析に時間とメモリを使う前に413として拒否する。
+    if body.len() > crate::error::MAX_BODY_BYTES {
+        return Err(AppError::payload_too_large());
+    }
     // 構文、UTF-8、重複キーのいずれかが不正なら、本文全体のinvalid_jsonとして扱う。
     json::parse(body).ok_or_else(AppError::invalid_json)
 }

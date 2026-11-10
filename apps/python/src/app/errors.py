@@ -9,6 +9,9 @@ from collections.abc import Sequence
 from app.models import ErrorDetail
 
 VALIDATION_MESSAGE = "request validation failed"
+# 本文の上限をバイト数で表す。有効な要求の最大である約2.45MBに余裕を持たせつつ、Lambdaの
+# 呼び出しデータの上限6MBより手前で、全言語が同じエラーを返せる大きさにしている。
+MAX_BODY_BYTES = 4_194_304
 
 
 class ApplicationError(Exception):
@@ -41,6 +44,16 @@ def validation_error(details: Sequence[ErrorDetail]) -> ApplicationError:
         code="VALIDATION_ERROR",
         message=VALIDATION_MESSAGE,
         details=canonical_order(details),
+    )
+
+
+def payload_too_large() -> ApplicationError:
+    """本文が上限を超える場合の413エラーを作る。本文は解析しない。"""
+    return ApplicationError(
+        status_code=413,
+        code="PAYLOAD_TOO_LARGE",
+        message="request body too large",
+        details=[ErrorDetail(field="$", reason=f"max_bytes:{MAX_BODY_BYTES}")],
     )
 
 

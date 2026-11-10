@@ -51,6 +51,7 @@ x-canonical-contract:
     message: request validation failed
     field-path: Root is "$"; object fields use dot notation and arrays use zero-based brackets.
     precedence:
+      - If the request body is larger than 4194304 bytes, return PAYLOAD_TOO_LARGE without decoding it.
       - Decode UTF-8 and JSON. On failure return only field "$", reason "invalid_json".
       - Collect all structural and boundary violations, then sort details canonically.
       - If structurally valid, check duplicate IDs and compute work limit, then sort details canonically.
@@ -74,6 +75,15 @@ x-canonical-contract:
         field: headers.X-Benchmark-Run-Id
         reason: pattern
   errors:
+    payload-too-large:
+      status: 413
+      code: PAYLOAD_TOO_LARGE
+      message: request body too large
+      max-bytes: 4194304
+      applies-to: Operations with a request body. The size is the decoded body in bytes, not including headers.
+      detail-field: $
+      reason: "max_bytes:4194304"
+      note: Requests that exceed the AWS Lambda invocation payload limit (6 MB including the event envelope) are rejected by AWS before the application runs and do not use this format.
     unsupported-profile:
       status: 400
       code: UNSUPPORTED_PROFILE
@@ -136,6 +146,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/TransformResponse"
+        "413":
+          $ref: "#/components/responses/PayloadTooLargeError"
         "422":
           $ref: "#/components/responses/ValidationError"
         "500":
@@ -161,6 +173,8 @@ paths:
                 $ref: "#/components/schemas/ComputeResponse"
         "400":
           $ref: "#/components/responses/UnsupportedProfileError"
+        "413":
+          $ref: "#/components/responses/PayloadTooLargeError"
         "422":
           $ref: "#/components/responses/ValidationError"
         "500":
@@ -210,6 +224,8 @@ paths:
           $ref: "#/components/responses/UnsupportedProfileError"
         "404":
           $ref: "#/components/responses/NotFoundError"
+        "413":
+          $ref: "#/components/responses/PayloadTooLargeError"
         "422":
           $ref: "#/components/responses/ValidationError"
         "500":
@@ -422,6 +438,7 @@ components:
           type: string
           enum:
             - VALIDATION_ERROR
+            - PAYLOAD_TOO_LARGE
             - NOT_FOUND
             - UNSUPPORTED_PROFILE
             - INTERNAL_ERROR
@@ -441,6 +458,23 @@ components:
         error:
           $ref: "#/components/schemas/ErrorBody"
   responses:
+    PayloadTooLargeError:
+      description: The request body is larger than 4194304 bytes.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/ErrorResponse"
+              - properties:
+                  error:
+                    properties:
+                      code:
+                        const: PAYLOAD_TOO_LARGE
+                      message:
+                        const: request body too large
+                      details:
+                        minItems: 1
+                        maxItems: 1
     ValidationError:
       description: Request syntax, shape, type, or boundary validation failed.
       content:

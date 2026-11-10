@@ -18,12 +18,14 @@ interface CaseDocument {
   cases: {
     name: string;
     // raw_body・raw_body_base64は、JSONとして不正な本文や数値の表記をそのまま送るために使う。
+    // raw_body_repeatは、上限を超える大きな本文を、文字列とその繰り返し回数で表す。
     request: {
       method: string;
       path: string;
       body?: unknown;
       raw_body?: string;
       raw_body_base64?: string;
+      raw_body_repeat?: { text: string; count: number };
     };
     expected: { status: number; body: unknown };
   }[];
@@ -38,6 +40,8 @@ const documents: CaseDocument[] = readdirSync(TESTCASES)
 
 // ケースの本文を送信する形へ変換する。生の本文は組み立て直さずにそのまま送る。
 function requestBody(request: CaseDocument["cases"][number]["request"]): BodyInit | undefined {
+  if (request.raw_body_repeat !== undefined)
+    return request.raw_body_repeat.text.repeat(request.raw_body_repeat.count);
   if (request.raw_body_base64 !== undefined) return Buffer.from(request.raw_body_base64, "base64");
   if (request.raw_body !== undefined) return request.raw_body;
   return request.body === undefined ? undefined : JSON.stringify(request.body);

@@ -60,6 +60,10 @@ public final class StrictJson {
 
   /** 構文不正・UTF-8不正・重複キー・対のないサロゲートのいずれかなら invalid_json の検証エラーを投げる。 */
   public static JsonNode parse(byte[] body) {
+    // 上限を超える本文は、解析に時間とメモリを使う前に413として拒否する。
+    if (body.length > AppError.MAX_BODY_BYTES) {
+      throw AppError.payloadTooLarge();
+    }
     try {
       JsonNode value = MAPPER.readTree(body);
       // 空の本文は値を一つも含まないため、構文不正として扱う。

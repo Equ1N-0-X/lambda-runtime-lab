@@ -257,3 +257,18 @@ def test_invalid_utf8_body_is_base64_encoded_in_lambda_event(tmp_path: Path) -> 
     # API Gatewayと同じく、UTF-8として読めない本文はbase64で渡す。
     assert event["isBase64Encoded"] is True
     assert event["body"] == "/w=="
+
+
+def test_repeated_raw_body_builds_a_large_body(tmp_path: Path) -> None:
+    case = {
+        "name": "large",
+        "request": {
+            "method": "POST",
+            "path": "/compute",
+            "raw_body_repeat": {"text": "x", "count": 5},
+        },
+        "expected": {"status": 413, "body": {}},
+    }
+    (tmp_path / "raw.json").write_text(json.dumps({"cases": [case]}))
+
+    assert load_cases(tmp_path)[0].request_bytes() == b"xxxxx"
