@@ -64,11 +64,15 @@ set +a
 
 # 接続先の上書き（<KEY>_API_URL・<KEY>_API_ENDPOINT）は、外から意図して渡すこともあるため消さない。
 # 読み込んだファイルにない上書きが残っていれば、前の環境の接続先を呼ぶおそれがあるため警告する。
+# 対象は実装一覧（spec/implementations.yaml）の言語の変数だけにする。GitHub Actions の
+# GITHUB_API_URL のような、同じ形の名前で別の用途の変数を誤って警告しない。
 # macOSのsedは拡張の選択（\|）を扱えないため、grep -E で変数名だけを取り出す。
-for _env_var in $(env | grep -oE '^[A-Z][A-Z0-9]*_API_(URL|ENDPOINT)=' | tr -d '='); do
+_env_keys="$(grep -E '^  [a-z][a-z0-9_]*:$' "${_env_export_root}/spec/implementations.yaml" \
+  | tr -d ' :' | tr '[:lower:]' '[:upper:]' | paste -sd '|' -)"
+for _env_var in $(env | grep -oE "^(${_env_keys})_API_(URL|ENDPOINT)=" | tr -d '='); do
   if ! grep -Eq "^[[:space:]]*(export[[:space:]]+)?${_env_var}=" "${_env_file}"; then
     echo "警告: ${_env_var} が ${_env_name} 以外から設定されたまま残っています。前の環境の接続先なら unset ${_env_var} を実行してください。" >&2
   fi
 done
 
-unset _env_export_root _env_name _env_example _env_file _env_var
+unset _env_export_root _env_name _env_example _env_file _env_var _env_keys

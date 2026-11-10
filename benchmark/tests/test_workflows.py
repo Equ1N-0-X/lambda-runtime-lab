@@ -42,6 +42,7 @@ def test_ci_runs_once_per_pull_request_update_and_keeps_main_checks():
 
 
 def test_locked_mode_fails_without_rewriting_a_stale_lock(tmp_path):
+    import os
     import shutil
     import subprocess
 
@@ -52,7 +53,11 @@ def test_locked_mode_fails_without_rewriting_a_stale_lock(tmp_path):
         "dependencies = []\n",
         encoding="utf-8",
     )
-    subprocess.run([uv, "lock", "--offline", "--project", str(tmp_path)], check=True)
+    # CIは全体で UV_LOCKED=1 を設定しているため、検証用のlockを作る間だけ外す。
+    environment = {key: value for key, value in os.environ.items() if key != "UV_LOCKED"}
+    subprocess.run(
+        [uv, "lock", "--offline", "--project", str(tmp_path)], check=True, env=environment
+    )
     lock = (tmp_path / "uv.lock").read_text(encoding="utf-8")
     # 依存の定義だけを変え、lock を更新しないまま検証する。
     (tmp_path / "pyproject.toml").write_text(
@@ -64,6 +69,7 @@ def test_locked_mode_fails_without_rewriting_a_stale_lock(tmp_path):
         [uv, "lock", "--check", "--offline", "--project", str(tmp_path)],
         capture_output=True,
         text=True,
+        env=environment,
     )
 
     assert result.returncode != 0
