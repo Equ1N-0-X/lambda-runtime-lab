@@ -103,8 +103,7 @@ lambda-lambdalith-benchmark/
 │
 └── .github/
     └── workflows/
-        ├── ci.yml
-        └── benchmark.yml
+        └── ci.yml
 ```
 
 構成は責務分離を目的とし、将来使うかもしれないという理由だけの階層追加は行わない。
@@ -943,11 +942,9 @@ Terraform
   - terraform validate
 ```
 
-### benchmark.yml
+### AWSでの計測
 
-Manual triggerのみ。
-
-AWSへのdeployやbenchmarkはSecret/Role設定がある場合だけ実行する。
+CIでは行わない。AWSの環境を作る計測は手元から `make benchmark-matrix` で行う（手動のAWS計測workflowは、Terraform stateを実行の外に残せないため廃止した）。
 
 ---
 
