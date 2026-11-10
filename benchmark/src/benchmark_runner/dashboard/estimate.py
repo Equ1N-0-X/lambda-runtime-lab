@@ -10,6 +10,8 @@
     月額料金 = 1リクエストあたり料金 × 月間リクエスト数
 コールド時の実測がないワークロードは、ウォーム時の料金に、その言語の初期化時間
 （中央値）の分の実行時間料金を足して近似する（Lambdaは初期化時間も課金対象のため）。
+その言語に初期化時間の実測が一つもなければ近似できないため、コールドスタート分を含めず、
+含めていないことを結果に示す（見込みは実際より低くなる）。
 """
 
 from __future__ import annotations
@@ -255,16 +257,16 @@ def _language_estimate(
     per_request = 0.0
     warm_duration = 0.0
     approximated = []
+    cold_excluded = []
     for workload, share in shares.items():
         item = basis[workload]
         cold_cost = item.cold_cost
-        # コールドの実測がなければ、ウォームの料金に初期化時間分の実行時間料金を足して近似する。
-        if cold_cost is None:
-            init_ms = language_init or 0.0
+        # コールドの実測があればそれを使う。なければ初期化時間で近似し、それも無ければ含めない。
+        if cold_cost is None and language_init is not None:
             cold_cost = (
                 item.warm_cost
                 + calculate_cost(
-                    billed_duration_ms=init_ms,
+                    billed_duration_ms=language_init,
                     memory_size_mb=memory_mb,
                     architecture=architecture,
                     pricing=pricing,
@@ -272,6 +274,10 @@ def _language_estimate(
             )
             if cold_ratio > 0:
                 approximated.append(workload)
+        elif cold_cost is None:
+            cold_cost = item.warm_cost
+            if cold_ratio > 0:
+                cold_excluded.append(workload)
         per_request += share * ((1 - cold_ratio) * item.warm_cost + cold_ratio * cold_cost)
         warm_duration += share * item.warm_duration_ms
 
@@ -285,5 +291,6 @@ def _language_estimate(
         "warm_duration_ms": warm_duration,
         "init_duration_ms": language_init,
         "approximated_cold_workloads": approximated,
+        "cold_excluded_workloads": cold_excluded,
         "sources": sources,
     }

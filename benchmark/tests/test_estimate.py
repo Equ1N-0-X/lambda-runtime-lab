@@ -136,7 +136,27 @@ def test_cold_start_share_uses_measured_cold_costs_or_init_approximation(tmp_pat
     )
     assert python["monthly_cost"] == pytest.approx(expected * 1_000_000)
     assert python["approximated_cold_workloads"] == ["aggregate"]
+    assert python["cold_excluded_workloads"] == []
     assert python["init_duration_ms"] == 100
+
+
+def test_language_without_any_init_measurement_reports_cold_start_as_excluded(tmp_path):
+    results = tmp_path / "results"
+    _write_run(
+        results,
+        "health",
+        "health",
+        [_record("python", 1, billed=10), _record("rust", 1, billed=2)],
+    )
+
+    estimate = _estimate(tmp_path, mix={"health": 100}, cold_start_percent=10)
+    python = {item["key"]: item for item in estimate["languages"]}["python"]
+
+    # 初期化時間の実測がなければ近似できないため、近似したと示さず、含めていないことを示す。
+    assert python["monthly_cost"] == pytest.approx(_cost(10) * 1_000_000)
+    assert python["approximated_cold_workloads"] == []
+    assert python["cold_excluded_workloads"] == ["health"]
+    assert python["init_duration_ms"] is None
 
 
 def test_language_without_measurements_for_a_workload_is_not_estimated(tmp_path, results):

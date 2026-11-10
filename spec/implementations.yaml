@@ -8,11 +8,15 @@
 # app_dir: Dockerfileを含むアプリのディレクトリ（リポジトリ直下からの相対パス）。
 # artifact_paths: イメージ指標として容量を測るコンテナ内のパス（指標名: パス）。言語ごとに
 #                 成果物の構成が異なるため、ここで定義する（scripts/collect-image-metrics.sh）。
+# test_paths: app_dir のうち、イメージに入らないテストのパス（app_dir からの相対パス）。
+#             デプロイ済みの版との照合と、公開時の未コミット変更の判定で、変更とみなさない。
+#             テストだけを直しても、再デプロイを求めずに計測できるようにするため。
 version: 1
 implementations:
   python:
     label: Python
     app_dir: apps/python
+    test_paths: [tests]
     artifact_paths:
       runtime_size_bytes: /var/lang
       site_packages_size_bytes: /opt/python
@@ -20,11 +24,13 @@ implementations:
   rust:
     label: Rust
     app_dir: apps/rust
+    test_paths: [tests]
     artifact_paths:
       release_binary_size_bytes: /var/runtime/bootstrap
   typescript:
     label: TypeScript
     app_dir: apps/typescript
+    test_paths: [tests]
     artifact_paths:
       runtime_size_bytes: /var/lang
       runtime_interface_size_bytes: /var/runtime
@@ -32,6 +38,7 @@ implementations:
   java:
     label: Java
     app_dir: apps/java
+    test_paths: [src/test]
     artifact_paths:
       runtime_size_bytes: /var/lang
       runtime_interface_size_bytes: /var/runtime

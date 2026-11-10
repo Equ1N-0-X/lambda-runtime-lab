@@ -228,7 +228,7 @@ class SettingsResolver:
                 problem = self.check_revision(
                     label=item.label,
                     function_name=function_names[item.key],
-                    app_dir=item.app_dir,
+                    source_pathspecs=item.image_source_pathspecs,
                     region=region,
                 )
                 if problem:

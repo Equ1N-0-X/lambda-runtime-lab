@@ -798,16 +798,18 @@ function validateCount(value, limit) {
   return null;
 }
 
-function costEstimate(workload, iterations, warmup, targets) {
+// この計測そのものにかかる Lambda 料金の見込み。作りたいAPIの月額の見込みとは別のもの。
+function costEstimate(workload, iterations, warmup, targets, implementations) {
   const basis = workload.cost_basis;
   const missing = targets.filter((key) => !isNumber(basis?.cost_per_request?.[key]));
-  // 選んだ言語のいずれかに同じワークロードの実測がなければ、見込みを出さない。
+  // 選んだ言語のいずれかに同じワークロードの実測がなければ、一部だけの合計で過小に見せないよう算出しない。
   if (!basis || missing.length > 0) {
-    return "料金の見込み: 選んだ言語の一部に、同じワークロードの比較に使える実測がないため、算出できません。";
+    const labels = implementations.filter(({ key }) => missing.includes(key)).map(({ label }) => label);
+    return `この計測にかかる料金: ${labels.join("・")} はこのワークロードを計測したことがないため、見込みを出せません（計測は開始できます）。`;
   }
   const perImplementation = iterations + warmup;
   const total = targets.reduce((sum, key) => sum + basis.cost_per_request[key] * perImplementation, 0);
-  return `Lambda 料金の見込み: 約 ${formatCost(total)}（${formatDate(basis.started_at)} の同じワークロードの実測から算出。API Gateway・DynamoDB・CloudWatch は含みません）`;
+  return `この計測にかかる Lambda 料金: 約 ${formatCost(total)}（${formatDate(basis.started_at)} の同じワークロードの実測から算出。API Gateway・DynamoDB・CloudWatch は含みません）`;
 }
 
 function renderLaunchForm(options) {
@@ -913,7 +915,7 @@ function renderLaunchForm(options) {
     const languages = settings.implementations.filter(({ key }) => targets.includes(key));
     summary.textContent = `${languages.map(({ label }) => label).join("・")} にそれぞれ ${perImplementation.toLocaleString("ja-JP")} 回（ウォームアップ ${warmup.toLocaleString("ja-JP")} 回を含む）、合計 ${(perImplementation * languages.length).toLocaleString("ja-JP")} リクエストを送ります。`;
     const workload = workloads.find((item) => item.name === workloadSelect.value);
-    estimate.textContent = costEstimate(workload, iterations, warmup, targets);
+    estimate.textContent = costEstimate(workload, iterations, warmup, targets, settings.implementations);
   };
 
   workloadSelect.addEventListener("change", applyDefaults);
@@ -1218,7 +1220,14 @@ function renderEstimateResult(result) {
   const approximated = estimable.filter((language) => language.approximated_cold_workloads.length);
   if (approximated.length) {
     notes.push(
-      "コールドスタートの実測がないワークロードは、その言語の初期化時間（中央値）の分の料金を足して近似しています。",
+      `${approximated.map(({ label }) => label).join("・")}: コールドスタートの実測がないワークロードは、その言語の初期化時間（中央値）の分の料金を足して近似しています。`,
+    );
+  }
+  // 初期化時間の実測が一つもない言語は近似できないため、コールドスタート分を含めていないことを示す。
+  const excluded = estimable.filter((language) => language.cold_excluded_workloads?.length);
+  if (excluded.length) {
+    notes.push(
+      `${excluded.map(({ label }) => label).join("・")}: コールドスタートの実測がないため、コールドスタート分の料金を含めていません（実際はこれより高くなります）。コールドスタートを含めるには、しばらく呼ばれていない状態から、ウォームアップを 0 回にして計測してください（ウォームアップの結果は記録しないため）。`,
     );
   }
   const sources = estimable.map((language) =>
@@ -1317,10 +1326,11 @@ function renderEstimateForm(options) {
 
   return el("div", { class: "card" }, [
     el("div", { class: "section-head" }, el("h3", { text: "作りたいAPIの処理の構成" })),
-    el("p", {
-      class: "section-note",
-      text: "作りたいAPIのリクエストが、どの処理にどれくらいの割合で近いかを入力してください。計測済みの結果を割合で重み付けして見込みます。",
-    }),
+    el("ol", { class: "estimate-howto" }, [
+      el("li", { text: "作りたいAPIのリクエストが、下のどの処理に近いかを割合で入れます（合計100%）。例: 1件を読んで返すAPIが7割、5件を集計するAPIが3割なら、items 70%・aggregate-concurrent 30%。" }),
+      el("li", { text: "月間リクエスト数と、コールドスタートの割合を入れます。" }),
+      el("li", { text: "下の表に、言語ごとの月額料金が安い順に出ます。入力を変えるとすぐに計算し直します。" }),
+    ]),
     el("div", { class: "table-scroll" }, el("table", { class: "estimate-mix" }, el("tbody", {}, shareRows))),
     total,
     el("div", { class: "field-grid" }, [
@@ -1357,8 +1367,8 @@ async function openEstimate() {
   renderJobBanner();
   hideTooltip();
   const head = el("div", { class: "detail-head" }, [
-    el("h2", { text: "作りたいAPIの料金を見込む" }),
-    el("p", { text: "計測済みのワークロードを組み合わせて、言語ごとの月額料金と処理時間を見込みます。実績ではなく見込みです。" }),
+    el("h2", { text: "作りたいAPIの月額料金を見込む" }),
+    el("p", { text: "これから作るAPIを、計測済みの処理（ワークロード）の組み合わせとして表し、言語ごとの月額の Lambda 料金と処理時間を見込みます。実績ではなく見込みです。" }),
   ]);
   detail.replaceChildren(head, el("p", { class: "muted", text: "読み込み中…" }));
   try {

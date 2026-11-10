@@ -26,13 +26,19 @@ fi
 KEYS="$(implementation_keys)"
 
 source_revision_suffix() {
-  # 公開するコードのコミットをタグに残し、アプリに未コミットの変更があればその旨も残す。
-  local revision app_dirs=()
+  # 公開するコードのコミットをタグに残し、イメージの元になるファイルに未コミットの変更があれば
+  # その旨も残す。イメージに入らないテストの変更は、デプロイ済みの版との照合と同じく数えない。
+  local revision pathspec pathspecs=()
   revision="$(git -C "${ROOT}" rev-parse --short=12 HEAD)"
-  for implementation in ${KEYS}; do
-    app_dirs+=("$(implementation_app_dir "${implementation}")")
-  done
-  if [[ -n "$(git -C "${ROOT}" status --porcelain -- "${app_dirs[@]}")" ]]; then
+  while IFS= read -r pathspec; do
+    [[ -n "${pathspec}" ]] && pathspecs+=("${pathspec}")
+  done < <(implementation_image_pathspecs)
+  # 実装一覧を読めなければ判定範囲がリポジトリ全体に広がるため、公開を止める。
+  if [[ ${#pathspecs[@]} -eq 0 ]]; then
+    echo "実装一覧（spec/implementations.yaml）を読めません" >&2
+    exit 2
+  fi
+  if [[ -n "$(git -C "${ROOT}" status --porcelain -- "${pathspecs[@]}")" ]]; then
     printf -- '-g%s-dirty' "${revision}"
   else
     printf -- '-g%s' "${revision}"

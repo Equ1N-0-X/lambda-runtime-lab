@@ -1,8 +1,15 @@
 """デプロイ済みイメージのタグから版を読み取り、手元のアプリとのずれを検出できることを検証する。"""
 
+import subprocess
+
 from botocore.exceptions import ClientError
 
-from benchmark_runner.deployment import DeployedImage, check_deployed_revision
+from benchmark_runner.deployment import (
+    DeployedImage,
+    check_deployed_revision,
+    sources_changed_since,
+)
+from benchmark_runner.implementations import Implementation
 
 
 def _check(tags, changed=False, read_error=None):
@@ -14,10 +21,10 @@ def _check(tags, changed=False, read_error=None):
     return check_deployed_revision(
         label="Rust",
         function_name="lab-rust",
-        app_dir="apps/rust",
+        source_pathspecs=("apps/rust",),
         region="ap-northeast-1",
         read_image=read_image,
-        changed_since=lambda revision, app_dir: changed,
+        changed_since=lambda revision, pathspecs: changed,
     )
 
 
@@ -50,3 +57,53 @@ def test_unreadable_deployment_is_reported_with_cause():
     )
 
     assert "確認できませんでした" in _check([], read_error=error)
+
+
+def _git(root, *arguments):
+    return subprocess.run(
+        ["git", "-C", str(root), *arguments], capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+
+def _commit_all(root, message):
+    _git(root, "add", "-A")
+    _git(
+        root, "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-qm", message
+    )
+    return _git(root, "rev-parse", "HEAD")
+
+
+def _repository_with_app(tmp_path):
+    """イメージの元（src）とイメージに入らないテスト（tests）を持つアプリのリポジトリを作る。"""
+    _git(tmp_path, "init", "-q")
+    (tmp_path / "apps/lab/src").mkdir(parents=True)
+    (tmp_path / "apps/lab/tests").mkdir(parents=True)
+    (tmp_path / "apps/lab/src/app.txt").write_text("v1")
+    (tmp_path / "apps/lab/tests/test.txt").write_text("v1")
+    return _commit_all(tmp_path, "deployed")
+
+
+LAB = Implementation(key="lab", label="Lab", app_dir="apps/lab", test_paths=("tests",))
+
+
+def test_test_only_change_after_deploy_is_not_a_revision_gap(tmp_path):
+    deployed = _repository_with_app(tmp_path)
+    (tmp_path / "apps/lab/tests/test.txt").write_text("v2")
+    _commit_all(tmp_path, "fix test")
+
+    # テストはイメージに入らないため、再デプロイを求めずに計測できる。
+    assert sources_changed_since(deployed, LAB.image_source_pathspecs, root=tmp_path) is False
+
+
+def test_source_change_after_deploy_is_a_revision_gap(tmp_path):
+    deployed = _repository_with_app(tmp_path)
+    (tmp_path / "apps/lab/src/app.txt").write_text("v2")
+    _commit_all(tmp_path, "change app")
+
+    assert sources_changed_since(deployed, LAB.image_source_pathspecs, root=tmp_path) is True
+
+
+def test_unknown_revision_cannot_be_compared(tmp_path):
+    _repository_with_app(tmp_path)
+
+    assert sources_changed_since("0123456789ab", LAB.image_source_pathspecs, root=tmp_path) is None
