@@ -36,7 +36,21 @@ def test_bootstrap_ecr_dry_run_targets_only_ecr_resources():
     assert "terraform" in output
     assert "-target=aws_ecr_repository.runtime" in output
     assert "-target=aws_ecr_repository_policy.lambda_pull" in output
+    assert "-target=aws_ecr_lifecycle_policy.runtime" in output
     assert "aws_lambda_function" not in output
+
+
+def test_lifecycle_rule_matches_the_tags_that_publish_images_creates():
+    import re
+
+    publish = (ROOT / "scripts/publish-images.sh").read_text(encoding="utf-8")
+    ecr = (ROOT / "infrastructure/terraform/ecr.tf").read_text(encoding="utf-8")
+    prefix = re.search(r'TAG="\$\{TAG:-([A-Za-z0-9_.-]+?)\$\(date', publish).group(1)
+
+    # 自動削除の対象は、make publish-images が付ける既定のタグだけにする。
+    # 名前がずれると古いイメージが消えない、または手で付けたタグまで消える。
+    assert prefix == "benchmark-"
+    assert f'tagPrefixList = ["{prefix}"]' in ecr
 
 
 def test_publish_images_dry_run_builds_pushes_and_prints_digest_uris():

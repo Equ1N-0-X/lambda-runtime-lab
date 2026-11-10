@@ -19,7 +19,7 @@ flowchart LR
 
 | 操作 | 変わるもの | AWS書き込み |
 | --- | --- | --- |
-| `make bootstrap-ecr` | ECRリポジトリと取得ポリシー | あり |
+| `make bootstrap-ecr` | ECRリポジトリと取得ポリシー・自動削除ルール | あり |
 | `make publish-images` | ECRイメージ | あり |
 | `make deploy` | Lambdaを指定digestへ更新、必要なら周辺リソースも更新 | あり |
 | `terraform plan` | なし。変更予定を表示 | なし |
@@ -112,6 +112,19 @@ make deploy
 | 構成差分なし | `terraform plan` が `No changes` |
 
 ECRの「最新タグ」とLambdaの参照digestは別物です。pushだけではLambdaは更新されません。
+
+### 古いイメージの自動削除
+
+ECRには自動削除ルール（ライフサイクルポリシー）を設定しています。`make bootstrap-ecr` と `make deploy` で反映されます。
+
+| 対象 | 残す・消す |
+| --- | --- |
+| `make publish-images` が付けた `benchmark-` で始まるタグのイメージ | 言語ごとに新しい3つを残し、それより古いものを消す |
+| タグのないイメージ | 登録から1日で消す |
+| 自分で付けた別の名前のタグ（`PUBLISH_TAG`） | 消さない |
+
+- 削除はECRが行い、条件を満たしてから24時間以内に実行されます。
+- **注意**: Lambdaが使用中のイメージが消えると、その関数は `Failed` になり、呼び出しがすべて失敗します。`make publish-images` を3回より多く続けて `make deploy` をしないと、デプロイ中の版が削除対象になります。登録したら続けてデプロイしてください。
 
 ## 言語を追加する
 
