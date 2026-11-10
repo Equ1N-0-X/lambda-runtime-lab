@@ -1,10 +1,14 @@
 """YAMLワークロードの正常読込、上書き、外部payload、入力不正を検証する。"""
 
 import json
+from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
-from benchmark_runner.workloads import WorkloadError, load_workload
+from benchmark_runner.workloads import Workload, WorkloadError, load_workload
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_loads_inline_and_file_payloads(tmp_path, monkeypatch):
@@ -96,3 +100,36 @@ def test_rejects_empty_supported_language_list(tmp_path):
 
     with pytest.raises(WorkloadError, match="implementations"):
         load_workload(config, "x")
+
+
+def test_cold_start_workload_requires_no_warmup_and_single_concurrency(tmp_path):
+    from benchmark_runner.workloads import check_cold_start
+
+    path = tmp_path / "workloads.yaml"
+    path.write_text(
+        "version: 1\nworkloads:\n  cold:\n    mode: cold-start\n    method: GET\n"
+        "    path: /health\n    warmup: 0\n    iterations: 20\n    client_concurrency: 1\n",
+        encoding="utf-8",
+    )
+    workload = load_workload(path, "cold")
+    assert workload.cold_start is True
+
+    # ウォームアップや同時要求があると、計測前に新しい実行環境が使われてしまう。
+    for overrides in ({"warmup": 1}, {"client_concurrency": 2}, {"iterations": 101}):
+        with pytest.raises(WorkloadError):
+            check_cold_start(replace(workload, **overrides))
+
+
+def test_cold_start_is_a_separate_experiment_from_the_same_request():
+    from benchmark_runner.workloads import experiment_id
+
+    standard = Workload("health", "GET", "/health", 0, 20, 1)
+
+    assert experiment_id(standard) != experiment_id(replace(standard, cold_start=True))
+
+
+def test_repository_defines_a_cold_start_workload():
+    workload = load_workload(ROOT / "spec/workloads.yaml", "cold-start")
+
+    assert workload.cold_start is True
+    assert workload.iterations == 20

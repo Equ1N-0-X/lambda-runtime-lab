@@ -9,7 +9,8 @@
 - unusable: 値がない、または比べる前提を満たさない。
 
 失敗した要求が1件でもあるrunは正式な比較に使わず、成功分を参考値として示す。
-コールドスタートの正式な比較に必要な件数・集め方は未決定のため、その指標は参考値として扱う。
+コールドスタートは、毎回新しい実行環境を起こす専用の計測（cold-start）で各言語20件以上そろった
+場合だけ比較の根拠にし、通常の計測で偶然起きたものは参考値として扱う。
 """
 
 from __future__ import annotations
@@ -29,8 +30,11 @@ COLUMNS = ("cost", "compute_cost", "duration", "init", "latency", "memory")
 LOG_COLUMNS = ("cost", "compute_cost", "duration", "init", "memory")
 COST_COLUMNS = ("cost", "compute_cost")
 # runの性能を比較可能かを決める指標。料金は料金表の問題でも欠けるため、性能の可否とは分ける。
-# コールドスタートは件数の基準が未決定のため、指標ごとの状態だけで示す。
+# コールドスタートは専用の計測でだけ比べるため、runの比較可否には含めず指標ごとの状態だけで示す。
 PERFORMANCE_COLUMNS = ("duration", "latency", "memory")
+# コールドスタートを正式に比べるために必要な、言語ごとのコールドスタートの件数。
+# P95 を示せる最小限の件数として決めた（D03）。
+REQUIRED_COLD_STARTS = 20
 # run全体の注意点として示す理由の出どころ。コールドスタートの理由はその指標の近くにだけ示す。
 ISSUE_COLUMNS = tuple(column for column in COLUMNS if column != "init")
 
@@ -199,7 +203,25 @@ def assess_run(report: dict[str, Any], *, run_dir: Path) -> dict[str, Any]:
                 f"得られていません。{unlinked_cause(run_dir)}",
             )
 
-    _assess_cold(columns["init"], implementations, labels, collected=collected)
+    cold_run = bool((metadata.get("workload") or {}).get("cold_start"))
+    _assess_cold(columns["init"], implementations, labels, collected=collected, cold_run=cold_run)
+    # 毎回コールドスタートさせたはずの要求が既存の実行環境で処理されていれば、
+    # 応答時間などにもウォームの値が混ざるため、すべての指標を参考値にする。
+    if cold_run and collected:
+        not_cold = {
+            name: values["success_count"] - values["cold_count"]
+            for name, values in implementations.items()
+            if values["success_count"] > values["cold_count"]
+        }
+        if not_cold:
+            detail = "、".join(
+                f"{labels.get(name, name)} {count}件" for name, count in not_cold.items()
+            )
+            lower(
+                COLUMNS,
+                REFERENCE,
+                f"コールドスタートにならなかった要求があります（{detail}）。数値は参考値です。",
+            )
     # 料金は計測中に偶発的に起きたコールドスタートも含めた平均のため、その件数を併記する。
     if collected and any(values["cold_count"] for values in implementations.values()):
         note = (
@@ -225,7 +247,12 @@ def assess_run(report: dict[str, Any], *, run_dir: Path) -> dict[str, Any]:
 
 
 def _assess_cold(
-    column: _Column, implementations: dict[str, Any], labels: dict[str, str], *, collected: bool
+    column: _Column,
+    implementations: dict[str, Any],
+    labels: dict[str, str],
+    *,
+    collected: bool,
+    cold_run: bool,
 ) -> None:
     """コールドスタートの指標を、観測件数と正式な比較の基準の有無から判定する。"""
     # ログがなければ起動の種類を判別できないため、収集の問題として別に扱われている。
@@ -242,9 +269,25 @@ def _assess_cold(
             UNUSABLE, f"{'・'.join(missing)} はこの計測でコールドスタートを観測していません。"
         )
         return
-    # 件数があっても、正式な比較に必要な件数と集め方が決まっていないため結論には使わない。
-    column.lower(
-        REFERENCE,
-        f"コールドスタートの観測は {_counts(labels, implementations, 'cold_count')} です。"
-        "通常の計測で偶然起きたものだけで、正式に比べるための件数と集め方は決まっていないため参考値です。",
-    )
+    # 通常の計測で偶然起きたコールドスタートは、件数も起きる条件も管理していないため結論に使わない。
+    if not cold_run:
+        column.lower(
+            REFERENCE,
+            f"コールドスタートの観測は {_counts(labels, implementations, 'cold_count')} です。"
+            "通常の計測で偶然起きたものだけのため参考値です。"
+            "正式に比べるには、コールドスタートの計測（cold-start）を行ってください。",
+        )
+        return
+    short = [
+        labels.get(name, name)
+        for name, values in implementations.items()
+        if values["cold_count"] < REQUIRED_COLD_STARTS
+    ]
+    # 専用の計測でも、必要な件数に届かない言語があれば遅い側の値を比べられない。
+    if short:
+        column.lower(
+            REFERENCE,
+            f"コールドスタートの観測は {_counts(labels, implementations, 'cold_count')} です。"
+            f"正式に比べるには各言語 {REQUIRED_COLD_STARTS} 件以上が必要です"
+            f"（不足: {'・'.join(short)}）。",
+        )

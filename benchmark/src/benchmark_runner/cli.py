@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import os
+import signal
 import subprocess
 import sys
 import uuid
@@ -17,6 +18,7 @@ import boto3
 
 from benchmark_runner.build_inputs import external_base_images
 from benchmark_runner.cloudwatch import collect_run
+from benchmark_runner.cold_start import ColdStartError, LambdaColdStarter
 from benchmark_runner.dashboard.jobs import JobManager
 from benchmark_runner.dashboard.server import LISTEN_HOST, create_server
 from benchmark_runner.dashboard.settings import (
@@ -33,7 +35,12 @@ from benchmark_runner.implementations import (
 from benchmark_runner.report import generate_report
 from benchmark_runner.runner import RunConfig, file_content_id, run_benchmark
 from benchmark_runner.sigv4 import SigningError
-from benchmark_runner.workloads import WorkloadError, apply_profile, load_workload
+from benchmark_runner.workloads import (
+    WorkloadError,
+    apply_profile,
+    check_cold_start,
+    load_workload,
+)
 
 ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_TERRAFORM_DIR = ROOT / "infrastructure/terraform"
@@ -217,6 +224,11 @@ def _run_command(args: argparse.Namespace) -> int:
     # 反復・並行数は正数、ウォームアップは0以上の場合だけ実行可能な条件として受け付ける。
     if workload.iterations <= 0 or workload.client_concurrency <= 0 or workload.warmup < 0:
         raise ValueError("iterationsとconcurrencyは正数、warmupは0以上で指定してください")
+    # 上書き後の条件でも、コールドスタート計測の制約（ウォームアップなし・同時要求1）を守る。
+    check_cold_start(workload)
+    # コールドスタート計測はAWS上のLambdaの設定を更新して行うため、ローカルAPIでは行えない。
+    if workload.cold_start and args.unsigned:
+        raise ValueError("コールドスタートの計測は、AWS 上の Lambda に対してだけ行えます")
 
     # run-idがautoなら新しいUUIDを生成し、明示値なら複数工程で共有できるようそのまま使う。
     run_id = str(uuid.uuid4()) if args.run_id == "auto" else args.run_id
@@ -239,6 +251,7 @@ def _run_command(args: argparse.Namespace) -> int:
     )
     architecture, memory_mb = args.architecture, args.memory_mb
     verification: dict[str, object] = {"mode": "local"}
+    function_names: dict[str, str] = {}
     # AWSへ署名して送る計測は、画面と同じ事前確認を通し、確かめた実設定を記録する。
     # 署名しないローカルAPIの確認やドライランは、AWSの照合を求めず正式な計測と区別する。
     if not args.unsigned and not args.dry_run:
@@ -247,6 +260,11 @@ def _run_command(args: argparse.Namespace) -> int:
         verification = {
             "mode": "aws",
             "deployments": {key: settings.deployments.get(key) for key in targets},
+        }
+        function_names = {
+            key: settings.deployments[key]["function_name"]
+            for key in targets
+            if settings.deployments.get(key)
         }
     config = RunConfig(
         run_id=run_id,
@@ -265,7 +283,12 @@ def _run_command(args: argparse.Namespace) -> int:
             "verification": verification,
             "content_ids": _content_ids(args.workload_file),
         },
+        function_names=function_names,
+        cold_starter=LambdaColdStarter(args.region) if workload.cold_start else None,
     )
+    # 画面からの中止（SIGTERM）でも、Ctrl+Cと同じく後始末を実行してから終える。
+    # コールドスタート計測では、更新したLambdaの設定を戻すために必要。
+    signal.signal(signal.SIGTERM, signal.default_int_handler)
     result = asyncio.run(run_benchmark(config, workload))
     print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
     return _run_exit_code(result.get("outcomes") or {})
@@ -468,6 +491,13 @@ def main(argv: list[str] | None = None) -> int:
             print("\n".join(external_base_images(dockerfile, dict(args.build_arg))))
             return 0
         return _report_command(args)
+    # コールドスタートを起こせない場合は、権限や関数の状態を確かめるよう案内する。
+    except ColdStartError as exc:
+        print(
+            f"エラー: {exc}。途中まで計測した結果は保存されていますが、比較には使えません。",
+            file=sys.stderr,
+        )
+        return 2
     # 署名の失敗は、API保存先の障害とは別の、計測する側の認証の問題として案内する。
     except SigningError as exc:
         print(

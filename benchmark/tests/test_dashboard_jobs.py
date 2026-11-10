@@ -31,6 +31,13 @@ workloads:
     iterations: 1
     client_concurrency: 1
     implementations: [python, rust]
+  cold:
+    mode: cold-start
+    method: GET
+    path: /health
+    warmup: 0
+    iterations: 20
+    client_concurrency: 1
 """
 
 # 実際のCLIの代わりに、工程名を出力して指定どおりに成功・失敗・待機する偽のコマンド。
@@ -359,3 +366,12 @@ def test_post_rejects_invalid_content_length_before_reading(server, length, expe
 
     assert status == expected
     assert payload["error"]
+
+
+@pytest.mark.parametrize("overrides", [{"warmup": 1}, {"client_concurrency": 2}])
+def test_cold_start_launch_keeps_warmup_zero_and_single_concurrency(tmp_path, overrides):
+    manager = _manager(tmp_path)
+
+    # 計測前に実行環境を使う指定は、コールドスタートを測れないため開始しない。
+    with pytest.raises(LaunchError, match="コールドスタート"):
+        manager.start(_request(workload="cold", **{"iterations": 20, "warmup": 0, **overrides}))

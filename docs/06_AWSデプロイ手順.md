@@ -160,7 +160,7 @@ terraform -chdir=infrastructure/terraform plan \
 生成後は [ベンチマークレポート利用ガイド](07_BENCHMARK_REPORT_GUIDE.md) に従い、
 `Unclassified=0`、条件、欠損の有無を確認してから比較結果を使用します。
 
-APIは `AWS_IAM` 認可のため、署名付き呼び出し権限が必要です。別の接続先を計測する場合は、環境変数 `<実装キー大文字>_API_URL`（例: `PYTHON_API_URL`）で上書きできます。
+APIは `AWS_IAM` 認可のため、署名付き呼び出し権限が必要です。ワークロード `cold-start` は、計測の間だけ各言語のLambdaの環境変数 `BENCHMARK_COLD_START_NONCE` を書き換えて新しい実行環境を起こすため、`lambda:GetFunctionConfiguration` と `lambda:UpdateFunctionConfiguration` の権限も必要です。終了・中止・失敗のいずれでも元に戻します。戻せないまま止まった場合は、`terraform plan` に環境変数の差分が出るので、`make deploy` で元に戻ります。別の接続先を計測する場合は、環境変数 `<実装キー大文字>_API_URL`（例: `PYTHON_API_URL`）で上書きできます。
 
 `ARCHITECTURE` と `LAMBDA_MEMORY_MB` は、全言語のLambdaに対する
 `aws lambda get-function-configuration` の `Architectures[0]` と `MemorySize` が一致することを

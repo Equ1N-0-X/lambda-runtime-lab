@@ -29,6 +29,8 @@ class Workload:
     description: str | None = None
     # このワークロードを実装済みの言語（実装キー）。Noneなら実装一覧の全言語が対応している。
     implementations: tuple[str, ...] | None = None
+    # 毎回の要求の前に新しい実行環境を起こし、すべての要求をコールドスタートとして計測するか。
+    cold_start: bool = False
 
     def supported(self, available: tuple[str, ...]) -> tuple[str, ...]:
         """実装一覧の表示順のまま、このワークロードに対応する言語だけを返す。"""
@@ -65,19 +67,49 @@ def apply_profile(workload: Workload, profile: str | None) -> Workload:
     return replace(workload, body={**body, "profile": profile}, profile=profile)
 
 
+# コールドスタート計測の反復回数の上限。1回ごとに関数の設定を更新して待つため時間がかかる。
+MAX_COLD_START_ITERATIONS = 100
+
+
+def check_cold_start(workload: Workload) -> None:
+    """コールドスタート計測の条件（ウォームアップなし・同時要求1・回数の上限）を確かめる。
+
+    ウォームアップや同時要求があると、新しく起こした実行環境が計測前に使われ、
+    計測した要求がコールドスタートにならない。
+    """
+    # 通常の計測には、この制約を課さない。
+    if not workload.cold_start:
+        return
+    if workload.warmup != 0 or workload.client_concurrency != 1:
+        raise WorkloadError(
+            f"ワークロード {workload.name} はコールドスタートの計測のため、"
+            "warmupは0、client_concurrencyは1で指定してください"
+        )
+    if workload.iterations > MAX_COLD_START_ITERATIONS:
+        raise WorkloadError(
+            f"ワークロード {workload.name} の反復回数は {MAX_COLD_START_ITERATIONS} 回以下で"
+            "指定してください（1回ごとに関数の設定を更新するため）"
+        )
+
+
 def experiment_id(workload: Workload) -> str:
     """処理の内容（方式・経路・本文）と同時要求数から、同じ実験かを照合する識別子を返す。
 
     反復回数とウォームアップは標本の数を変えるだけで1リクエストの処理は変えないため含めない。
     同時要求数は同じ実行環境での競合や再利用に影響するため含める。
     """
+    conditions: dict[str, Any] = {
+        "method": workload.method,
+        "path": workload.path,
+        "body": workload.body,
+        "client_concurrency": workload.client_concurrency,
+    }
+    # 同じ処理でも、毎回コールドスタートさせた計測は別の実験として扱う。
+    # 通常の計測では項目を加えず、これまでの識別子を変えない。
+    if workload.cold_start:
+        conditions["cold_start"] = True
     document = json.dumps(
-        {
-            "method": workload.method,
-            "path": workload.path,
-            "body": workload.body,
-            "client_concurrency": workload.client_concurrency,
-        },
+        conditions,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
@@ -179,7 +211,14 @@ def load_workload(config_path: Path, name: str) -> Workload:
             f"（{body_profile}）と一致しません"
         )
 
-    return Workload(
+    mode = raw.get("mode", "standard")
+    # 計測方式は、通常（standard）と毎回コールドスタートさせる方式（cold-start）だけを受け付ける。
+    if mode not in ("standard", "cold-start"):
+        raise WorkloadError(
+            f"ワークロード {name} のmodeは standard または cold-start で指定してください: {mode}"
+        )
+
+    workload = Workload(
         name=name,
         method=method,
         path=route,
@@ -190,4 +229,7 @@ def load_workload(config_path: Path, name: str) -> Workload:
         profile=body_profile,
         description=raw.get("description"),
         implementations=_implementations(raw.get("implementations"), name),
+        cold_start=mode == "cold-start",
     )
+    check_cold_start(workload)
+    return workload

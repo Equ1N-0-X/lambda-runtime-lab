@@ -11,14 +11,19 @@ import time
 import uuid
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 from benchmark_runner.dashboard.settings import LaunchSettings
-from benchmark_runner.workloads import WorkloadError, experiment_id, load_workload
+from benchmark_runner.workloads import (
+    WorkloadError,
+    check_cold_start,
+    experiment_id,
+    load_workload,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +75,8 @@ def load_workloads(workload_file: Path) -> list[dict[str, Any]]:
                 "warmup": definition.get("warmup"),
                 # Noneは全言語が対応していることを表す。
                 "implementations": definition.get("implementations"),
+                # 毎回コールドスタートさせる計測か。画面でウォームアップ・同時実行数を固定する。
+                "cold_start": definition.get("mode") == "cold-start",
             }
         )
     return workloads
@@ -229,6 +236,12 @@ class JobManager:
         if workload not in definitions:
             raise LaunchError("ワークロードを一覧から選んでください。")
         counts = {name: _validated_count(request, name) for name in LIMITS}
+        try:
+            # コールドスタート計測の制約（ウォームアップなし・同時要求1・回数の上限）を
+            # 開始前に確かめる。
+            check_cold_start(replace(load_workload(self.workload_file, workload), **counts))
+        except WorkloadError as exc:
+            raise LaunchError(str(exc)) from exc
         targets = _validated_targets(request, settings, definitions[workload]["implementations"])
 
         with self._lock:

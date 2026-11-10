@@ -36,7 +36,7 @@ def _record(implementation, index, *, success=True, start_type="warm", checked=T
     }
 
 
-def _write_run(results, records, *, region="ap-northeast-1", run_id="run"):
+def _write_run(results, records, *, region="ap-northeast-1", run_id="run", workload=None):
     run_dir = results / "raw" / run_id
     run_dir.mkdir(parents=True)
     metadata = {
@@ -48,7 +48,7 @@ def _write_run(results, records, *, region="ap-northeast-1", run_id="run"):
         "region": region,
         "dry_run": False,
         "verification": {"mode": "aws"},
-        "workload": {"name": "health", "iterations": 2},
+        "workload": workload or {"name": "health", "iterations": 2},
     }
     (run_dir / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
     lines = "".join(json.dumps(record) + "\n" for record in records)
@@ -285,3 +285,44 @@ def test_reason_that_decides_the_status_comes_first(tmp_path):
 
     assert init["status"] == "unusable"
     assert "コールドスタートを観測していません" in init["reasons"][0]
+
+
+COLD_WORKLOAD = {"name": "cold-start", "iterations": 20, "cold_start": True}
+
+
+def _cold_records(name, count, *, warm=0):
+    records = [_record(name, index, start_type="cold", init=200.0) for index in range(1, count + 1)]
+    records += [_record(name, 100 + index) for index in range(warm)]
+    return records
+
+
+def test_cold_start_run_with_enough_samples_is_a_formal_basis(tmp_path):
+    records = _cold_records("python", 20) + _cold_records("rust", 20)
+
+    quality = _report(tmp_path, records, workload=COLD_WORKLOAD)["quality"]
+
+    # 専用の計測で各言語20件そろえば、コールドスタートを比較の根拠にする。
+    assert quality["columns"]["init"]["status"] == "usable"
+    assert quality["columns"]["latency"]["status"] == "usable"
+
+
+def test_cold_start_run_short_of_samples_stays_reference(tmp_path):
+    records = _cold_records("python", 20) + _cold_records("rust", 19)
+
+    init = _report(tmp_path, records, workload=COLD_WORKLOAD)["quality"]["columns"]["init"]
+
+    assert init["status"] == "reference"
+    assert "各言語 20 件以上" in init["reasons"][0]
+    assert "Rust" in init["reasons"][0]
+
+
+def test_cold_start_run_with_warm_requests_is_reference(tmp_path):
+    # 設定を更新しても既存の実行環境で処理された要求があれば、応答時間にウォームが混ざる。
+    records = _cold_records("python", 20) + _cold_records("rust", 20, warm=1)
+
+    quality = _report(tmp_path, records, workload=COLD_WORKLOAD)["quality"]
+
+    assert quality["columns"]["latency"]["status"] == "reference"
+    assert "コールドスタートにならなかった要求があります（Rust 1件）" in "\n".join(
+        quality["issues"]
+    )

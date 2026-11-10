@@ -968,7 +968,17 @@ function renderLaunchForm(options) {
   const applyDefaults = () => {
     const workload = workloads.find((item) => item.name === workloadSelect.value);
     for (const field of COUNT_FIELDS) inputs[field.key].value = String(workload[field.key] ?? "");
-    workloadDescription.textContent = workload.description ?? "";
+    // コールドスタートの計測では、計測前に実行環境を使わないよう、ウォームアップ0・同時実行1に固定する。
+    inputs.warmup.disabled = Boolean(workload.cold_start);
+    inputs.client_concurrency.disabled = Boolean(workload.cold_start);
+    workloadDescription.textContent = [
+      workload.description,
+      workload.cold_start
+        ? "1回ごとに Lambda の設定を更新して新しい実行環境を起こすため、1回あたり数秒かかります。終了後に設定は元に戻ります。"
+        : null,
+    ]
+      .filter(Boolean)
+      .join(" ");
     // ワークロードが対応していない言語は選べないようにし、「未対応」と添える。
     for (const label of languageInputs) {
       const input = label.querySelector("input");
