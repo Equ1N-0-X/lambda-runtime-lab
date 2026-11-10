@@ -19,7 +19,7 @@ def test_runner_warms_up_and_writes_measured_samples(tmp_path):
         index = request.headers["X-Benchmark-Request-Index"]
         return httpx.Response(
             200,
-            json={"lambda_request_id": f"request-{index}"},
+            json={"status": "ok", "lambda_request_id": f"request-{index}"},
         )
 
     workload = Workload(
@@ -86,3 +86,90 @@ def test_registry_lists_implementations_in_display_order():
 
     assert keys[:2] == ["python", "rust"]
     assert len(keys) == len(set(keys))
+
+
+class _FakeColdStarter:
+    def __init__(self, fail_on=None):
+        self.calls = []
+        self.fail_on = fail_on
+
+    def force(self, function_name):
+        from benchmark_runner.cold_start import ColdStartError
+
+        self.calls.append(("force", function_name))
+        if self.calls.count(("force", function_name)) == self.fail_on:
+            raise ColdStartError("権限がありません")
+
+    def restore(self, function_name):
+        self.calls.append(("restore", function_name))
+
+
+def _cold_config(tmp_path, starter, requests):
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json={"status": "ok"})
+
+    return RunConfig(
+        run_id="cold-run",
+        targets=("python", "rust"),
+        endpoints={"python": "https://python.test", "rust": "https://rust.test"},
+        region="ap-northeast-1",
+        results_dir=tmp_path,
+        sign_requests=False,
+        transport=httpx.MockTransport(handler),
+        function_names={"python": "fn-python", "rust": "fn-rust"},
+        cold_starter=starter,
+    )
+
+
+COLD_WORKLOAD = Workload("cold-start", "GET", "/health", 0, 3, 1, cold_start=True)
+
+
+def test_cold_start_run_forces_a_new_environment_before_every_request(tmp_path):
+    starter, requests = _FakeColdStarter(), []
+
+    result = asyncio.run(run_benchmark(_cold_config(tmp_path, starter, requests), COLD_WORKLOAD))
+
+    # 要求ごとに一度ずつ設定を更新し、最後に一度だけ元へ戻す。
+    for name in ("fn-python", "fn-rust"):
+        calls = [call for call in starter.calls if call[1] == name]
+        assert calls == [("force", name)] * 3 + [("restore", name)]
+    assert len(requests) == 6
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "raw/cold-run/samples.jsonl").read_text().splitlines()
+    ]
+    # 同時に測った結果を、実装一覧の順・要求番号の順にそろえて保存する。
+    assert [(r["implementation"], r["request_index"]) for r in records] == [
+        ("python", 1),
+        ("python", 2),
+        ("python", 3),
+        ("rust", 1),
+        ("rust", 2),
+        ("rust", 3),
+    ]
+    assert all(record["forced_cold_start"] for record in records)
+    assert result["outcomes"]["rust"]["success_count"] == 3
+
+
+def test_cold_start_run_restores_settings_when_it_aborts(tmp_path):
+    from benchmark_runner.cold_start import ColdStartError
+
+    starter, requests = _FakeColdStarter(fail_on=2), []
+
+    with pytest.raises(ColdStartError):
+        asyncio.run(run_benchmark(_cold_config(tmp_path, starter, requests), COLD_WORKLOAD))
+
+    # 失敗しても、更新した全関数の設定を元へ戻す。
+    assert ("restore", "fn-python") in starter.calls
+    assert ("restore", "fn-rust") in starter.calls
+    metadata = json.loads((tmp_path / "raw/cold-run/metadata.json").read_text())
+    assert "Lambda の設定の更新に失敗" in metadata["aborted"]
+
+
+def test_cold_start_run_requires_function_names(tmp_path):
+    config = _cold_config(tmp_path, _FakeColdStarter(), [])
+    config = RunConfig(**{**config.__dict__, "function_names": {"python": "fn-python"}})
+
+    with pytest.raises(ValueError, match="Lambda関数名"):
+        asyncio.run(run_benchmark(config, COLD_WORKLOAD))

@@ -48,9 +48,10 @@ const SEED: StringSpec = StringSpec {
     max_length: MAX_SEED_CHARS,
     pattern: Pattern::Any,
 };
+// 正本では、対応していないprofileは長さによらずUNSUPPORTED_PROFILEになるため、長さを制限しない。
 const PROFILE: StringSpec = StringSpec {
     min_length: 0,
-    max_length: MAX_SEED_CHARS,
+    max_length: usize::MAX,
     pattern: Pattern::Any,
 };
 

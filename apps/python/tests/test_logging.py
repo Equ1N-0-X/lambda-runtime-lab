@@ -64,13 +64,19 @@ def test_info_log_uses_japanese_message_and_correlation_fields(monkeypatch: Any)
 def test_dependency_error_is_logged_as_warning(monkeypatch: Any) -> None:
     captured = _capture(monkeypatch)
 
-    app_logging.log_dependency_error(_request())
+    app_logging.log_dependency_error(
+        _request(), category="permission", error_code="AccessDeniedException"
+    )
 
     level, fields = captured[0]
     assert level == logging.WARNING
     assert fields["level"] == "WARN"
     assert fields["message"] == "外部データストアへのアクセスに失敗しました"
     assert fields["status_code"] == 502
+    # 原因の分類とAWSのエラーコードだけを残し、例外の全文や本文は出さない。
+    assert fields["dependency_error_category"] == "permission"
+    assert fields["dependency_error_code"] == "AccessDeniedException"
+    assert fields["dependency_operation"] == "GetItem"
 
 
 def test_unexpected_error_is_logged_as_error_without_secret_values(monkeypatch: Any) -> None:

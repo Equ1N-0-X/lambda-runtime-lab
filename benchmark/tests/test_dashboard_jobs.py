@@ -31,6 +31,13 @@ workloads:
     iterations: 1
     client_concurrency: 1
     implementations: [python, rust]
+  cold:
+    mode: cold-start
+    method: GET
+    path: /health
+    warmup: 0
+    iterations: 20
+    client_concurrency: 1
 """
 
 # 実際のCLIの代わりに、工程名を出力して指定どおりに成功・失敗・待機する偽のコマンド。
@@ -39,7 +46,7 @@ import sys, time
 step = sys.argv[1]
 print(f"{{step}} via {SECRET_URL}", flush=True)
 if step == "{{fail}}":
-    sys.exit(3)
+    sys.exit(4)
 if step == "{{slow}}":
     time.sleep(30)
 """
@@ -173,7 +180,7 @@ def test_failed_step_stops_pipeline_and_reports_step(tmp_path):
 
     assert job["state"] == "failed"
     assert job["step"] == "collect"
-    assert "ログ収集に失敗しました" in job["message"]
+    assert "ログ収集（反映を待ちながら）に失敗しました" in job["message"]
     assert not any(line.startswith("report") for line in job["output"])
 
 
@@ -294,3 +301,77 @@ def test_post_returns_400_for_invalid_input(server):
 
     assert status == 400
     assert "iterations" in payload["error"]
+
+
+def test_missing_command_finishes_as_failed_and_allows_next_job(tmp_path):
+    manager = _manager(tmp_path)
+    manager.command_prefix = [str(tmp_path / "no-such-command")]
+
+    manager.start(_request())
+    job = _wait_until_finished(manager)
+
+    # 子プロセスを起動できなくても、実行中のまま残さず失敗で終える。
+    assert job["state"] == "failed"
+    assert "想定外のエラー" in job["message"]
+    assert "FileNotFoundError" in job["message"]
+    manager.command_prefix = [sys.executable, str(tmp_path / "fake_cli.py")]
+    manager.start(_request())
+    assert _wait_until_finished(manager)["state"] == "succeeded"
+
+
+def test_command_build_failure_finishes_as_failed(tmp_path):
+    # ロググループが欠けた設定でコマンドを組み立てると、工程の前に例外になる。
+    manager = _manager(tmp_path)
+
+    def broken_commands(job):
+        raise KeyError("python")
+
+    manager._commands = broken_commands
+    manager.start(_request())
+
+    job = _wait_until_finished(manager)
+    assert job["state"] == "failed"
+    assert "KeyError" in job["message"]
+
+
+def test_incomplete_log_collection_still_reports_but_does_not_succeed(tmp_path):
+    manager = _manager(tmp_path)
+    script = tmp_path / "fake_cli.py"
+    script.write_text(
+        script.read_text(encoding="utf-8") + '\nif step == "collect":\n    sys.exit(3)\n',
+        encoding="utf-8",
+    )
+
+    manager.start(_request())
+    job = _wait_until_finished(manager)
+
+    # 期限内にログがそろわなくてもレポートは作るが、完全な成功とは示さない。
+    assert job["state"] == "failed"
+    assert any(line.startswith("report") for line in job["output"])
+    assert "make collect" in job["message"]
+
+
+@pytest.mark.parametrize(
+    ("length", "expected"),
+    [("abc", 400), ("-1", 400), ("1e3", 400), ("5000", 413), ("0", 400)],
+)
+def test_post_rejects_invalid_content_length_before_reading(server, length, expected):
+    # 長さ0は空のオブジェクトとして読み、必須の入力がないため入力エラー（400）になる。
+    status, payload = _call(
+        server,
+        "POST",
+        "/api/estimate",
+        headers={"Content-Type": "application/json", "Content-Length": length},
+    )
+
+    assert status == expected
+    assert payload["error"]
+
+
+@pytest.mark.parametrize("overrides", [{"warmup": 1}, {"client_concurrency": 2}])
+def test_cold_start_launch_keeps_warmup_zero_and_single_concurrency(tmp_path, overrides):
+    manager = _manager(tmp_path)
+
+    # 計測前に実行環境を使う指定は、コールドスタートを測れないため開始しない。
+    with pytest.raises(LaunchError, match="コールドスタート"):
+        manager.start(_request(workload="cold", **{"iterations": 20, "warmup": 0, **overrides}))

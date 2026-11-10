@@ -101,6 +101,31 @@ def test_malformed_json_reports_only_the_root_field(client: TestClient) -> None:
     }
 
 
+def test_body_over_the_limit_is_rejected_before_parsing(client: TestClient) -> None:
+    # JSONとして不正な本文でも、上限を超えていれば invalid_json ではなく413を返す。
+    response = client.post(
+        "/compute", content=b"x" * 4_194_305, headers={"content-type": "application/json"}
+    )
+
+    assert response.status_code == 413
+    assert response.json() == {
+        "error": {
+            "code": "PAYLOAD_TOO_LARGE",
+            "message": "request body too large",
+            "details": [{"field": "$", "reason": "max_bytes:4194304"}],
+        }
+    }
+
+
+def test_body_at_the_limit_is_validated_normally(client: TestClient) -> None:
+    response = client.post(
+        "/compute", content=b" " * 4_194_304, headers={"content-type": "application/json"}
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["details"] == [{"field": "$", "reason": "invalid_json"}]
+
+
 def test_duplicate_object_members_are_invalid_json(client: TestClient) -> None:
     response = client.post(
         "/compute",
@@ -273,7 +298,7 @@ def test_invalid_benchmark_run_id_header_is_rejected(client: TestClient) -> None
 
 class FailingRepository:
     async def get_item(self, item_id: str) -> None:
-        raise RepositoryError(f"failed for {item_id}")
+        raise RepositoryError("unknown")
 
 
 def test_repository_failure_uses_the_dependency_error_schema() -> None:

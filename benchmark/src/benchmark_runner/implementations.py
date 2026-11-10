@@ -11,6 +11,10 @@ import yaml
 ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_REGISTRY = ROOT / "spec/implementations.yaml"
 
+# 全言語のイメージの中身に影響する、アプリのディレクトリ外の入力（リポジトリ直下からの相対パス）。
+# ビルドの基盤イメージや引数を決めるため、変更されればデプロイ済みの版とずれる。
+SHARED_IMAGE_INPUTS = ("scripts/build-images.sh",)
+
 # 環境変数名・AWSリソース名・結果ファイルに埋め込むため、小文字英数字だけを許可する。
 KEY_PATTERN = re.compile(r"^[a-z][a-z0-9]{0,19}$")
 
@@ -38,9 +42,13 @@ class Implementation:
 
     @property
     def image_source_pathspecs(self) -> tuple[str, ...]:
-        """イメージの元になるファイルを表すGitのpathspec。テストだけの変更は版のずれとみなさない。"""
+        """イメージの元になるファイルを表すGitのpathspec。テストだけの変更は版のずれとみなさない。
+
+        アプリのディレクトリに加え、全言語のビルドに使う共通の入力も含める。
+        """
         return (
             self.app_dir,
+            *SHARED_IMAGE_INPUTS,
             *(f":(exclude){self.app_dir}/{path}" for path in self.test_paths),
         )
 

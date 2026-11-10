@@ -11,18 +11,25 @@ import time
 import uuid
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 from benchmark_runner.dashboard.settings import LaunchSettings
+from benchmark_runner.workloads import (
+    WorkloadError,
+    check_cold_start,
+    experiment_id,
+    load_workload,
+)
 
 logger = logging.getLogger(__name__)
 
-# CloudWatch Logsへ構造化ログとREPORTが反映されるまでの待ち時間。短すぎると未結合の計測が残る。
-LOG_INGESTION_WAIT_SECONDS = 60
+# CloudWatch Logsへ構造化ログとREPORTが反映されるのを待つ期限。収集はこの期限まで、
+# 成功した要求のログがすべてそろったかを確かめながら取得し直す（そろえば早く終わる）。
+LOG_INGESTION_WAIT_SECONDS = 180
 
 # 画面からの誤入力で長時間・高額な計測を始めないよう、指定できる範囲を制限する。
 LIMITS = {
@@ -36,10 +43,12 @@ OUTPUT_TAIL_LINES = 20
 
 STEPS = (
     ("run", "計測"),
-    ("wait", "ログの反映待ち"),
-    ("collect", "ログ収集"),
+    ("collect", "ログ収集（反映を待ちながら）"),
     ("report", "レポート作成"),
 )
+
+# ログ収集のCLIが、期限内にログがそろわなかったことを表す終了コード（cli.py と同じ値）。
+INCOMPLETE_COLLECTION_EXIT_CODE = 3
 
 
 class LaunchError(ValueError):
@@ -66,9 +75,27 @@ def load_workloads(workload_file: Path) -> list[dict[str, Any]]:
                 "warmup": definition.get("warmup"),
                 # Noneは全言語が対応していることを表す。
                 "implementations": definition.get("implementations"),
+                # 毎回コールドスタートさせる計測か。画面でウォームアップ・同時実行数を固定する。
+                "cold_start": definition.get("mode") == "cold-start",
             }
         )
     return workloads
+
+
+def workload_experiments(workload_file: Path, definitions: list[dict[str, Any]]) -> dict[str, str]:
+    """画面の既定値で計測した場合の、ワークロードごとの実験の識別子を返す。
+
+    定義を読めないワークロードは含めない（料金の目安を出さない）。
+    """
+    experiments = {}
+    for definition in definitions:
+        try:
+            workload = load_workload(workload_file, definition["name"])
+        # 定義に誤りがあるワークロードは計測もできないため、目安の対象から外す。
+        except WorkloadError:
+            continue
+        experiments[definition["name"]] = experiment_id(workload)
+    return experiments
 
 
 def _validated_count(values: dict[str, Any], name: str) -> int:
@@ -136,6 +163,8 @@ class Job:
     started_at: float = field(default_factory=time.time)
     finished_at: float | None = None
     output: deque[str] = field(default_factory=lambda: deque(maxlen=OUTPUT_TAIL_LINES))
+    # 工程は続けられたが、結果に欠けがあることを知らせる注意（ログ収集の期限切れなど）。
+    warning: str | None = None
 
     def public(self) -> dict[str, Any]:
         """画面表示用の状態を返す。"""
@@ -207,6 +236,12 @@ class JobManager:
         if workload not in definitions:
             raise LaunchError("ワークロードを一覧から選んでください。")
         counts = {name: _validated_count(request, name) for name in LIMITS}
+        try:
+            # コールドスタート計測の制約（ウォームアップなし・同時要求1・回数の上限）を
+            # 開始前に確かめる。
+            check_cold_start(replace(load_workload(self.workload_file, workload), **counts))
+        except WorkloadError as exc:
+            raise LaunchError(str(exc)) from exc
         targets = _validated_targets(request, settings, definitions[workload]["implementations"])
 
         with self._lock:
@@ -270,6 +305,8 @@ class JobManager:
                 job.run_id,
                 "--region",
                 settings.region,
+                "--wait-seconds",
+                str(self.log_wait_seconds),
                 *[
                     argument
                     for key in job.targets
@@ -288,25 +325,55 @@ class JobManager:
         }
 
     def _execute(self, job: Job) -> None:
-        commands = self._commands(job)
+        """全工程を実行し、成功・失敗・中止のいずれかで必ず終える。
+
+        この処理は別スレッドで動くため、例外が漏れるとジョブが実行中のまま残り、
+        画面を再起動するまで次の計測を開始できなくなる。想定外の例外も失敗として終える。
+        """
         try:
-            for step, _label in STEPS:
-                self._set(job, step=step)
-                # ログ反映待ちは中止要求で即座に抜けられるよう、イベント待ちで実装する。
-                if step == "wait":
-                    if self._cancel.wait(self.log_wait_seconds):
-                        break
-                    continue
-                self._run_command(job, commands[step])
-                # 計測コマンドの終了直後に中止要求があれば、後続の工程へ進まない。
-                if self._cancel.is_set():
-                    break
+            self._run_steps(job)
         except LaunchError as exc:
             self._finish(job, "failed", str(exc))
-            return
+        # 子プロセスを起動できない・コマンドを組み立てられないなどの想定外の失敗も、成功へ変えず
+        # 失敗として終える。原因はログに残し、画面には種類だけを示す（URL等を出さない）。
+        except Exception as exc:
+            logger.exception("計測工程で想定外のエラーが発生しました: run_id=%s", job.run_id)
+            self._finish(
+                job,
+                "failed",
+                f"{dict(STEPS).get(job.step, job.step)}で想定外のエラーが発生しました"
+                f"（{type(exc).__name__}）。画面を起動したターミナルのログを確認してください。",
+            )
+        finally:
+            self._stop_process()
+
+    def _stop_process(self) -> None:
+        """例外で抜けた場合も、実行中の子プロセスを残さない。"""
+        with self._lock:
+            process, self._process = self._process, None
+        if process is not None and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=10)
+            # 終了要求に応じない子プロセスは、次の計測と重ならないよう強制終了する。
+            except subprocess.TimeoutExpired:
+                process.kill()
+
+    def _run_steps(self, job: Job) -> None:
+        commands = self._commands(job)
+        for step, _label in STEPS:
+            self._set(job, step=step)
+            self._run_command(job, commands[step])
+            # 計測コマンドの終了直後に中止要求があれば、後続の工程へ進まない。
+            if self._cancel.is_set():
+                break
         # 中止要求で抜けた場合は、途中までの結果を残したまま中止として終える。
         if self._cancel.is_set():
             self._finish(job, "cancelled", "計測を中止しました。途中までの結果は比較に使えません。")
+            return
+        # ログが期限内にそろわなかった場合は、レポートを作っても完全な成功とは示さない。
+        if job.warning:
+            self._finish(job, "failed", job.warning)
             return
         self._finish(job, "succeeded", "計測とレポート作成が完了しました。")
 
@@ -341,6 +408,15 @@ class JobManager:
             self._process = None
         # 中止による終了は失敗ではないため、終了コードを確認せずに戻る。
         if self._cancel.is_set():
+            return
+        # ログ収集が期限内にそろわなかっただけなら、未結合のままレポートは作れるため続ける。
+        if job.step == "collect" and returncode == INCOMPLETE_COLLECTION_EXIT_CODE:
+            job.warning = (
+                f"ログの一部が {self.log_wait_seconds:g} 秒以内にそろわなかったため、"
+                "Lambda 側の指標と料金が一部欠けたままレポートを作成しました。"
+                f"時間をおいて RUN_ID={job.run_id} make collect と RUN_ID={job.run_id} make report"
+                " を実行すると、そろえ直せます。"
+            )
             return
         # 終了コードが0以外なら、出力末尾を手掛かりとして残し工程失敗として扱う。
         if returncode != 0:

@@ -47,7 +47,7 @@ const METRICS = {
   },
   max_memory_used_mb: {
     label: "最大メモリ使用量",
-    description: "1回の実行で使ったメモリの最大値です。",
+    description: "実行環境ごとに観測されたメモリ使用量の最大値です。同じ実行環境で前に処理したリクエストの分も含みうるため、1回の処理に必要な量そのものではありません。",
     insight: "Lambda のメモリ設定をどこまで下げられるかの目安になります。",
     unit: "MB",
     lower: "少ない",
@@ -56,7 +56,7 @@ const METRICS = {
 };
 
 const SCOPES = [
-  { key: "metrics", label: "全体", description: "すべての計測を対象にしています。" },
+  { key: "metrics", label: "全体", description: "成功したすべての計測を対象にしています。" },
   {
     key: "cold_metrics",
     label: "コールドスタート",
@@ -190,9 +190,17 @@ async function fetchJson(path, body) {
 
 // --- 計測履歴 ----------------------------------------------------------------
 
+// 失敗した要求の合計件数。失敗の記録がない計測は 0 件として扱う。
+function failureTotal(failures) {
+  return (failures ?? []).reduce((total, failure) => total + failure.error_count, 0);
+}
+
 // 比較に使えない計測だけに印を付け、通常の計測は印なしにして注意を目立たせる。
-function statusBadge(comparable) {
-  return comparable ? null : el("span", { class: "badge badge-warning", text: "要確認" });
+// 失敗を含む計測は、他の注意点より重い印として失敗の件数を示す。
+function statusBadge(run) {
+  const failed = failureTotal(run.failures);
+  if (failed > 0) return el("span", { class: "badge badge-error", text: `失敗 ${failed.toLocaleString("ja-JP")}件` });
+  return run.comparable ? null : el("span", { class: "badge badge-warning", text: "要確認" });
 }
 
 function renderRunList() {
@@ -200,9 +208,8 @@ function renderRunList() {
   if (state.runs.length === 0) {
     runListBody.append(
       el("p", { class: "muted", text: "計測結果はまだありません。" }),
-      el("p", { class: "muted" }, [
-        "make benchmark で計測すると、ここに表示されます。",
-      ]),
+      el("p", { class: "muted", text: "下の「新しく計測する」から計測すると、ここに表示されます。" }),
+      el("button", { type: "button", class: "ghost-button", text: "新しく計測する", onclick: openLaunch }),
     );
     return;
   }
@@ -224,7 +231,7 @@ function renderRunList() {
       [
         el("span", { class: "run-item-title" }, [
           el("span", { text: run.workload ?? run.run_id }),
-          statusBadge(run.comparable),
+          statusBadge(run),
         ]),
         el("span", { class: "run-item-meta", text: formatDate(run.started_at) }),
         el("span", { class: "run-item-languages", text: (run.languages ?? []).join(" · ") }),
@@ -238,14 +245,49 @@ function renderRunList() {
 
 // --- 詳細 --------------------------------------------------------------------
 
-// 比較に使えない理由があるときだけ注意を出す。問題がない計測では何も出さない。
+// 失敗した要求があるときだけ、件数と言語ごとの内訳を詳細の先頭に示す。
+// 失敗が1件でもある計測は正式な比較に使わないため、他の注意点と分けて目立たせる。
+function renderFailureNotice(run) {
+  const failed = failureTotal(run.failures);
+  if (failed === 0) return null;
+  return el("div", { class: "card notice notice-error", role: "alert" }, [
+    el("h3", { class: "badge badge-error", text: `失敗した要求が ${failed.toLocaleString("ja-JP")} 件あります` }),
+    el(
+      "ul",
+      {},
+      run.failures.map((failure) =>
+        el("li", {
+          text: `${failure.label}: ${failure.sample_count.toLocaleString("ja-JP")} 件中 ${failure.error_count.toLocaleString("ja-JP")} 件が失敗`,
+        }),
+      ),
+    ),
+    el("p", { text: "失敗が1件でもある計測は正式な比較に使えません。数値は成功した要求だけの参考値です。再計測してください。" }),
+  ]);
+}
+
+// 確認が必要な点があるときだけ注意を出す。問題がない計測では何も出さない。
+// 性能を比べられない場合と、料金だけに問題がある場合とで見出しを分ける。
 function renderNotice(run) {
-  if (run.comparable) return null;
+  if (!run.issues?.length) return null;
+  const title = run.comparable ? "料金について確認が必要な点があります" : "この計測には確認が必要な点があります";
   return el("div", { class: "card notice" }, [
-    el("h3", { class: "badge badge-warning", text: "この計測には確認が必要な点があります" }),
+    el("h3", { class: "badge badge-warning", text: `⚠ ${title}` }),
     el("ul", {}, run.issues.map((issue) => el("li", { text: issue }))),
   ]);
 }
+
+// 指標ごとの採否はサーバー（quality.assess_run）の判定をそのまま使い、画面では計算しない。
+// 判定がない場合は、比較の根拠に使えるとは扱わない。
+function columnQuality(run, key) {
+  return run.quality?.columns?.[key] ?? { status: "unusable", reasons: ["比較に使えるかの判定がありません。"], notes: [] };
+}
+
+// 状態を色だけに頼らず、記号と言葉でも区別する。
+const QUALITY_LABELS = {
+  usable: null,
+  reference: "△ 参考値",
+  unusable: "× 比較不可",
+};
 
 // 比較表の列。いずれも小さいほど有利な指標で、値は中央値（P50）を使う。
 // readは計測結果の言語ごとの値から列の値を取り出す。
@@ -288,7 +330,7 @@ const SUMMARY_COLUMNS = [
   {
     key: "memory",
     label: "メモリ使用量",
-    hint: "1回の実行で使ったメモリの最大値。メモリ設定をどこまで下げられるかの目安です。",
+    hint: "実行環境ごとの最大メモリ使用量（同じ環境で前に処理したリクエストの分を含みうる）。メモリ設定をどこまで下げられるかの目安です。",
     read: (values) => values?.metrics?.max_memory_used_mb?.p50,
     format: (value) => formatValue(value, "MB"),
   },
@@ -317,6 +359,15 @@ function renderVerdict(run) {
   ].map(({ column: key, title }) => {
     const column = SUMMARY_COLUMNS.find((item) => item.key === key);
     const ranked = rankBy(run, column);
+    const quality = columnQuality(run, key);
+    // 判定が参考値・比較不可の指標では、値があっても最良の言語や倍率を示さない。
+    if (quality.status !== "usable") {
+      return el("div", { class: "card verdict" }, [
+        el("p", { class: "verdict-title", text: title }),
+        el("p", { class: "verdict-empty", text: `${QUALITY_LABELS[quality.status]}のため、結論を出していません` }),
+        el("p", { class: "verdict-note", text: quality.reasons[0] ?? "" }),
+      ]);
+    }
     // 比べられる言語が二つ未満なら、結論を出さずに理由を示す。
     if (ranked.length < 2) {
       return el("div", { class: "card verdict" }, [
@@ -342,12 +393,20 @@ function renderVerdict(run) {
   ]);
 }
 
-// 言語を行、指標を列に並べた比較表。最も有利な値に★、それ以外に最良との比を添える。
+// 言語を行、指標を列に並べた比較表。比較の根拠に使える指標だけ、最も有利な値に★、
+// それ以外に最良との比を添える。参考値・比較不可の指標は値だけを示す。
 function renderSummaryTable(run) {
+  const qualities = Object.fromEntries(SUMMARY_COLUMNS.map((column) => [column.key, columnQuality(run, column.key)]));
   const bestByColumn = Object.fromEntries(SUMMARY_COLUMNS.map((column) => [column.key, rankBy(run, column)[0]?.value]));
   const header = el("tr", {}, [
     el("th", { class: "text", scope: "col", text: "言語" }),
-    ...SUMMARY_COLUMNS.map((column) => el("th", { scope: "col", text: column.label })),
+    ...SUMMARY_COLUMNS.map((column) => {
+      const label = QUALITY_LABELS[qualities[column.key].status];
+      return el("th", { scope: "col" }, [
+        el("span", { text: column.label }),
+        label ? el("span", { class: "cell-note quality-note", text: label }) : null,
+      ].filter(Boolean));
+    }),
   ]);
   const rows = implementationsOf(run).map(({ key, label, series }) => {
     const values = run.implementations[key];
@@ -357,6 +416,13 @@ function renderSummaryTable(run) {
         const value = column.read(values);
         const best = bestByColumn[column.key];
         if (!isNumber(value)) return el("td", { class: "muted", text: column.key === "init" ? "起動なし" : "未計測" });
+        const status = qualities[column.key].status;
+        if (status !== "usable") {
+          return el("td", { class: "muted" }, [
+            el("span", { text: column.format(value) }),
+            el("span", { class: "cell-note", text: QUALITY_LABELS[status] }),
+          ]);
+        }
         const isBest = value === best;
         return el("td", { class: isBest ? "best" : "" }, [
           el("span", { text: column.format(value) }),
@@ -369,13 +435,24 @@ function renderSummaryTable(run) {
     el("div", { class: "section-head" }, el("h3", { text: "言語ごとの比較" })),
     el("p", {
       class: "section-note",
-      text: "どの指標も小さいほど有利です。★は最も有利な言語、×は最も有利な値との比です。時間とメモリは中央値です。",
+      text: "どの指標も小さいほど有利です。★は最も有利な言語、×は最も有利な値との比です。時間とメモリは成功した要求の中央値です。「△ 参考値」「× 比較不可」の指標は、下の説明にある理由で優劣を示していません。",
     }),
     el("div", { class: "table-scroll" }, el("table", { class: "summary-table" }, [el("thead", {}, header), el("tbody", {}, rows)])),
     el(
       "dl",
       { class: "metric-guide" },
-      SUMMARY_COLUMNS.flatMap((column) => [el("dt", { text: column.label }), el("dd", { text: column.hint })]),
+      SUMMARY_COLUMNS.flatMap((column) => {
+        const quality = qualities[column.key];
+        // 参考値・比較不可の理由と、料金に含む範囲などの注記を、その指標の説明に並べる。
+        const details = [...quality.reasons, ...quality.notes];
+        return [
+          el("dt", { text: column.label }),
+          el("dd", {}, [
+            el("span", { text: column.hint }),
+            ...details.map((detail) => el("span", { class: "quality-reason", text: detail })),
+          ]),
+        ];
+      }),
     ),
   ]);
 }
@@ -638,6 +715,8 @@ function renderSampleTable(run) {
   const header = el("tr", {}, [
     el("th", { class: "text", text: "実装" }),
     el("th", { text: "計測件数" }),
+    el("th", { text: "成功" }),
+    el("th", { text: "失敗" }),
     el("th", { text: "コールド" }),
     el("th", { text: "ウォーム" }),
     el("th", { text: "ログと未結合" }),
@@ -649,6 +728,11 @@ function renderSampleTable(run) {
     return el("tr", {}, [
       el("td", { class: "text", text: label }),
       el("td", { text: values.sample_count.toLocaleString("ja-JP") }),
+      el("td", { text: (values.success_count ?? 0).toLocaleString("ja-JP") }),
+      // 失敗が1件でもあれば、色だけでなく記号でも0件の行と区別する。
+      values.error_count
+        ? el("td", { class: "cell-error", text: `✕ ${values.error_count.toLocaleString("ja-JP")}` })
+        : el("td", { text: "0" }),
       el("td", { text: values.cold_count.toLocaleString("ja-JP") }),
       el("td", { text: values.warm_count.toLocaleString("ja-JP") }),
       el("td", { text: values.unclassified_count.toLocaleString("ja-JP") }),
@@ -659,7 +743,7 @@ function renderSampleTable(run) {
     el("div", { class: "section-head" }, el("h3", { text: "計測件数" })),
     el("p", {
       class: "section-note",
-      text: "各指標が何件の計測から求めたかを示します。コールドは実行環境の起動を伴った呼び出し、ウォームは起動済みの環境での呼び出しです。「ログと未結合」が 0 件でないと、Lambda 側の指標と料金が欠けます。",
+      text: "各指標が何件の計測から求めたかを示します。成功は状態と応答の内容が正しかった要求で、指標と料金は成功した要求だけから求めます。コールド・ウォーム・「ログと未結合」は成功した要求の内訳です。コールドは実行環境の起動を伴った呼び出し、ウォームは起動済みの環境での呼び出しです。「ログと未結合」が 0 件でないと、Lambda 側の指標と料金が欠けます。",
     }),
     el("div", { class: "table-scroll" }, el("table", {}, [el("thead", {}, header), el("tbody", {}, rows)])),
   ]);
@@ -744,6 +828,7 @@ function renderDetail() {
         el("h2", { text: `${workload.name ?? "ワークロード不明"} の比較結果` }),
         el("p", { text: conditions.join(" · ") }),
       ]),
+      renderFailureNotice(run),
       renderNotice(run),
       run.unsupported?.length
         ? el("p", {
@@ -799,17 +884,21 @@ function validateCount(value, limit) {
 }
 
 // この計測そのものにかかる Lambda 料金の見込み。作りたいAPIの月額の見込みとは別のもの。
-function costEstimate(workload, iterations, warmup, targets, implementations) {
+// 根拠の実測は、サーバーが計測予定のLambdaの条件（方式・メモリ・地域）と処理内容で選ぶ。
+function costEstimate(workload, iterations, warmup, concurrency, targets, implementations) {
   const basis = workload.cost_basis;
   const missing = targets.filter((key) => !isNumber(basis?.cost_per_request?.[key]));
-  // 選んだ言語のいずれかに同じワークロードの実測がなければ、一部だけの合計で過小に見せないよう算出しない。
+  // 選んだ言語のいずれかに同じ条件の実測がなければ、一部だけの合計で過小に見せないよう算出しない。
   if (!basis || missing.length > 0) {
     const labels = implementations.filter(({ key }) => missing.includes(key)).map(({ label }) => label);
-    return `この計測にかかる料金: ${labels.join("・")} はこのワークロードを計測したことがないため、見込みを出せません（計測は開始できます）。`;
+    return `この計測にかかる料金: ${labels.join("・")} は、今の Lambda の条件（アーキテクチャ・メモリ・リージョン）でこのワークロードを比較に使える形で計測したことがないため、見込みを出せません（計測は開始できます）。`;
   }
   const perImplementation = iterations + warmup;
   const total = targets.reduce((sum, key) => sum + basis.cost_per_request[key] * perImplementation, 0);
-  return `この計測にかかる Lambda 料金: 約 ${formatCost(total)}（${formatDate(basis.started_at)} の同じワークロードの実測から算出。API Gateway・DynamoDB・CloudWatch は含みません）`;
+  // 同時実行数が根拠と違えば料金も変わりうるため、根拠の条件を併記する。
+  const concurrencyNote =
+    basis.client_concurrency === concurrency ? "" : `根拠の同時実行数は ${basis.client_concurrency} で、今の入力と異なります。`;
+  return `この計測にかかる Lambda 料金: 約 ${formatCost(total)}（${formatDate(basis.started_at)} の同じ条件の実測から算出。${concurrencyNote}ウォームアップで起きるコールドスタートの初期化料金と、API Gateway・DynamoDB・CloudWatch は含みません）`;
 }
 
 function renderLaunchForm(options) {
@@ -879,7 +968,17 @@ function renderLaunchForm(options) {
   const applyDefaults = () => {
     const workload = workloads.find((item) => item.name === workloadSelect.value);
     for (const field of COUNT_FIELDS) inputs[field.key].value = String(workload[field.key] ?? "");
-    workloadDescription.textContent = workload.description ?? "";
+    // コールドスタートの計測では、計測前に実行環境を使わないよう、ウォームアップ0・同時実行1に固定する。
+    inputs.warmup.disabled = Boolean(workload.cold_start);
+    inputs.client_concurrency.disabled = Boolean(workload.cold_start);
+    workloadDescription.textContent = [
+      workload.description,
+      workload.cold_start
+        ? "1回ごとに Lambda の設定を更新して新しい実行環境を起こすため、1回あたり数秒かかります。終了後に設定は元に戻ります。"
+        : null,
+    ]
+      .filter(Boolean)
+      .join(" ");
     // ワークロードが対応していない言語は選べないようにし、「未対応」と添える。
     for (const label of languageInputs) {
       const input = label.querySelector("input");
@@ -915,7 +1014,8 @@ function renderLaunchForm(options) {
     const languages = settings.implementations.filter(({ key }) => targets.includes(key));
     summary.textContent = `${languages.map(({ label }) => label).join("・")} にそれぞれ ${perImplementation.toLocaleString("ja-JP")} 回（ウォームアップ ${warmup.toLocaleString("ja-JP")} 回を含む）、合計 ${(perImplementation * languages.length).toLocaleString("ja-JP")} リクエストを送ります。`;
     const workload = workloads.find((item) => item.name === workloadSelect.value);
-    estimate.textContent = costEstimate(workload, iterations, warmup, targets, settings.implementations);
+    const concurrency = Number(inputs.client_concurrency.value);
+    estimate.textContent = costEstimate(workload, iterations, warmup, concurrency, targets, settings.implementations);
   };
 
   workloadSelect.addEventListener("change", applyDefaults);
@@ -964,7 +1064,7 @@ function renderLaunchForm(options) {
       submit,
       el("p", {
         class: "field-help",
-        text: `開始後は、ログの反映を ${options.log_wait_seconds} 秒待ってから、ログ収集とレポート作成まで自動で行います。`,
+        text: `開始後は、ログが反映されるのを最大 ${options.log_wait_seconds} 秒待ちながら収集し、レポート作成まで自動で行います（ログがそろえば早く終わります）。`,
       }),
     ]),
   );
@@ -977,7 +1077,7 @@ function renderLaunchForm(options) {
         el("ul", {}, settings.missing.map((item) => el("li", { text: item }))),
         el("p", {
           class: "section-note",
-          text: "接続先と条件は、Terraform の出力と AWS 上の Lambda の設定から自動で読み取ります。原因を解消したら、画面を起動し直さずに再確認できます。",
+          text: "接続先と条件は、デプロイ済みの環境から自動で読み取ります。上の原因を解消したら、画面を起動し直さずに再確認できます。",
         }),
         el("div", { class: "form-actions" }, [
           el("button", { type: "button", class: "ghost-button", text: "設定を再確認", onclick: openLaunch }),
@@ -990,7 +1090,7 @@ function renderLaunchForm(options) {
       el("div", { class: "section-head" }, el("h3", { text: "固定の条件" })),
       el("p", {
         class: "section-note",
-        text: "AWS 上の Lambda から読み取った実際の設定です。この条件で計測し、結果に記録します。",
+        text: "今の Lambda の設定です。この条件で計測し、結果に記録します（画面からは変えられません）。",
       }),
       fixed,
     ]),
@@ -1176,7 +1276,9 @@ function formatMonthlyCost(value) {
 function renderEstimateResult(result) {
   const estimable = result.languages.filter((language) => language.estimable);
   const ranked = [...estimable].sort((left, right) => left.monthly_cost - right.monthly_cost);
-  const best = ranked[0];
+  // 料金表の単価を適用できる使用量を超える言語があれば、金額は参考値のため最安を断定しない。
+  const outsideTier = estimable.filter((language) => !language.within_pricing_tier);
+  const best = outsideTier.length ? null : ranked[0];
   const series = Object.fromEntries(result.languages.map(({ key }, index) => [key, `series-${(index % 6) + 1}`]));
   const header = el("tr", {}, [
     el("th", { class: "text", scope: "col", text: "言語" }),
@@ -1191,7 +1293,12 @@ function renderEstimateResult(result) {
         el("th", { class: "text", scope: "row" }, el("span", { class: `series-key ${series[language.key]}`, text: language.label })),
         el("td", { class: language === best ? "best" : "" }, [
           el("span", { text: formatMonthlyCost(language.monthly_cost) }),
-          el("span", { class: "cell-note", text: language === best ? "★ 最も安い" : formatRatio(language.monthly_cost, best.monthly_cost) }),
+          el("span", {
+            class: "cell-note",
+            text: !best
+              ? language.within_pricing_tier ? "△ 参考値" : "△ 参考値（単価の適用範囲外）"
+              : language === best ? "★ 最も安い" : formatRatio(language.monthly_cost, best.monthly_cost),
+          }),
         ]),
         el("td", { text: formatMonthlyCost(language.monthly_compute_cost) }),
         el("td", { text: formatValue(language.warm_duration_ms, "ms") }),
@@ -1207,7 +1314,10 @@ function renderEstimateResult(result) {
           el("td", {
             colspan: "4",
             class: "text muted",
-            text: `見込めません: ${language.missing_workloads.join("・")} の実測がありません（この言語を含めて計測すると見込めます）`,
+            text:
+              language.reason === "inconsistent_versions"
+                ? "見込めません: ワークロードごとの根拠の計測で、この言語のイメージの版が異なります（同じ版で各ワークロードを計測し直すと見込めます）"
+                : `見込めません: ${language.missing_workloads.join("・")} の、比較に使える実測がありません（この言語を含めて、今の条件で計測すると見込めます）`,
           }),
         ]),
       ),
@@ -1215,8 +1325,13 @@ function renderEstimateResult(result) {
 
   const notes = [
     "Lambda の料金（リクエスト料金と実行時間分）だけの見込みです。API Gateway・DynamoDB・データ転送・Free Tier は含みません。",
-    `料金表: ${result.pricing.region} ${result.pricing.updated_at} 時点。実測の平均を構成割合で重み付けしています。`,
+    `料金表: ${result.pricing.region} ${result.pricing.updated_at} 時点。同じリージョン・同じ処理内容で比較に使える計測の、成功した要求の平均を構成割合で重み付けしています。`,
   ];
+  if (outsideTier.length) {
+    notes.push(
+      `${outsideTier.map(({ label }) => label).join("・")}: 月間の実行時間の使用量が、料金表の単価（Tier 1）を適用できる範囲を超えるか、範囲を確かめられません。実際は段階料金で単価が下がるため、金額は参考値です（最も安い言語は示していません）。`,
+    );
+  }
   const approximated = estimable.filter((language) => language.approximated_cold_workloads.length);
   if (approximated.length) {
     notes.push(
@@ -1292,13 +1407,14 @@ function renderEstimateForm(options) {
     const sum = Object.values(mix).reduce((left, right) => left + right, 0);
     total.textContent = `割合の合計: ${sum}%${sum === 100 ? "" : "（100% にしてください）"}`;
     error.textContent = "";
+    // 計算を始める前に番号を進め、送信済みの古い要求の応答を表示しないようにする。
+    const current = ++sequence;
     // 合計が100%でない間は計算を送らず、直前の結果も消して誤読を防ぐ。
     if (sum !== 100) {
       output.replaceChildren();
       return;
     }
     const selected = conditions[Number(condition.value)];
-    const current = ++sequence;
     output.replaceChildren(el("p", { class: "muted", text: "計算しています…" }));
     try {
       const result = await fetchJson("/api/estimate", {
@@ -1317,7 +1433,12 @@ function renderEstimateForm(options) {
       }
     }
   };
+  // 入力が変わった時点で、表示中の結果と計算中の要求をどちらも古いものとして扱う。
+  // 計算は入力が止まってから送るが、その間も前の入力の結果を出し続けない。
   const schedule = () => {
+    sequence += 1;
+    output.replaceChildren(el("p", { class: "muted", text: "入力が変わりました。計算し直します…" }));
+    error.textContent = "";
     clearTimeout(timer);
     timer = setTimeout(calculate, ESTIMATE_DEBOUNCE_MS);
   };
@@ -1427,7 +1548,7 @@ async function loadRuns(preferred = null, { keepView = false } = {}) {
         el("h3", { text: "表示できる計測結果がありません" }),
         el("p", {
           class: "section-note",
-          text: "計測すると results/raw に結果が保存され、ここで比較できるようになります。",
+          text: "「＋ 新しく計測する」から計測すると、結果がここに表示され、言語ごとに比較できるようになります。",
         }),
       ]),
     );

@@ -1,11 +1,14 @@
 """DynamoDB属性変換、未登録、SDK障害、保存形式不正の扱いを検証する。"""
 
 import asyncio
+import json
 from decimal import Decimal
+from pathlib import Path
 from threading import get_ident
+from typing import Any
 
 import pytest
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, EndpointConnectionError
 
 from app.models import Item
 from app.repositories import (
@@ -74,7 +77,7 @@ async def test_dynamodb_repository_rejects_non_integer_value() -> None:
         }
     )
 
-    with pytest.raises(RepositoryError, match="invalid shape"):
+    with pytest.raises(RepositoryError, match="invalid_item"):
         await DynamoDBItemRepository(client, "items").get_item("item-001")
 
 
@@ -88,8 +91,65 @@ class ErrorDynamoDBClient:
 
 @pytest.mark.asyncio
 async def test_dynamodb_repository_wraps_sdk_errors() -> None:
-    with pytest.raises(RepositoryError, match="get_item failed"):
+    with pytest.raises(RepositoryError) as error:
         await DynamoDBItemRepository(ErrorDynamoDBClient(), "items").get_item("item-001")
+
+    assert error.value.category == "throttling"
+    assert error.value.error_code == "ProvisionedThroughputExceededException"
+
+
+class RaisingClient:
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    def get_item(self, **_kwargs: object) -> None:
+        raise self.error
+
+
+def _client_error(code: str) -> ClientError:
+    return ClientError({"Error": {"Code": code, "Message": "secret detail"}}, "GetItem")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "category", "code"),
+    [
+        (_client_error("AccessDeniedException"), "permission", "AccessDeniedException"),
+        (_client_error("ResourceNotFoundException"), "table", "ResourceNotFoundException"),
+        (_client_error("InternalServerError"), "unknown", "InternalServerError"),
+        (EndpointConnectionError(endpoint_url="https://dynamodb.invalid"), "network", None),
+    ],
+)
+async def test_sdk_errors_are_classified_by_cause(
+    error: Exception, category: str, code: str | None
+) -> None:
+    with pytest.raises(RepositoryError) as raised:
+        await DynamoDBItemRepository(RaisingClient(error), "items").get_item("item-001")
+
+    assert (raised.value.category, raised.value.error_code) == (category, code)
+
+
+STORED_ITEM_CASES = json.loads(
+    (Path(__file__).resolve().parents[3] / "spec/repository-cases/stored-items.json").read_text(
+        encoding="utf-8"
+    )
+)["cases"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case", STORED_ITEM_CASES, ids=[case["name"] for case in STORED_ITEM_CASES]
+)
+async def test_stored_item_conversion_follows_shared_cases(case: dict[str, Any]) -> None:
+    repository = DynamoDBItemRepository(FakeDynamoDBClient({"Item": case["attributes"]}), "items")
+
+    # 全言語で同じ保存値の境界を使い、契約外の保存値を成功の応答にしない。
+    if "error" in case["expected"]:
+        with pytest.raises(RepositoryError) as raised:
+            await repository.get_item("item-001")
+        assert raised.value.category == case["expected"]["error"]
+    else:
+        assert await repository.get_item("item-001") == Item(**case["expected"]["item"])
 
 
 @pytest.mark.asyncio

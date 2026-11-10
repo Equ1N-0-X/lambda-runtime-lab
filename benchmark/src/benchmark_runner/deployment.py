@@ -64,15 +64,37 @@ def _git(root: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+class RevisionCheckError(RuntimeError):
+    """Gitの異常終了などで、版のずれを判定できなかったことを表す。"""
+
+
 def sources_changed_since(
     revision: str, source_pathspecs: Sequence[str], *, root: Path = ROOT
 ) -> bool | None:
-    """指定コミット以降にイメージの元になるファイルが変わったかを返す。判定できなければNone。"""
-    # 手元の履歴にないコミットなら、比較の基準がないため判定できない。
+    """指定コミット以降にイメージの元になるファイルが変わったかを返す。
+
+    手元の履歴にないコミットならNoneを返す。Gitが異常終了して判定できなければ
+    RevisionCheckErrorを送出し、変更なしと誤って判定しない。
+    """
+    head = _git(root, "rev-parse", "--verify", "--quiet", "HEAD^{commit}")
+    # 手元のHEADを読めなければ、Gitが使えないかリポジトリが壊れており比較の基準がない。
+    if head.returncode != 0:
+        raise RevisionCheckError(_git_failure("rev-parse", head))
+    # HEADを読めるのにコミットが見つからなければ、手元の履歴にない版である（存在しない場合も128）。
     if _git(root, "cat-file", "-e", f"{revision}^{{commit}}").returncode != 0:
         return None
-    # git diff --quiet は差分があると1、なければ0を返す。
-    return _git(root, "diff", "--quiet", revision, "HEAD", "--", *source_pathspecs).returncode == 1
+    diff = _git(root, "diff", "--quiet", revision, "HEAD", "--", *source_pathspecs)
+    # git diff --quiet は差分がなければ0、あれば1を返す。それ以外（128など）は判定不能とする。
+    if diff.returncode in (0, 1):
+        return diff.returncode == 1
+    raise RevisionCheckError(_git_failure("diff", diff))
+
+
+def _git_failure(command: str, result: subprocess.CompletedProcess[str]) -> str:
+    detail = (result.stderr or "").strip().splitlines()
+    return f"git {command} が終了コード {result.returncode} で失敗しました" + (
+        f"（{detail[0]}）" if detail else ""
+    )
 
 
 def check_deployed_revision(
@@ -107,7 +129,11 @@ def check_deployed_revision(
             f"{label} のデプロイ済みイメージは、未コミットの変更を含めて作られています。"
             "変更をコミットしてから" + REPUBLISH_HINT
         )
-    changed = changed_since(match["sha"], source_pathspecs)
+    try:
+        changed = changed_since(match["sha"], source_pathspecs)
+    # Gitで判定できなければ、版が一致するか分からないまま計測させない。
+    except RevisionCheckError as exc:
+        return f"{label} のデプロイ済みの版を照合できませんでした（{exc}）。"
     # 手元の履歴にないコミットから作られていれば、別の作業ブランチの版の可能性がある。
     if changed is None:
         return (

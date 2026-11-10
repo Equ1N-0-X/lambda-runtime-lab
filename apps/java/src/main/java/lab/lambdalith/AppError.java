@@ -13,10 +13,17 @@ import java.util.Map;
  */
 public final class AppError extends RuntimeException {
 
+  /**
+   * 本文の上限（バイト）。有効な要求の最大（約2.45MB）に余裕を持たせ、Lambdaの呼び出しデータの上限（6MB）より
+   * 手前で、全言語が同じエラーを返せる大きさにしている。
+   */
+  public static final int MAX_BODY_BYTES = 4_194_304;
+
   private final int status;
   private final String code;
   private final String publicMessage;
   private final List<ErrorDetail> details;
+  private DependencyCause dependencyCause;
 
   private AppError(int status, String code, String publicMessage, List<ErrorDetail> details) {
     super(code + ": " + publicMessage);
@@ -36,6 +43,15 @@ public final class AppError extends RuntimeException {
   /** JSON構文・UTF-8・重複キーの不正を、本文全体の検証エラーとして返す。 */
   public static AppError invalidJson() {
     return validation(List.of(new ErrorDetail("$", "invalid_json")));
+  }
+
+  /** 本文が上限を超える場合の413応答を作る。本文は解析しない。 */
+  public static AppError payloadTooLarge() {
+    return new AppError(
+        413,
+        "PAYLOAD_TOO_LARGE",
+        "request body too large",
+        List.of(new ErrorDetail("$", "max_bytes:" + MAX_BODY_BYTES)));
   }
 
   /** 未対応プロファイルを、利用可能な候補付きの400応答として返す。 */
@@ -58,9 +74,19 @@ public final class AppError extends RuntimeException {
     return new AppError(404, "NOT_FOUND", "item not found", List.of());
   }
 
-  /** DynamoDBなど外部依存先の障害を502応答へ変換する。 */
-  public static AppError dependency() {
-    return new AppError(502, "DEPENDENCY_ERROR", "dependency error", List.of());
+  /** DynamoDBなど外部依存先の障害を502応答へ変換する。原因は内部ログ用にだけ保持する。 */
+  public static AppError dependency(DependencyCause cause) {
+    AppError error = new AppError(502, "DEPENDENCY_ERROR", "dependency error", List.of());
+    error.dependencyCause = cause;
+    return error;
+  }
+
+  /** 保存先障害を調査するために内部ログへ残す、原因の分類とAWSのエラーコード。 */
+  public record DependencyCause(String category, String errorCode) {}
+
+  /** 保存先障害の原因の分類。公開する本文には含めない。保存先障害以外ではnull。 */
+  public DependencyCause dependencyCause() {
+    return dependencyCause;
   }
 
   /** 内部計算などの予期しない障害を500応答へ変換する。 */

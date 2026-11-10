@@ -19,7 +19,7 @@ flowchart LR
 
 | 操作 | 変わるもの | AWS書き込み |
 | --- | --- | --- |
-| `make bootstrap-ecr` | ECRリポジトリと取得ポリシー | あり |
+| `make bootstrap-ecr` | ECRリポジトリと取得ポリシー・自動削除ルール | あり |
 | `make publish-images` | ECRイメージ | あり |
 | `make deploy` | Lambdaを指定digestへ更新、必要なら周辺リソースも更新 | あり |
 | `terraform plan` | なし。変更予定を表示 | なし |
@@ -113,6 +113,19 @@ make deploy
 
 ECRの「最新タグ」とLambdaの参照digestは別物です。pushだけではLambdaは更新されません。
 
+### 古いイメージの自動削除
+
+ECRには自動削除ルール（ライフサイクルポリシー）を設定しています。`make bootstrap-ecr` と `make deploy` で反映されます。
+
+| 対象 | 残す・消す |
+| --- | --- |
+| `make publish-images` が付けた `benchmark-` で始まるタグのイメージ | 言語ごとに新しい3つを残し、それより古いものを消す |
+| タグのないイメージ | 登録から1日で消す |
+| 自分で付けた別の名前のタグ（`PUBLISH_TAG`） | 消さない |
+
+- 削除はECRが行い、条件を満たしてから24時間以内に実行されます。
+- **注意**: Lambdaが使用中のイメージが消えると、その関数は `Failed` になり、呼び出しがすべて失敗します。`make publish-images` を3回より多く続けて `make deploy` をしないと、デプロイ中の版が削除対象になります。登録したら続けてデプロイしてください。
+
 ## 言語を追加する
 
 1. `apps/<実装キー>` にアプリと `Dockerfile` を用意する（共通の `FINAL_BASE` を使う）。
@@ -147,7 +160,7 @@ terraform -chdir=infrastructure/terraform plan \
 生成後は [ベンチマークレポート利用ガイド](07_BENCHMARK_REPORT_GUIDE.md) に従い、
 `Unclassified=0`、条件、欠損の有無を確認してから比較結果を使用します。
 
-APIは `AWS_IAM` 認可のため、署名付き呼び出し権限が必要です。別の接続先を計測する場合は、環境変数 `<実装キー大文字>_API_URL`（例: `PYTHON_API_URL`）で上書きできます。
+APIは `AWS_IAM` 認可のため、署名付き呼び出し権限が必要です。ワークロード `cold-start` は、計測の間だけ各言語のLambdaの環境変数 `BENCHMARK_COLD_START_NONCE` を書き換えて新しい実行環境を起こすため、`lambda:GetFunctionConfiguration` と `lambda:UpdateFunctionConfiguration` の権限も必要です。終了・中止・失敗のいずれでも元に戻します。戻せないまま止まった場合は、`terraform plan` に環境変数の差分が出るので、`make deploy` で元に戻ります。別の接続先を計測する場合は、環境変数 `<実装キー大文字>_API_URL`（例: `PYTHON_API_URL`）で上書きできます。
 
 `ARCHITECTURE` と `LAMBDA_MEMORY_MB` は、全言語のLambdaに対する
 `aws lambda get-function-configuration` の `Architectures[0]` と `MemorySize` が一致することを

@@ -7,7 +7,7 @@ import { Hono, type Context } from "hono";
 import type { LambdaContext, LambdaEvent } from "hono/aws-lambda";
 
 import * as domain from "./domain.js";
-import { AppError } from "./errors.js";
+import { AppError, MAX_BODY_BYTES, type DependencyCause } from "./errors.js";
 import { parseStrictJson, type JsonValue } from "./json.js";
 import { logRequestCompleted } from "./logging.js";
 import type { ItemRepository } from "./repository.js";
@@ -19,7 +19,8 @@ const BENCHMARK_REQUEST_INDEX_HEADER = "x-benchmark-request-index";
 type AppEnv = {
   Bindings: { event?: LambdaEvent; lambdaContext?: LambdaContext };
   // ログ出力用に、契約上の経路名と計測プロファイルをリクエストごとに保持する。
-  Variables: { route: string; profile: string };
+  // 保存先障害の原因の分類も、応答後のログへ渡すために保持する。
+  Variables: { route: string; profile: string; dependencyCause?: DependencyCause };
 };
 
 export function createApp(repository: ItemRepository): Hono<AppEnv> {
@@ -37,6 +38,7 @@ export function createApp(repository: ItemRepository): Hono<AppEnv> {
       route: c.get("route"),
       profile: c.get("profile"),
       statusCode: c.res.status,
+      dependencyCause: c.get("dependencyCause"),
     });
   });
 
@@ -95,6 +97,7 @@ export function createApp(repository: ItemRepository): Hono<AppEnv> {
   // 契約上のエラーはその状態と本文で返し、想定外の例外は詳細を隠して500にする。
   app.onError((error, c) => {
     const appError = error instanceof AppError ? error : AppError.internal();
+    if (appError.dependencyCause) c.set("dependencyCause", appError.dependencyCause);
     return c.json(appError.body(), appError.status);
   });
 
@@ -109,7 +112,10 @@ function checkBenchmarkRunId(c: Context<AppEnv>): void {
 }
 
 async function parseBody(c: Context<AppEnv>): Promise<JsonValue> {
-  const parsed = parseStrictJson(new Uint8Array(await c.req.arrayBuffer()));
+  const body = new Uint8Array(await c.req.arrayBuffer());
+  // 上限を超える本文は、解析に時間とメモリを使う前に413として拒否する。
+  if (body.byteLength > MAX_BODY_BYTES) throw AppError.payloadTooLarge();
+  const parsed = parseStrictJson(body);
   // 構文、UTF-8、重複キーのいずれかが不正なら、本文全体のinvalid_jsonとして扱う。
   if (!parsed) throw AppError.invalidJson();
   return parsed.value;

@@ -30,10 +30,21 @@ class ContractCase:
     ignored_response_fields: tuple[str, ...] = ()
     # このケースを実装済みの言語（実装キー）。Noneなら全言語が対象。
     implementations: tuple[str, ...] | None = None
+    # JSONとして組み立て直さずにそのまま送る本文（raw_body・raw_body_base64）。
+    # JSONとして不正な本文や、数値の表記そのものを検証するために使う。
+    raw_request_body: bytes | None = None
 
     def applies_to(self, key: str) -> bool:
         """指定した言語がこのケースの検証対象かどうか。"""
         return self.implementations is None or key in self.implementations
+
+    def request_bytes(self) -> bytes | None:
+        """送信する本文のバイト列。本文のない要求はNone。"""
+        if self.raw_request_body is not None:
+            return self.raw_request_body
+        if self.request_body is None:
+            return None
+        return json.dumps(self.request_body, ensure_ascii=False, separators=(",", ":")).encode()
 
 
 @dataclass(frozen=True)
@@ -52,8 +63,14 @@ class ContractTarget:
     transport: str
 
 
-def load_cases(case_directory: Path) -> list[ContractCase]:
-    """正規JSONファイルを名前順に読み、単一・複数ケース形式を平坦な一覧へ変換する。"""
+def load_cases(
+    case_directory: Path, known_keys: tuple[str, ...] | None = None
+) -> list[ContractCase]:
+    """正規JSONファイルを名前順に読み、単一・複数ケース形式を平坦な一覧へ変換する。
+
+    known_keys（実装一覧のキー）を渡すと、対象言語の指定に一覧にないキーがあるケースや、
+    どの言語も対象にならないケースを定義の誤りとして拒否する。
+    """
     files = sorted(case_directory.glob("*.json"))
     # JSONファイルが一件もなければ契約検証にならないため、空の成功扱いにせず停止する。
     if not files:
@@ -67,6 +84,12 @@ def load_cases(case_directory: Path) -> list[ContractCase]:
         if not isinstance(raw, dict):
             raise ValueError(f"{file_path}: テストケースはJSONオブジェクトで指定してください")
         implementations = _implementations(file_path, raw.get("implementations"))
+        unknown = sorted(set(implementations or ()) - set(known_keys or implementations or ()))
+        # 一覧にない言語を対象にしたケースは、誤記のまま一度も検証されないため拒否する。
+        if unknown:
+            raise ValueError(
+                f"{file_path}: implementationsに実装一覧にないキーがあります: {', '.join(unknown)}"
+            )
         file_cases = raw.get("cases")
         # cases項目がない場合はファイル全体を一ケースとして解釈する。
         if file_cases is None:
@@ -222,6 +245,10 @@ def _parse_case(file_path: Path, raw: dict[str, Any]) -> ContractCase:
         raise ValueError(f"{file_path}: 期待応答本文が必要です")
 
     request_body = request.get("body", request.get("json"))
+    raw_request_body = _raw_request_body(file_path, request)
+    # 組み立てる本文と生の本文の両方があると、どちらを送るべきか決められない。
+    if raw_request_body is not None and request_body is not None:
+        raise ValueError(f"{file_path}: request.bodyとraw_bodyは同時に指定できません")
     ignored = raw.get(
         "ignored_response_fields",
         raw.get("ignore_response_fields", raw.get("nondeterministic_fields", [])),
@@ -238,16 +265,65 @@ def _parse_case(file_path: Path, raw: dict[str, Any]) -> ContractCase:
         expected_status=status,
         expected_body=expected_body,
         ignored_response_fields=tuple(ignored),
+        raw_request_body=raw_request_body,
     )
+
+
+def _raw_request_body(file_path: Path, request: dict[str, Any]) -> bytes | None:
+    """raw_body（UTF-8の文字列）、raw_body_base64（任意のバイト列）、
+    raw_body_repeat（同じ文字列の繰り返し）のいずれかを送信用に変換する。"""
+    # 上限を超える大きな本文はケース定義に書き切れないため、文字列と回数で表す。
+    if "raw_body_repeat" in request:
+        repeat = request["raw_body_repeat"]
+        if (
+            not isinstance(repeat, dict)
+            or not isinstance(repeat.get("text"), str)
+            or not repeat["text"]
+            or not isinstance(repeat.get("count"), int)
+            or repeat["count"] < 1
+        ):
+            raise ValueError(
+                f"{file_path}: raw_body_repeatは、空でない文字列textと"
+                "1以上の整数countで指定してください"
+            )
+        return repeat["text"].encode("utf-8") * repeat["count"]
+    if "raw_body_base64" in request:
+        try:
+            return base64.b64decode(request["raw_body_base64"], validate=True)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"{file_path}: raw_body_base64は標準のbase64で指定してください"
+            ) from exc
+    raw = request.get("raw_body")
+    # 生の本文は文字列だけを受け付け、その他の型は組み立て方が曖昧なため拒否する。
+    if raw is not None and not isinstance(raw, str):
+        raise ValueError(f"{file_path}: raw_bodyは文字列で指定してください")
+    return raw.encode("utf-8") if raw is not None else None
+
+
+def case_targets(
+    cases: list[ContractCase], keys: tuple[str, ...]
+) -> list[tuple[ContractCase, str]]:
+    """各ケースを、そのケースを実装済みの言語ごとの検証単位へ展開する。
+
+    どの言語も対象にならないケースは一度も検証されないため、定義の誤りとして拒否する。
+    """
+    pairs = []
+    for case in cases:
+        applicable = [key for key in keys if case.applies_to(key)]
+        if not applicable:
+            raise ValueError(f"{case.name}: 検証の対象になる言語がありません")
+        pairs.extend((case, key) for key in applicable)
+    return pairs
 
 
 def _invoke_direct(base_url: str, case: ContractCase) -> ApiResponse:
     """ベースURLとケース経路を結合し、通常のHTTP要求として送信する。"""
     url = f"{base_url.rstrip('/')}/{case.path.lstrip('/')}"
-    return _send_json(
+    return _send(
         url=url,
         method=case.method,
-        body=case.request_body,
+        data=case.request_bytes(),
         headers=_request_headers(case),
     )
 
@@ -261,10 +337,10 @@ def _invoke_lambda_rie(base_url: str, case: ContractCase) -> ApiResponse:
         url += invoke_path
 
     event = _api_gateway_event(case)
-    runtime_response = _send_json(
+    runtime_response = _send(
         url=url,
         method="POST",
-        body=event,
+        data=json.dumps(event, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
         headers={"Content-Type": "application/json"},
     )
     # RIE自体が200でなく、またはプロキシ応答がオブジェクトでない場合はLambda呼び出し失敗とする。
@@ -286,18 +362,14 @@ def _invoke_lambda_rie(base_url: str, case: ContractCase) -> ApiResponse:
     return ApiResponse(status=status, body=json.loads(encoded_body))
 
 
-def _send_json(
+def _send(
     *,
     url: str,
     method: str,
-    body: JsonValue,
+    data: bytes | None,
     headers: dict[str, str],
 ) -> ApiResponse:
-    """JSON要求を送信し、成功・HTTPエラーのどちらも同じApiResponseへ変換する。"""
-    data = None
-    # 本文がある場合だけUTF-8 JSONへ変換し、本文なし要求はdata=Noneで送信する。
-    if body is not None:
-        data = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    """本文のバイト列をそのまま送信し、成功・HTTPエラーのどちらも同じApiResponseへ変換する。"""
     request = Request(url=url, data=data, headers=headers, method=method)
     try:
         with urlopen(request, timeout=30) as response:  # noqa: S310 - URLs are test inputs.
@@ -325,7 +397,7 @@ def _request_headers(case: ContractCase) -> dict[str, str]:
         "X-Benchmark-Run-Id": str(run_id),
     }
     # 本文がある要求だけapplication/jsonを指定し、GETなど本文なし要求には付けない。
-    if case.request_body is not None:
+    if case.request_bytes() is not None:
         headers["Content-Type"] = "application/json"
     return headers
 
@@ -335,9 +407,16 @@ def _api_gateway_event(case: ContractCase) -> dict[str, JsonValue]:
     split_path = urlsplit(case.path)
     headers = {key.lower(): value for key, value in _request_headers(case).items()}
     body = None
-    # ケース本文がある場合だけJSON文字列化し、ない場合はイベントbodyをnullにする。
-    if case.request_body is not None:
-        body = json.dumps(case.request_body, ensure_ascii=False, separators=(",", ":"))
+    encoded = False
+    data = case.request_bytes()
+    # 本文がUTF-8として読めればそのまま文字列で渡し、読めなければAPI Gatewayと同じく
+    # base64にしてisBase64Encodedを立てる（不正なUTF-8の検証のため）。
+    if data is not None:
+        try:
+            body = data.decode("utf-8")
+        except UnicodeDecodeError:
+            body = base64.b64encode(data).decode("ascii")
+            encoded = True
     return {
         "version": "2.0",
         "routeKey": "$default",
@@ -363,7 +442,7 @@ def _api_gateway_event(case: ContractCase) -> dict[str, JsonValue]:
             "timeEpoch": 1767225600000,
         },
         "body": body,
-        "isBase64Encoded": False,
+        "isBase64Encoded": encoded,
     }
 
 

@@ -3,11 +3,13 @@
 同じ API を Python・Rust・TypeScript・Java で実装し、AWS Lambda のコンテナイメージとして同じ条件でデプロイして、処理時間・コールドスタート・メモリ・料金を比べる検証環境です。
 「どの言語が常に優れているか」は前提にしません。作りたい API に近い処理（ワークロード）ごとに、実測で判断できるようにします。
 
+> **コールドスタートの比較について**: 通常の計測で偶然起きたコールドスタートは件数が少なく、「参考値」として示すだけです。起動の速さは、専用のワークロード `cold-start` で比べます。要求の前に毎回 Lambda の設定を更新して新しい実行環境を起こし、各言語 20 回ずつ測ります。20 回そろった言語どうしで、初期化時間と初回の応答時間を比べます。計測の間だけ Lambda の環境変数を書き換え、終わったら元に戻します（`lambda:UpdateFunctionConfiguration` の権限が必要です）。
+
 ## できること
 
 | やりたいこと | 方法 |
 | --- | --- |
-| 言語ごとの処理時間・コールドスタート・メモリ・料金を比べる | `make ui` の画面で計測し、結果を見る |
+| 言語ごとの処理時間・メモリ・料金・コールドスタートを比べる | `make ui` の画面で計測し、結果を見る |
 | これから作る API の月額料金を言語ごとに見積もる | 画面の「作りたいAPIの月額料金を見込む」 |
 | 結果をファイルで残す・表計算で扱う | `results/reports/<計測ID>.md`・`.csv` |
 | 言語や計測する処理を増やす | `spec/` の一覧に足し、実装を追加する |
@@ -61,12 +63,14 @@ make contract-test   # 全言語のイメージを起動し、応答を正本と
 
 ```bash
 cp .env.example .env          # 初回だけ。AWS_PROFILE などを書く
+source ./.env.export.sh       # 新しいシェルでは毎回、AWS を操作する前に読み込む
+aws sts get-caller-identity   # 操作する AWS アカウントを確認
 make bootstrap-ecr            # ECR を作る（初回・言語追加時）
 make publish-images           # 全言語をビルドして ECR へ登録（Lambda はまだ変わらない）
 terraform -chdir=infrastructure/terraform plan \
   -var="aws_region=ap-northeast-1" -var="environment=benchmark"   # 変更予定の確認
 make deploy                   # Lambda・API Gateway・DynamoDB などを作成・更新
-# terraform output -raw dynamodb_table_name の値を .env の DYNAMODB_TABLE_NAME へ
+# terraform output -raw dynamodb_table_name の値を .env の DYNAMODB_TABLE_NAME へ書き、読み込み直す
 source ./.env.export.sh
 make seed                     # 比較用のデータを投入
 make ui                       # http://127.0.0.1:8765/ で計測・比較
@@ -133,8 +137,8 @@ AWS の操作は料金が発生します。使い終わったら `make destroy` 
 
 ## CI
 
-- `.github/workflows/ci.yml`: push とプルリクエストで、全言語の書式・テスト、arm64 のイメージビルドと Contract Test、Terraform の検証を行います。AWS にはデプロイしません。
-- `.github/workflows/benchmark.yml`: 手動実行だけです。GitHub OIDC で AWS のロールを引き受け、デプロイ・計測・レポート・削除を行います。
+- `.github/workflows/ci.yml`: main への push、プルリクエスト、手動実行で、全言語の書式・テスト、arm64 のイメージビルドと Contract Test、Terraform の検証を行います。AWS にはデプロイしません。
+- AWS 上での計測は CI では行いません。手元から `make benchmark-matrix` で行います（以前の手動の AWS 計測 workflow は廃止しました）。
 
 ## 資料
 

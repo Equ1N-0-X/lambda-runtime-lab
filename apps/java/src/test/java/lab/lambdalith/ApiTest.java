@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -59,6 +60,32 @@ class ApiTest {
   }
 
   @Test
+  void bodyOverTheLimitIsRejectedBeforeParsing() throws Exception {
+    // JSONとして不正な本文でも、上限を超えていれば invalid_json ではなく413を返す。
+    byte[] body = new byte[4_194_305];
+    Arrays.fill(body, (byte) 'x');
+    MockHttpServletResponse response = TestApp.sendBytes(mvc, "POST", "/compute", body, Map.of());
+
+    assertThat(response.getStatus()).isEqualTo(413);
+    JsonNode error = MAPPER.readTree(response.getContentAsByteArray()).get("error");
+    assertThat(error.get("code").asString()).isEqualTo("PAYLOAD_TOO_LARGE");
+    assertThat(error.get("message").asString()).isEqualTo("request body too large");
+    assertThat(error.get("details").toString())
+        .isEqualTo("[{\"field\":\"$\",\"reason\":\"max_bytes:4194304\"}]");
+  }
+
+  @Test
+  void bodyAtTheLimitIsValidatedNormally() throws Exception {
+    byte[] body = new byte[4_194_304];
+    Arrays.fill(body, (byte) ' ');
+    MockHttpServletResponse response = TestApp.sendBytes(mvc, "POST", "/compute", body, Map.of());
+
+    assertThat(response.getStatus()).isEqualTo(422);
+    assertThat(details(response).toString())
+        .isEqualTo("[{\"field\":\"$\",\"reason\":\"invalid_json\"}]");
+  }
+
+  @Test
   void duplicateMembersAndInvalidUtf8AreInvalidJson() throws Exception {
     MockHttpServletResponse duplicate =
         TestApp.send(mvc, "POST", "/transform", "{\"records\":[],\"records\":[]}", Map.of());
@@ -94,6 +121,31 @@ class ApiTest {
     JsonNode line = MAPPER.readTree(logs.toString(StandardCharsets.UTF_8).strip());
     assertThat(line.get("level").asString()).isEqualTo("WARN");
     assertThat(line.get("route").asString()).isEqualTo("/items/{id}");
+    // 分類されていない例外は原因を不明として残し、例外の文言はログへ出さない。
+    assertThat(line.get("dependency_error_category").asString()).isEqualTo("unknown");
+    assertThat(logs.toString(StandardCharsets.UTF_8)).doesNotContain("timeout");
+  }
+
+  @Test
+  void classifiedStorageErrorIsLoggedWithCauseButSameBody() throws Exception {
+    ByteArrayOutputStream logs = new ByteArrayOutputStream();
+    ItemRepository failing =
+        id -> {
+          throw new RepositoryException("permission", "AccessDeniedException");
+        };
+    MockMvc failingMvc = TestApp.mockMvc(failing, new PrintStream(logs, true, StandardCharsets.UTF_8));
+
+    MockHttpServletResponse response = TestApp.send(failingMvc, "GET", "/items/item-001", null, Map.of());
+
+    assertThat(response.getStatus()).isEqualTo(502);
+    // 公開する本文は分類によらず同じで、原因はログにだけ残す。
+    assertThat(MAPPER.readTree(response.getContentAsByteArray()))
+        .isEqualTo(
+            MAPPER.readTree(
+                "{\"error\":{\"code\":\"DEPENDENCY_ERROR\",\"message\":\"dependency error\",\"details\":[]}}"));
+    JsonNode line = MAPPER.readTree(logs.toString(StandardCharsets.UTF_8).strip());
+    assertThat(line.get("dependency_error_category").asString()).isEqualTo("permission");
+    assertThat(line.get("dependency_error_code").asString()).isEqualTo("AccessDeniedException");
   }
 
   @Test

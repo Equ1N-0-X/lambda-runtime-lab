@@ -11,6 +11,7 @@ from benchmark_runner.dashboard.settings import (
     SettingsResolver,
     SettingsUnavailable,
 )
+from benchmark_runner.deployment import DeployedImage
 
 REGISTRY = Path(__file__).parent / "fixtures/implementations.yaml"
 
@@ -45,6 +46,9 @@ def _resolver(*, environ=None, outputs=OUTPUTS, conditions=None, calls=None, che
         read_outputs=read_outputs,
         read_conditions=read_conditions,
         check_revision=check_revision,
+        read_image=lambda function_name, region: DeployedImage(
+            repository=function_name, digest=f"sha256:{function_name}", tags=("t-gabc1234",)
+        ),
     )
 
 
@@ -62,15 +66,46 @@ def test_resolves_everything_without_environment_variables():
     assert [item["key"] for item in settings.public()["implementations"]] == ["python", "rust"]
 
 
-def test_environment_endpoint_and_region_take_precedence():
+def test_environment_region_takes_precedence_and_matching_endpoint_is_accepted():
     calls = []
-    environ = {"PYTHON_API_URL": "https://override.example", "AWS_REGION": "us-east-1"}
+    environ = {"PYTHON_API_URL": "https://python.example", "AWS_REGION": "us-east-1"}
 
     settings = _resolver(environ=environ, calls=calls).resolve()
 
-    assert settings.endpoints["python"] == "https://override.example"
-    assert settings.endpoints["rust"] == "https://rust.example"
+    assert settings.missing() == []
+    assert settings.endpoints["python"] == "https://python.example"
     assert calls[0][1] == "us-east-1"
+
+
+@pytest.mark.parametrize("name", ["PYTHON_API_URL", "PYTHON_API_ENDPOINT"])
+def test_endpoint_override_not_managed_by_terraform_blocks_launch(name):
+    settings = _resolver(environ={name: "https://other-env.example"}).resolve()
+
+    # 呼び出すAPIと、設定・ログを読むLambdaが別環境になるため計測させない。
+    assert settings.public()["ready"] is False
+    assert f"unset {name}" in settings.missing()[0]
+
+
+def test_api_endpoint_takes_precedence_over_api_url_like_the_cli():
+    environ = {
+        "PYTHON_API_ENDPOINT": "https://python.example",
+        "PYTHON_API_URL": "https://stale.example",
+    }
+
+    assert _resolver(environ=environ).resolve().missing() == []
+
+
+def test_checked_deployment_is_kept_as_run_evidence():
+    settings = _resolver(check_revision=lambda **kwargs: None).resolve()
+
+    assert settings.deployments["rust"] == {
+        "function_name": "lab-rust",
+        "architecture": "arm64",
+        "memory_mb": 512,
+        "image_repository": "lab-rust",
+        "image_digest": "sha256:lab-rust",
+        "image_tags": ["t-gabc1234"],
+    }
 
 
 def test_terraform_failure_is_reported_as_a_single_actionable_problem():

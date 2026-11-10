@@ -4,6 +4,7 @@ import json
 import threading
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 import pytest
 
@@ -12,6 +13,8 @@ from benchmark_runner.dashboard.jobs import JobManager
 from benchmark_runner.dashboard.server import create_server
 from benchmark_runner.dashboard.settings import LaunchSettings
 
+PRICING = Path(__file__).resolve().parents[2] / "spec/pricing.yaml"
+
 
 def _record(implementation, index, *, start_type="warm"):
     return {
@@ -19,6 +22,7 @@ def _record(implementation, index, *, start_type="warm"):
         "implementation": implementation,
         "request_index": index,
         "success": True,
+        "response_checked": True,
         "latency_ms": 10.0 + index,
         "duration_ms": 5.0,
         "billed_duration_ms": 6.0,
@@ -40,6 +44,7 @@ def _write_run(results_dir, run_id, *, metadata_overrides=None, records=None, co
         "memory_mb": 512,
         "region": "ap-northeast-1",
         "dry_run": False,
+        "verification": {"mode": "aws"},
         "endpoints": {"python": "https://secret.example", "rust": "https://secret.example"},
         "workload": {"name": "health", "iterations": 2, "client_concurrency": 1, "warmup": 0},
         **(metadata_overrides or {}),
@@ -57,7 +62,7 @@ def _write_run(results_dir, run_id, *, metadata_overrides=None, records=None, co
 def test_load_run_marks_complete_run_comparable_and_hides_endpoints(tmp_path):
     _write_run(tmp_path, "complete")
 
-    run = load_run("complete", results_dir=tmp_path, pricing_path=tmp_path / "missing.yaml")
+    run = load_run("complete", results_dir=tmp_path, pricing_path=PRICING)
 
     assert run["comparable"] is True
     assert run["issues"] == []
@@ -114,6 +119,20 @@ def test_load_run_explains_stale_deployment_when_app_logs_lack_request_index(tmp
     issues = "\n".join(run["issues"])
     assert "計測番号をログに出力していない" in issues
     assert "デプロイ" in issues
+
+
+def test_run_list_shows_failure_counts_per_language(tmp_path):
+    failed = {**_record("rust", 2), "success": False, "start_type": None}
+    records = [_record("python", 1), _record("rust", 1), failed]
+    _write_run(tmp_path, "partial", records=records)
+
+    (summary,) = list_runs(results_dir=tmp_path, pricing_path=tmp_path / "missing.yaml")
+
+    # 履歴でも失敗を含む計測を見分けられるよう、言語ごとの失敗件数を返す。
+    assert summary["failures"] == [
+        {"implementation": "rust", "label": "Rust", "error_count": 1, "sample_count": 2}
+    ]
+    assert summary["comparable"] is False
 
 
 @pytest.mark.parametrize("run_id", ["../secret", "missing", ".hidden", ""])
@@ -198,3 +217,63 @@ def test_server_returns_404_for_unknown_paths(server_url, path):
 
     assert error.value.code == 404
     assert "error" in json.loads(error.value.read())
+
+
+def _costs(tmp_path, **overrides):
+    from benchmark_runner.dashboard.catalog import latest_costs_by_workload
+
+    values = {
+        "architecture": "arm64",
+        "memory_mb": 512,
+        "region": "ap-northeast-1",
+        "experiments": {"health": "sha256:health"},
+        **overrides,
+    }
+    return latest_costs_by_workload(results_dir=tmp_path, pricing_path=PRICING, **values)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"memory_mb": 1024},
+        {"architecture": "x86_64"},
+        {"region": "us-east-1"},
+        {"experiments": {"health": "sha256:other-body"}},
+    ],
+)
+def test_launch_cost_basis_ignores_runs_with_other_planned_conditions(tmp_path, overrides):
+    _write_run(tmp_path, "planned", metadata_overrides={"experiment_id": "sha256:health"})
+
+    assert _costs(tmp_path)["health"]["sources"] == {"python": "planned", "rust": "planned"}
+    # 予定と異なる条件の実測は、古い料金として目安に使わない。
+    assert _costs(tmp_path, **overrides) == {}
+
+
+def test_launch_cost_basis_reads_each_run_once_per_request(tmp_path, monkeypatch):
+    from benchmark_runner.dashboard import catalog
+
+    for name in ("first", "second"):
+        _write_run(tmp_path, name, metadata_overrides={"experiment_id": "sha256:health"})
+    calls = []
+    original = catalog.build_report
+
+    def counting(**kwargs):
+        calls.append(kwargs["run_id"])
+        return original(**kwargs)
+
+    monkeypatch.setattr(catalog, "build_report", counting)
+
+    _costs(tmp_path)
+
+    # 一覧の概要と料金の根拠のために、同じrunを読み直さない。
+    assert sorted(calls) == ["first", "second"]
+
+
+def test_next_request_reflects_updated_results(tmp_path):
+    run_dir = _write_run(tmp_path, "planned", metadata_overrides={"experiment_id": "sha256:health"})
+    assert _costs(tmp_path)["health"]["sources"]["python"] == "planned"
+
+    # 要求をまたいで保持しないため、結果の変更は次の要求で反映される。
+    (run_dir / "merged.jsonl").unlink()
+
+    assert _costs(tmp_path) == {}

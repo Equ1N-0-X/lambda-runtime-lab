@@ -151,7 +151,11 @@ class Parser {
       // 制御文字は文字列中にそのまま置けない（JSON仕様）。
       if (character < " ") throw new JsonSyntaxError("control character");
       this.position += 1;
-      if (character === '"') return result;
+      if (character === '"') {
+        // \uD800 のような対のないサロゲートはUnicodeのスカラー値ではないため、正本ではJSONの解析失敗。
+        if (!result.isWellFormed()) throw new JsonSyntaxError("unpaired surrogate");
+        return result;
+      }
       if (character !== "\\") {
         result += character;
         continue;

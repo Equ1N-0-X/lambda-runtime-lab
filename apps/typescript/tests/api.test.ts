@@ -55,6 +55,29 @@ describe("validation boundaries", () => {
     ]);
   });
 
+  test("a body over the limit is rejected with 413 before parsing", async () => {
+    captureLogs();
+    // JSONとして不正な本文でも、上限を超えていれば invalid_json ではなく413を返す。
+    const response = await post("/compute", "x".repeat(4_194_305));
+
+    expect(response.status).toBe(413);
+    expect(await response.json()).toEqual({
+      error: {
+        code: "PAYLOAD_TOO_LARGE",
+        message: "request body too large",
+        details: [{ field: "$", reason: "max_bytes:4194304" }],
+      },
+    });
+  });
+
+  test("a body at the limit is validated normally", async () => {
+    captureLogs();
+    const response = await post("/compute", " ".repeat(4_194_304));
+
+    expect(response.status).toBe(422);
+    expect((await response.json()).error.details).toEqual([{ field: "$", reason: "invalid_json" }]);
+  });
+
   test("duplicate JSON members are invalid_json", async () => {
     captureLogs();
     const response = await post("/transform", '{"records":[],"records":[]}');

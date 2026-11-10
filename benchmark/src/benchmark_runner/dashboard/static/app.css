@@ -264,6 +264,15 @@ button:focus-visible,
   border-left-color: var(--critical);
 }
 
+.notice p {
+  margin: 8px 0 0;
+}
+
+.cell-error {
+  color: var(--critical);
+  font-weight: 600;
+}
+
 /* 詳細 */
 .run-detail {
   display: grid;
@@ -923,3 +932,11 @@ code {
 .estimate-output {
   min-height: 48px;
 }
+
+/* 参考値・比較不可の理由。指標の説明の下に一行ずつ並べる。 */
+.quality-reason {
+  display: block;
+  margin-top: 4px;
+  color: var(--ink-secondary);
+}
+

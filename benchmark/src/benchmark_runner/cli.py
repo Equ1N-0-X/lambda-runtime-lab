@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import os
+import signal
 import subprocess
 import sys
 import uuid
@@ -15,10 +16,13 @@ from pathlib import Path
 
 import boto3
 
+from benchmark_runner.build_inputs import external_base_images
 from benchmark_runner.cloudwatch import collect_run
+from benchmark_runner.cold_start import ColdStartError, LambdaColdStarter
 from benchmark_runner.dashboard.jobs import JobManager
 from benchmark_runner.dashboard.server import LISTEN_HOST, create_server
 from benchmark_runner.dashboard.settings import (
+    LaunchSettings,
     SettingsResolver,
     SettingsUnavailable,
     read_terraform_outputs,
@@ -29,10 +33,19 @@ from benchmark_runner.implementations import (
     resolve_targets,
 )
 from benchmark_runner.report import generate_report
-from benchmark_runner.runner import RunConfig, run_benchmark
-from benchmark_runner.workloads import WorkloadError, load_workload
+from benchmark_runner.runner import RunConfig, file_content_id, run_benchmark
+from benchmark_runner.sigv4 import SigningError
+from benchmark_runner.workloads import (
+    WorkloadError,
+    apply_profile,
+    check_cold_start,
+    load_workload,
+)
 
 ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_TERRAFORM_DIR = ROOT / "infrastructure/terraform"
+# ログ収集が期限内にそろわなかったことを表す終了コード。結果は保存済みで、再収集できる。
+INCOMPLETE_COLLECTION_EXIT_CODE = 3
 
 
 def _git_revision() -> str | None:
@@ -158,6 +171,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="引数・環境変数にないロググループを、このTerraformの出力（lambda_names）から求める",
     )
     collect.add_argument("--strategy", choices=("auto", "insights", "filter"), default="auto")
+    collect.add_argument(
+        "--wait-seconds",
+        type=float,
+        default=0,
+        help="成功した要求のログがすべてそろうまで、取得し直す期限（秒）。0なら一度だけ取得する",
+    )
     collect.add_argument("--dry-run", action="store_true")
 
     report = subparsers.add_parser("report", help="MarkdownとCSVのレポートを作成する")
@@ -171,6 +190,12 @@ def build_parser() -> argparse.ArgumentParser:
     implementations.add_argument(
         "--format", choices=("keys", "tsv", "pathspecs", "json"), default="keys"
     )
+
+    inputs = subparsers.add_parser(
+        "build-inputs", help="Dockerfileが参照する外部のベースイメージを一行ずつ表示する"
+    )
+    inputs.add_argument("--dockerfile", type=Path, required=True)
+    inputs.add_argument("--build-arg", type=_key_value, action="append", default=[])
 
     ui = subparsers.add_parser("ui", help="計測結果の閲覧と計測開始の画面を手元で起動する")
     ui.add_argument("--port", type=int, default=8765)
@@ -194,12 +219,16 @@ def _run_command(args: argparse.Namespace) -> int:
         overrides["warmup"] = args.warmup
     if args.payload is not None:
         overrides["body"] = args.payload
-    if args.profile is not None:
-        overrides["profile"] = args.profile
-    workload = replace(workload, **overrides)
+    # profileは本文の項目なので、本文を確定してから本文と記録の両方へ同じ値を反映する。
+    workload = apply_profile(replace(workload, **overrides), args.profile)
     # 反復・並行数は正数、ウォームアップは0以上の場合だけ実行可能な条件として受け付ける。
     if workload.iterations <= 0 or workload.client_concurrency <= 0 or workload.warmup < 0:
         raise ValueError("iterationsとconcurrencyは正数、warmupは0以上で指定してください")
+    # 上書き後の条件でも、コールドスタート計測の制約（ウォームアップなし・同時要求1）を守る。
+    check_cold_start(workload)
+    # コールドスタート計測はAWS上のLambdaの設定を更新して行うため、ローカルAPIでは行えない。
+    if workload.cold_start and args.unsigned:
+        raise ValueError("コールドスタートの計測は、AWS 上の Lambda に対してだけ行えます")
 
     # run-idがautoなら新しいUUIDを生成し、明示値なら複数工程で共有できるようそのまま使う。
     run_id = str(uuid.uuid4()) if args.run_id == "auto" else args.run_id
@@ -212,28 +241,129 @@ def _run_command(args: argparse.Namespace) -> int:
         raise ValueError(
             f"ワークロード {workload.name} は次の言語に未対応です: {', '.join(unsupported)}"
         )
+    # allの場合は、ワークロードに対応する言語だけを計測する。
+    targets = tuple(key for key in requested if key in supported)
+    endpoints = _per_implementation(
+        args.endpoint,
+        env_suffixes=("API_ENDPOINT", "API_URL"),
+        keys=keys,
+        fallback=_terraform_output(args.terraform_dir, "api_endpoints"),
+    )
+    architecture, memory_mb = args.architecture, args.memory_mb
+    verification: dict[str, object] = {"mode": "local"}
+    function_names: dict[str, str] = {}
+    # AWSへ署名して送る計測は、画面と同じ事前確認を通し、確かめた実設定を記録する。
+    # 署名しないローカルAPIの確認やドライランは、AWSの照合を求めず正式な計測と区別する。
+    if not args.unsigned and not args.dry_run:
+        settings = _verified_settings(args, targets, endpoints)
+        architecture, memory_mb = settings.architecture, settings.memory_mb
+        verification = {
+            "mode": "aws",
+            "deployments": {key: settings.deployments.get(key) for key in targets},
+        }
+        function_names = {
+            key: settings.deployments[key]["function_name"]
+            for key in targets
+            if settings.deployments.get(key)
+        }
     config = RunConfig(
         run_id=run_id,
-        # allの場合は、ワークロードに対応する言語だけを計測する。
-        targets=tuple(key for key in requested if key in supported),
+        targets=targets,
         unsupported_targets=tuple(key for key in keys if key not in supported),
-        endpoints=_per_implementation(
-            args.endpoint,
-            env_suffixes=("API_ENDPOINT", "API_URL"),
-            keys=keys,
-            fallback=_terraform_output(args.terraform_dir, "api_endpoints"),
-        ),
+        endpoints=endpoints,
         region=args.region,
         results_dir=args.results_dir,
         timeout_seconds=args.timeout,
         sign_requests=not args.unsigned,
         dry_run=args.dry_run,
-        architecture=args.architecture,
-        memory_mb=args.memory_mb,
+        architecture=architecture,
+        memory_mb=memory_mb,
         git_revision=_git_revision(),
+        evidence={
+            "verification": verification,
+            "content_ids": _content_ids(args.workload_file),
+        },
+        function_names=function_names,
+        cold_starter=LambdaColdStarter(args.region) if workload.cold_start else None,
     )
+    # 画面からの中止（SIGTERM）でも、Ctrl+Cと同じく後始末を実行してから終える。
+    # コールドスタート計測では、更新したLambdaの設定を戻すために必要。
+    signal.signal(signal.SIGTERM, signal.default_int_handler)
     result = asyncio.run(run_benchmark(config, workload))
     print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+    return _run_exit_code(result.get("outcomes") or {})
+
+
+def _verified_settings(
+    args: argparse.Namespace, targets: tuple[str, ...], endpoints: dict[str, str]
+) -> LaunchSettings:
+    """計測先のAPI・Lambda・実設定・版を画面と同じ方法で確かめ、記録と食い違えば止める。"""
+    resolver = SettingsResolver(
+        terraform_dir=args.terraform_dir or DEFAULT_TERRAFORM_DIR,
+        environ={**os.environ, "AWS_REGION": args.region},
+    )
+    settings = resolver.resolve()
+    problems = settings.missing()
+    # 画面で計測を開始できない状態なら、CLIからも正式な計測を始めない。
+    if problems:
+        raise ValueError("計測前の確認で問題が見つかりました: " + " ".join(problems))
+    # 指定した条件がLambdaの実設定と違えば、記録が実体と食い違うため止める。
+    if args.architecture is not None and args.architecture != settings.architecture:
+        raise ValueError(
+            f"--architecture {args.architecture} が Lambda の実設定（{settings.architecture}）と"
+            "異なります"
+        )
+    if args.memory_mb is not None and args.memory_mb != settings.memory_mb:
+        raise ValueError(
+            f"--memory-mb {args.memory_mb} が Lambda の実設定（{settings.memory_mb} MB）と"
+            "異なります"
+        )
+    mismatched = [key for key in targets if endpoints.get(key) != settings.endpoints.get(key)]
+    # 接続先がTerraformで管理するAPIと違えば、呼び出す先と記録するLambdaが別になる。
+    if mismatched:
+        raise ValueError(
+            "次の言語の接続先が、Terraform で管理する API と異なります: "
+            + ", ".join(mismatched)
+            + "。--endpoint や <KEY>_API_ENDPOINT・<KEY>_API_URL の上書きを確認してください"
+        )
+    return settings
+
+
+def _content_ids(workload_file: Path) -> dict[str, str | None]:
+    """計測条件の元になった定義ファイルの内容識別子を返す。読めないファイルは不明とする。"""
+    files = {
+        "workloads": workload_file,
+        "implementations": DEFAULT_REGISTRY,
+        "pricing": ROOT / "spec/pricing.yaml",
+        # 比較用の初期データ（DynamoDB）は、このスクリプトが決定的に生成する。
+        "seed_data": ROOT / "scripts/seed-data.py",
+    }
+    return {name: file_content_id(path) for name, path in files.items()}
+
+
+def _run_exit_code(outcomes: dict[str, dict[str, int]]) -> int:
+    """全件失敗した実装があれば計測の失敗として1を返す。一部の失敗は警告して0を返す。"""
+    all_failed = [name for name, counts in outcomes.items() if not counts["success_count"]]
+    # 成功が一件もない実装は性能を測れていないため、後続の工程が成功を装わないよう止める。
+    if all_failed:
+        print(
+            f"エラー: 次の言語はすべての要求が失敗しました: {', '.join(all_failed)}。"
+            "結果は保存しましたが、比較には使えません。",
+            file=sys.stderr,
+        )
+        return 1
+    partial = [
+        f"{name} {counts['failure_count']}件"
+        for name, counts in outcomes.items()
+        if counts["failure_count"]
+    ]
+    # 一部だけの失敗は成功分を参考値として残せるため、計測は続けて結果に注意を残す。
+    if partial:
+        print(
+            f"警告: 失敗した要求があります（{', '.join(partial)}）。"
+            "成功した要求だけの参考値として集計します。",
+            file=sys.stderr,
+        )
     return 0
 
 
@@ -258,8 +388,17 @@ def _collect_command(args: argparse.Namespace) -> int:
         logs_client=client,
         strategy=args.strategy,
         dry_run=args.dry_run,
+        wait_seconds=args.wait_seconds,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+    # 期限内にログがそろわなければ、欠けたまま完了したと装わないよう終了コード3で知らせる。
+    if result.get("status") == "incomplete":
+        print(
+            f"警告: 成功した要求のうち {result['missing_reports']} 件の実行レポートが、"
+            "期限内に見つかりませんでした。時間をおいて再収集するか、未結合のまま扱ってください。",
+            file=sys.stderr,
+        )
+        return INCOMPLETE_COLLECTION_EXIT_CODE
     return 0
 
 
@@ -338,7 +477,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         # runなら計測、collectならログ収集、uiなら閲覧画面、implementationsなら実装一覧、
-        # それ以外のreportなら報告作成を実行する。
+        # build-inputsならビルドの入力、それ以外のreportなら報告作成を実行する。
         if args.command == "run":
             return _run_command(args)
         if args.command == "collect":
@@ -347,7 +486,27 @@ def main(argv: list[str] | None = None) -> int:
             return _ui_command(args)
         if args.command == "implementations":
             return _implementations_command(args)
+        if args.command == "build-inputs":
+            dockerfile = args.dockerfile.read_text(encoding="utf-8")
+            print("\n".join(external_base_images(dockerfile, dict(args.build_arg))))
+            return 0
         return _report_command(args)
+    # コールドスタートを起こせない場合は、権限や関数の状態を確かめるよう案内する。
+    except ColdStartError as exc:
+        print(
+            f"エラー: {exc}。途中まで計測した結果は保存されていますが、比較には使えません。",
+            file=sys.stderr,
+        )
+        return 2
+    # 署名の失敗は、API保存先の障害とは別の、計測する側の認証の問題として案内する。
+    except SigningError as exc:
+        print(
+            f"エラー: AWSへの要求に署名できませんでした（{exc}）。"
+            "AWS にログインし直してから計測し直してください。"
+            "途中まで計測した結果は保存されていますが、比較には使えません。",
+            file=sys.stderr,
+        )
+        return 2
     except (OSError, ValueError, WorkloadError, SettingsUnavailable) as exc:
         print(f"エラー: {exc}", file=sys.stderr)
         return 2
