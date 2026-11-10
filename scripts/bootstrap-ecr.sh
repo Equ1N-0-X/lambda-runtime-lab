@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Lambda用コンテナを登録する前に、Terraform管理のECRリポジトリと取得ポリシーだけを作成する。
+# Lambda用コンテナを登録する前に、Terraform管理のECRリポジトリと取得ポリシー・自動削除ルールだけを作成する。
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -38,12 +38,14 @@ if [[ -n "${TF_AUTO_APPROVE}" ]]; then
   execute terraform -chdir="${TERRAFORM_DIR}" apply "${TF_AUTO_APPROVE}" \
     -target=aws_ecr_repository.runtime \
     -target=aws_ecr_repository_policy.lambda_pull \
+    -target=aws_ecr_lifecycle_policy.runtime \
     -var="aws_region=${REGION}" \
     -var="environment=${ENVIRONMENT}"
 else
   execute terraform -chdir="${TERRAFORM_DIR}" apply \
     -target=aws_ecr_repository.runtime \
     -target=aws_ecr_repository_policy.lambda_pull \
+    -target=aws_ecr_lifecycle_policy.runtime \
     -var="aws_region=${REGION}" \
     -var="environment=${ENVIRONMENT}"
 fi
