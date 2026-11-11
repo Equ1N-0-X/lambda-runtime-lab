@@ -4,23 +4,23 @@ version = "0.1.0"
 description = "Python AWS Lambda Lambdalith benchmark implementation"
 requires-python = "==3.13.*"
 dependencies = [
-    "awslambdaric==3.1.1",
-    "boto3==1.40.25",
+    "awslambdaric==4.2.3",
+    "boto3==1.43.123",
     "fastapi==0.162.0",
-    "mangum==0.19.0",
-    "pydantic==2.11.7",
+    "mangum==0.22.0",
+    "pydantic==2.14.2",
 ]
 
 [dependency-groups]
 dev = [
     "httpx==0.28.1",
     "pytest==9.2.0",
-    "pytest-asyncio==1.4.1",
-    "ruff==0.12.11",
+    "pytest-asyncio==1.4.1.post1",
+    "ruff==0.17.3",
 ]
 
 [build-system]
-requires = ["hatchling==1.27.0"]
+requires = ["hatchling==1.33.0"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]

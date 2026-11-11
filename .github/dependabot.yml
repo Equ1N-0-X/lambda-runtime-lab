@@ -35,6 +35,9 @@ updates:
     directory: /
     schedule: { interval: weekly }
     cooldown: { default-days: 7 }
+    # 部品ごとに別々の提案にせず、一つにまとめる。
+    groups:
+      actions: { patterns: ["*"] }
   - package-ecosystem: terraform
     directory: /infrastructure/terraform
     schedule: { interval: weekly }
