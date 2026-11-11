@@ -12,6 +12,9 @@ VALIDATION_MESSAGE = "request validation failed"
 # 本文の上限をバイト数で表す。有効な要求の最大である約2.45MBに余裕を持たせつつ、Lambdaの
 # 呼び出しデータの上限6MBより手前で、全言語が同じエラーを返せる大きさにしている。
 MAX_BODY_BYTES = 4_194_304
+# 本文のJSONで許す、配列・オブジェクトの入れ子の深さの上限。有効な要求は4段に収まる。
+# 上限がないと、深い入れ子だけで解析器の再帰が尽きて500になるため、全言語で同じ深さで拒否する。
+MAX_JSON_DEPTH = 64
 
 
 class ApplicationError(Exception):

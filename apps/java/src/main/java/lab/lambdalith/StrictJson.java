@@ -1,7 +1,9 @@
 package lab.lambdalith;
 
 import tools.jackson.core.JacksonException;
+import tools.jackson.core.StreamReadConstraints;
 import tools.jackson.core.StreamReadFeature;
+import tools.jackson.core.json.JsonFactory;
 import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
@@ -9,12 +11,22 @@ import tools.jackson.databind.json.JsonMapper;
 /**
  * 共通API契約が求める厳密さでJSON本文を解析する。
  *
- * <p>重複キーは後勝ちにせず不正とし、整数トークンと小数（1 と 1.0）を区別したまま値を返す。 不正なUTF-8も解析失敗になる。
+ * <p>重複キーは後勝ちにせず不正とし、整数トークンと小数（1 と 1.0）を区別したまま値を返す。 不正なUTF-8と、上限より深い入れ子も解析失敗になる。
  */
 public final class StrictJson {
 
+  /**
+   * 本文のJSONで許す、配列・オブジェクトの入れ子の深さの上限。有効な要求は4段に収まる。
+   * 全言語で同じ深さで拒否するため、Jacksonの既定の上限に任せず明示する。
+   */
+  static final int MAX_JSON_DEPTH = 64;
+
   private static final JsonMapper MAPPER =
-      JsonMapper.builder()
+      JsonMapper.builder(
+              JsonFactory.builder()
+                  .streamReadConstraints(
+                      StreamReadConstraints.builder().maxNestingDepth(MAX_JSON_DEPTH).build())
+                  .build())
           .enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION)
           .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
           .build();

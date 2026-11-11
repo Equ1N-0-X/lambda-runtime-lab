@@ -19,6 +19,12 @@ export type JsonValue =
 
 class JsonSyntaxError extends Error {}
 
+/**
+ * 本文のJSONで許す、配列・オブジェクトの入れ子の深さの上限。有効な要求は4段に収まる。
+ * 上限がないと、深い入れ子だけで解析器の再帰が尽きて500になるため、全言語で同じ深さで拒否する。
+ */
+export const MAX_JSON_DEPTH = 64;
+
 const WHITESPACE = new Set([" ", "\t", "\n", "\r"]);
 const ESCAPES: Record<string, string> = {
   '"': '"',
@@ -32,7 +38,7 @@ const ESCAPES: Record<string, string> = {
 };
 const NUMBER_PATTERN = /-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/y;
 
-/** 構文不正・UTF-8不正・重複キーのいずれかならnullを返し、それ以外は解析結果を返す。 */
+/** 構文不正・UTF-8不正・重複キー・深すぎる入れ子のいずれかならnullを返し、それ以外は解析結果を返す。 */
 export function parseStrictJson(body: Uint8Array): { value: JsonValue } | null {
   let text: string;
   try {
@@ -54,6 +60,8 @@ export function parseStrictJson(body: Uint8Array): { value: JsonValue } | null {
 
 class Parser {
   private position = 0;
+  // いま読んでいる位置を囲んでいる配列・オブジェクトの数。
+  private depth = 0;
 
   constructor(private readonly text: string) {}
 
@@ -86,13 +94,21 @@ class Parser {
     }
   }
 
+  /** 配列・オブジェクトへ入る。上限より深い入れ子は、JSON全体を不正とする。 */
+  private enterContainer(): void {
+    this.depth += 1;
+    if (this.depth > MAX_JSON_DEPTH) throw new JsonSyntaxError("nesting too deep");
+  }
+
   private parseObject(): { [key: string]: JsonValue } {
+    this.enterContainer();
     this.position += 1;
     // __proto__ などのキーをプロトタイプとして解釈しないよう、プロトタイプのない対応表を使う。
     const members: { [key: string]: JsonValue } = Object.create(null);
     this.skipWhitespace();
     if (this.text[this.position] === "}") {
       this.position += 1;
+      this.depth -= 1;
       return members;
     }
     for (;;) {
@@ -115,16 +131,19 @@ class Parser {
         continue;
       }
       this.expect("}");
+      this.depth -= 1;
       return members;
     }
   }
 
   private parseArray(): JsonValue[] {
+    this.enterContainer();
     this.position += 1;
     const items: JsonValue[] = [];
     this.skipWhitespace();
     if (this.text[this.position] === "]") {
       this.position += 1;
+      this.depth -= 1;
       return items;
     }
     for (;;) {
@@ -137,6 +156,7 @@ class Parser {
         continue;
       }
       this.expect("]");
+      this.depth -= 1;
       return items;
     }
   }

@@ -13,7 +13,13 @@ from mangum import Mangum
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from app.domain import compute_checksum, transform_records
-from app.errors import MAX_BODY_BYTES, ApplicationError, payload_too_large, validation_error
+from app.errors import (
+    MAX_BODY_BYTES,
+    MAX_JSON_DEPTH,
+    ApplicationError,
+    payload_too_large,
+    validation_error,
+)
 from app.logging import log_dependency_error, log_internal_error, log_request_completed
 from app.models import (
     AggregateRequest,
@@ -125,23 +131,32 @@ def _reject_non_json_constant(name: str) -> None:
     raise ValueError(f"JSONではない数値です: {name}")
 
 
-def _reject_lone_surrogates(value: object) -> None:
-    """文字列がUnicodeのスカラー値だけでできているか確かめる。
+def _reject_unsupported_values(value: object, depth: int = 0) -> None:
+    """文字列がUnicodeのスカラー値だけでできていて、入れ子が上限の深さに収まるか確かめる。
 
     \\ud800 のような対になっていないサロゲートのエスケープは、Pythonでは文字列に残るが、
     正本ではUnicodeのスカラー値ではないためJSONの解析失敗として扱う。
+    depth は、この値を囲んでいる配列・オブジェクトの数を表す。
     """
     # キーと値の文字列を再帰的に確かめ、数値・真偽値・nullは対象外とする。
     if isinstance(value, str):
         if any(0xD800 <= ord(character) <= 0xDFFF for character in value):
             raise ValueError("Unicodeのスカラー値ではない文字が含まれています")
-    elif isinstance(value, dict):
+        return
+    # 数値・真偽値・nullは、深さにも文字にも関係しないため確かめない。
+    if not isinstance(value, dict | list):
+        return
+    # 既に上限の数だけ囲まれている配列・オブジェクトは、上限を超える入れ子として拒否する。
+    if depth >= MAX_JSON_DEPTH:
+        raise ValueError("JSONの入れ子が深すぎます")
+
+    if isinstance(value, dict):
         for key, member in value.items():
-            _reject_lone_surrogates(key)
-            _reject_lone_surrogates(member)
-    elif isinstance(value, list):
+            _reject_unsupported_values(key, depth + 1)
+            _reject_unsupported_values(member, depth + 1)
+    else:
         for member in value:
-            _reject_lone_surrogates(member)
+            _reject_unsupported_values(member, depth + 1)
 
 
 def _parse_body[RequestModel: BaseModel](model: type[RequestModel], body: bytes) -> RequestModel:
@@ -156,11 +171,12 @@ def _parse_body[RequestModel: BaseModel](model: type[RequestModel], body: bytes)
             object_pairs_hook=_reject_duplicate_members,
             parse_constant=_reject_non_json_constant,
         )
-        _reject_lone_surrogates(payload)
+        _reject_unsupported_values(payload)
 
-    # UTF-8でない本文、JSON構文不正、重複キー、JSONではない数値、対のないサロゲートは、
-    # すべて本文全体のJSON不正として返す。
-    except (UnicodeDecodeError, ValueError):
+    # UTF-8でない本文、JSON構文不正、重複キー、JSONではない数値、対のないサロゲート、
+    # 上限を超える入れ子は、すべて本文全体のJSON不正として返す。標準の解析器は入れ子が
+    # 極端に深いと RecursionError を送出するため、500にせず同じJSON不正として扱う。
+    except (UnicodeDecodeError, ValueError, RecursionError):
         raise validation_error([ErrorDetail(field="$", reason="invalid_json")]) from None
 
     try:
