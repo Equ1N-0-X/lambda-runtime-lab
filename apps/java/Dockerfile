@@ -11,7 +11,7 @@ FROM public.ecr.aws/lambda/java:${JAVA_VERSION} AS java-runtime
 # Mavenで依存を解決してコンパイルし、クラスと依存JARを別々に書き出す。テストはCIで実行する。
 # AWS以外が配布するビルド用イメージは、タグを差し替えられても中身が変わらないようdigestで固定し、
 # 更新はDependabotの提案で行う。JDKの版は JAVA_VERSION と同じ25にそろえる。
-FROM maven:3.9-eclipse-temurin-25@sha256:93b8a14ea2f412782e4e842651273b4d903e35cc496284f178fbbe2d67d00976 AS build
+FROM maven:3.9-eclipse-temurin-26@sha256:b2c1ad85954592f9928e84327c65201f308ad9b5d8ed7d5b823717c97bf23fbb AS build
 WORKDIR /build
 COPY pom.xml ./
 RUN mvn -B -q dependency:go-offline
