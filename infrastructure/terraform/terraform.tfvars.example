@@ -8,6 +8,10 @@ architecture          = "arm64"
 # 実行前に terraform plan で、操作する環境名（リソース名の一部）を確認する。
 environment           = "benchmark"
 
+# 各言語のAPIが受け付ける要求数の上限（超えた要求は429）。計測ツールの同時要求数は最大32。
+api_throttling_rate_limit  = 2000
+api_throttling_burst_limit = 1000
+
 # イメージURIは make publish-images が images.auto.tfvars.json へ書き出すため、ここには書かない。
 # 空のままでも terraform validate は通るが、plan/apply では spec/implementations.yaml の
 # 全実装のURIが必要になる。
