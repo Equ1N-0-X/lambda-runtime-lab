@@ -290,6 +290,22 @@ def test_post_rejects_cross_site_or_non_json_requests(server, headers, expected)
     assert "error" in payload
 
 
+@pytest.mark.parametrize("origin", ["http://127.0.0.1:1", "http://localhost:{port}", "null"])
+def test_post_rejects_origins_that_differ_from_the_page_even_on_this_machine(server, origin):
+    port = server.server_address[1]
+    # 同じマシンの別のポートや別の名前で開いたページも、画面自身ではないため拒否する。
+    status, payload = _call(
+        server,
+        "POST",
+        "/api/jobs",
+        body=json.dumps(_request()),
+        headers={"Content-Type": "application/json", "Origin": origin.format(port=port)},
+    )
+
+    assert status == 403
+    assert "error" in payload
+
+
 def test_post_returns_400_for_invalid_input(server):
     status, payload = _call(
         server,
