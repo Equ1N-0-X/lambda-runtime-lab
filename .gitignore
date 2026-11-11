@@ -62,3 +62,9 @@ results/builds/*
 # Node.js
 node_modules/
 apps/typescript/dist/
+
+# 手元だけで使う作業メモ・レビューの下書き・画面確認の画像。
+# 実環境の情報を含むことがあるため、公開リポジトリへ誤って入れない。
+/tmp*.txt
+/reviews/
+/tests/UI確認/
