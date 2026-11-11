@@ -17,6 +17,19 @@ use crate::{
     repository::ItemRepository,
 };
 
+/// ハッシュ値のバイト列を、公開契約のchecksum表記である小文字の16進文字列へ変換する。
+///
+/// sha2 0.11 のハッシュ値の型は16進の書式指定（`{:x}`）に対応しないため、自前で変換する。
+fn lower_hex(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut text = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        text.push(DIGITS[usize::from(byte >> 4)] as char);
+        text.push(DIGITS[usize::from(byte & 0x0f)] as char);
+    }
+    text
+}
+
 pub fn transform(request: TransformRequest) -> TransformResponse {
     // 受け付けた各レコードを一件ずつ加工し、APIレスポンス用のレコードへ変換する。
     let mut records = request
@@ -66,7 +79,7 @@ pub fn compute(request: &ComputeRequest) -> ComputeResponse {
     ComputeResponse {
         processed: request.items,
         iterations: request.iterations,
-        checksum: format!("{:x}", final_hasher.finalize()),
+        checksum: lower_hex(&final_hasher.finalize()),
     }
 }
 
@@ -154,7 +167,7 @@ fn aggregate(mut items: Vec<Item>, missing: Vec<String>) -> Result<AggregateResp
     Ok(AggregateResponse {
         count: items.len(),
         total_value,
-        checksum: format!("{:x}", checksum.finalize()),
+        checksum: lower_hex(&checksum.finalize()),
     })
 }
 
