@@ -3,11 +3,14 @@ name: CI
 # 統合先（main）への push と、プルリクエストの更新で検証する。作業ブランチへの push だけでは
 # 動かさず、同じコミットを push と pull_request の二重で検証しない。PRを作らない作業ブランチは
 # 手動実行（workflow_dispatch）で検証できる。
+# 変更がない間に見つかった依存の脆弱性にも気付けるよう、週に一度（月曜 09:00 JST）も動かす。
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  schedule:
+    - cron: "0 0 * * 1"
 
 permissions:
   contents: read
@@ -140,6 +143,25 @@ jobs:
       # 起動したコンテナはスクリプトが終了時に停止する。
       - name: Compare canonical responses of every implementation
         run: make contract-test
+
+  dependency-audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # 全言語のlockと依存の定義を、公開されている脆弱性の情報（OSV）と照合する。
+      # 一件でも該当すれば失敗させ、修正版への更新を促す。照合の道具はdigestで固定する。
+      - name: Check every lock file against known vulnerabilities
+        run: |
+          docker run --rm --volume "${PWD}:/src:ro" \
+            ghcr.io/google/osv-scanner@sha256:a70ffffc2bfd33482953e5d6b64c6fcdb30239717a07b0f0d3ab2859ce3e4cde \
+            scan source \
+            --lockfile /src/apps/python/uv.lock \
+            --lockfile /src/apps/rust/Cargo.lock \
+            --lockfile /src/apps/typescript/package-lock.json \
+            --lockfile /src/apps/java/pom.xml \
+            --lockfile /src/benchmark/uv.lock \
+            --lockfile /src/tests/contract/uv.lock
 
   terraform:
     name: Terraform

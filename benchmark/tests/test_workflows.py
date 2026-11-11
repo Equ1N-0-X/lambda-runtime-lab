@@ -95,3 +95,24 @@ def test_rust_toolchain_installer_is_pinned_and_verified():
     # 取得の都度変わりうるインストーラースクリプトを、そのまま実行しない。
     assert "sh.rustup.rs" not in dockerfile
     assert "sha256sum --check" in dockerfile
+
+
+def test_ci_audits_every_lock_file_with_a_pinned_scanner():
+    workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
+    command = "\n".join(
+        step.get("run", "") for step in workflow["jobs"]["dependency-audit"]["steps"]
+    )
+    # 照合の道具そのものが知らないうちに変わらないよう、digestで固定する。
+    assert "osv-scanner@sha256:" in command
+    # 言語を足したときにlockの照合を忘れないよう、依存を持つ全ての場所を対象にする。
+    for lock in (
+        "apps/python/uv.lock",
+        "apps/rust/Cargo.lock",
+        "apps/typescript/package-lock.json",
+        "apps/java/pom.xml",
+        "benchmark/uv.lock",
+        "tests/contract/uv.lock",
+    ):
+        assert f"--lockfile /src/{lock}" in command
+    # 変更がない間に公開された脆弱性にも気付けるよう、定期的にも動かす。
+    assert "schedule" in workflow[True]
