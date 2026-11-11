@@ -46,6 +46,20 @@ STATIC_FILES = {
 }
 RUNS_PREFIX = "/api/runs/"
 
+# 全ての応答に付け、画面が読み込めるものと、画面を読み込める相手を自分自身に限る。
+SECURITY_HEADERS = {
+    # 読み込むスクリプト・スタイルと通信先を同じ配信元に限り、他サイトの枠内への埋め込みを禁じる。
+    "Content-Security-Policy": (
+        "default-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+    ),
+    # 宣言した種類と違う内容として解釈させない。
+    "X-Content-Type-Options": "nosniff",
+    # 他サイトのページが、計測結果のJSONを画像やスクリプトとして読み込めないようにする。
+    "Cross-Origin-Resource-Policy": "same-origin",
+    # 画面のURL（run IDを含む）を、リンク先へ送らない。
+    "Referrer-Policy": "no-referrer",
+}
+
 
 class RequestRejected(Exception):
     """画面以外からの要求や不正な本文を拒否するときに使う。"""
@@ -92,10 +106,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # 入力値や設定の不足は、利用者が直せる誤りとして400で返す。
         except (LaunchError, EstimateError, PricingUnavailable) as exc:
             self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
-        # 結果ファイルの破損などは画面で再試行・確認できるよう、原因を添えて500で返す。
+        # 結果ファイルの破損などは500で返す。例外の文言には手元のパスなどが含まれうるため、
+        # 画面には種類だけを示し、原因は画面を起動したターミナルのログへ残す。
         except (OSError, ValueError, KeyError) as exc:
             logger.exception("要求の処理に失敗しました: method=%s path=%s", self.command, path)
-            self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, f"処理に失敗しました: {exc}")
+            self._send_error(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                f"処理に失敗しました（{type(exc).__name__}）。"
+                "画面を起動したターミナルのログを確認してください。",
+            )
 
     def _get(self, path: str) -> None:
         # 画面本体とその資産は固定の対応表からだけ返す。
@@ -195,7 +214,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         """他サイトのページから送られた状態変更の要求（CSRF）を拒否する。"""
         origin = self.headers.get("Origin")
         # ブラウザは別サイトからのPOSTにOriginを付けるため、画面自身以外の値は拒否する。
-        if origin is not None and urlsplit(origin).hostname not in ALLOWED_HOSTNAMES:
+        # 同じマシンの別のポートで動くページも別の配信元なので、ポートまで一致する場合だけ通す。
+        if origin is not None and origin != f"http://{self.headers.get('Host', '')}":
             raise RequestRejected(HTTPStatus.FORBIDDEN, "他のサイトからの操作は受け付けません。")
         # JSON以外の本文はフォーム送信など事前確認なしで送れる形式のため、受け付けない。
         content_type = self.headers.get("Content-Type", "")
@@ -237,6 +257,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         # 計測後に再読み込みしたとき、古い結果が表示されないようキャッシュさせない。
         self.send_header("Cache-Control", "no-store")
+        for name, value in SECURITY_HEADERS.items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(body)
 
