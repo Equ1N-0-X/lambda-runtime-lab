@@ -210,6 +210,36 @@ def test_server_serves_page_and_run_api(server_url):
     assert json.loads(run_body)["comparable"] is True
 
 
+@pytest.mark.parametrize("path", ["/", "/app.js", "/api/runs", "/api/runs/missing"])
+def test_server_restricts_what_the_page_can_load_and_who_can_embed_it(server_url, path):
+    try:
+        with urllib.request.urlopen(f"{server_url}{path}", timeout=5) as response:
+            headers = response.headers
+    # 失敗の応答にも同じ制限を付ける。
+    except urllib.error.HTTPError as error:
+        headers = error.headers
+
+    policy = headers["Content-Security-Policy"]
+    assert "default-src 'self'" in policy
+    assert "frame-ancestors 'none'" in policy
+    assert headers["X-Content-Type-Options"] == "nosniff"
+    assert headers["Cross-Origin-Resource-Policy"] == "same-origin"
+
+
+def test_server_hides_exception_details_of_broken_results(server_url, tmp_path):
+    # 一覧は壊れたrunを読込失敗として示すが、詳細の取得は500になる。
+    (tmp_path / "raw" / "complete" / "metadata.json").write_text("{broken", encoding="utf-8")
+
+    with pytest.raises(urllib.error.HTTPError) as error:
+        _get(f"{server_url}/api/runs/complete")
+
+    message = json.loads(error.value.read())["error"]
+    assert error.value.code == 500
+    # 例外の文言（手元のパスや本文の断片）は画面へ返さず、種類だけを示す。
+    assert str(tmp_path) not in message and "broken" not in message
+    assert "JSONDecodeError" in message
+
+
 @pytest.mark.parametrize("path", ["/api/runs/missing", "/api/runs/..%2Fsecret", "/etc/passwd"])
 def test_server_returns_404_for_unknown_paths(server_url, path):
     with pytest.raises(urllib.error.HTTPError) as error:

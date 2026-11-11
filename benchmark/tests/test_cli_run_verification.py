@@ -124,3 +124,16 @@ def test_cold_start_run_is_rejected_for_unsigned_local_apis(resolved, capsys):
     assert cli.main(["run", "--workload", "cold-start", "--unsigned"]) == 2
 
     assert "AWS 上の Lambda に対してだけ" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("command", ["collect", "report"])
+def test_collect_and_report_reject_run_ids_that_escape_the_results_directory(
+    command, tmp_path, capsys
+):
+    results = tmp_path / "results"
+    # 親ディレクトリを指す値や、ログ検索の条件を壊す引用符を含む値は、読み書きの前に拒否する。
+    for run_id in ("../outside", 'x" or @message like "'):
+        arguments = [command, "--run-id", run_id, "--results-dir", str(results)]
+        assert cli.main(arguments) == 2
+    assert "run ID" in capsys.readouterr().err
+    assert not results.exists()

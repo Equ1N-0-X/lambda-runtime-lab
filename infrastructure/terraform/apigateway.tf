@@ -29,12 +29,19 @@ resource "aws_apigatewayv2_route" "lambda_proxy" {
 }
 
 # 変更を自動反映する既定ステージを作り、アクセスログを実装別CloudWatchへ保存する。
+# 認証情報の漏えいや計測の設定誤りで要求が際限なく増えても、Lambdaの実行と課金が
+# 膨らみ続けないよう、APIごとの流量に上限を設ける（超えた要求は429になる）。
 resource "aws_apigatewayv2_stage" "default" {
   for_each = local.runtimes
 
   api_id      = aws_apigatewayv2_api.runtime[each.key].id
   name        = "$default"
   auto_deploy = true
+
+  default_route_settings {
+    throttling_rate_limit  = var.api_throttling_rate_limit
+    throttling_burst_limit = var.api_throttling_burst_limit
+  }
 
   access_log_settings {
     destination_arn = aws_cloudwatch_log_group.api[each.key].arn

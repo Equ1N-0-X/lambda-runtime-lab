@@ -28,6 +28,17 @@ class StrictJsonTest {
   }
 
   @Test
+  void acceptsNestingUpToTheDepthLimitAndRejectsDeeperDocuments() {
+    assertThat(isInvalid(nested(StrictJson.MAX_JSON_DEPTH))).isFalse();
+    assertThat(isInvalid(nested(StrictJson.MAX_JSON_DEPTH + 1))).isTrue();
+    assertThat(isInvalid(nested(200_000))).isTrue();
+  }
+
+  private static String nested(int depth) {
+    return "[".repeat(depth) + "]".repeat(depth);
+  }
+
+  @Test
   void rejectsMalformedDocuments() {
     assertThat(isInvalid("{\"items\":")).isTrue();
     assertThat(isInvalid("{\"items\":1} x")).isTrue();

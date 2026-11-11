@@ -7,8 +7,10 @@ publish = false
 
 [dependencies]
 async-trait = "0.1.89"
-aws-config = { version = "1.8.11", features = ["behavior-version-latest"] }
-aws-sdk-dynamodb = "1.122.0"
+# 既定の機能は、保守が終わった旧HTTP基盤（hyper 0.14・rustls 0.21）を一緒に取り込む。
+# Lambdaで使う現行のHTTPSクライアントとtokioランタイムだけを明示して有効にする。
+aws-config = { version = "1.8.11", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio"] }
+aws-sdk-dynamodb = { version = "1.122.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
 axum = "0.8.8"
 lambda_http = { version = "1.2.1", default-features = false, features = ["apigw_http"] }
 serde = { version = "1.0.228", features = ["derive"] }

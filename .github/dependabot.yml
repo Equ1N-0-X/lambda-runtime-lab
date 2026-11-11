@@ -1,0 +1,41 @@
+# 依存・ベースイメージ・CIの部品の更新を、週に一度プルリクエストとして受け取る。
+# 公開直後の版は取り込まず、7日経ってから提案させる（公開直後に見つかる問題を避ける）。
+version: 2
+updates:
+  - package-ecosystem: uv
+    directories: ["/apps/python", "/benchmark", "/tests/contract"]
+    schedule: { interval: weekly }
+    cooldown: { default-days: 7 }
+    groups:
+      python: { patterns: ["*"] }
+  - package-ecosystem: cargo
+    directory: /apps/rust
+    schedule: { interval: weekly }
+    cooldown: { default-days: 7 }
+    groups:
+      rust: { patterns: ["*"] }
+  - package-ecosystem: npm
+    directory: /apps/typescript
+    schedule: { interval: weekly }
+    cooldown: { default-days: 7 }
+    groups:
+      typescript: { patterns: ["*"] }
+  - package-ecosystem: maven
+    directory: /apps/java
+    schedule: { interval: weekly }
+    cooldown: { default-days: 7 }
+    groups:
+      java: { patterns: ["*"] }
+  - package-ecosystem: docker
+    directories: ["/apps/python", "/apps/rust", "/apps/typescript", "/apps/java"]
+    schedule: { interval: weekly }
+    groups:
+      base-images: { patterns: ["*"] }
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+    cooldown: { default-days: 7 }
+  - package-ecosystem: terraform
+    directory: /infrastructure/terraform
+    schedule: { interval: weekly }
+    cooldown: { default-days: 7 }
