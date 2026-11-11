@@ -203,7 +203,14 @@ def _error_response(
 
 def create_app(repository: ItemRepository | None = None) -> FastAPI:
     """依存リポジトリを差し替え可能なFastAPIアプリケーションを組み立てる。"""
-    application = FastAPI(title="Lambda Runtime Lab", version="1.0.0")
+    # 対話的なAPI文書とスキーマの経路は契約にないため公開せず、他の言語と同じく未検出にする。
+    application = FastAPI(
+        title="Lambda Runtime Lab",
+        version="1.0.0",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+    )
 
     # テスト時にリポジトリが渡された場合はその実装を使い、指定がない本番時だけ
     # DynamoDB用の既定リポジトリを使う。
