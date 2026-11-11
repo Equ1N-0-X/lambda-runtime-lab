@@ -50,6 +50,32 @@ variable "lambda_timeout_seconds" {
   }
 }
 
+# 全言語のAPIへ同じ値を設定し、流量の上限を揃える。
+# 既定値は、計測ツールが出せる要求（同時要求数は最大32）を妨げない大きさにしている。
+variable "api_throttling_rate_limit" {
+  description = "各言語のAPIが1秒あたりに受け付ける要求数の上限。超えた要求は429になる。"
+  type        = number
+  default     = 2000
+
+  validation {
+    # 上限なしや0（全要求の拒否）にならないよう、1以上10000以下だけを受け付ける。
+    condition     = var.api_throttling_rate_limit >= 1 && var.api_throttling_rate_limit <= 10000
+    error_message = "api_throttling_rate_limitは1以上10000以下で指定してください。"
+  }
+}
+
+variable "api_throttling_burst_limit" {
+  description = "各言語のAPIが瞬間的に受け付ける要求数の上限（同時に処理中の要求の目安）。"
+  type        = number
+  default     = 1000
+
+  validation {
+    # 計測ツールの同時要求数（最大32）を下回らない整数で、アカウントの既定の上限5000以下にする。
+    condition     = var.api_throttling_burst_limit >= 32 && var.api_throttling_burst_limit <= 5000 && floor(var.api_throttling_burst_limit) == var.api_throttling_burst_limit
+    error_message = "api_throttling_burst_limitは32以上5000以下の整数で指定してください。"
+  }
+}
+
 # 全言語のLambdaとコンテナビルドで共有するCPUアーキテクチャを選ぶ。
 variable "architecture" {
   description = "全言語のLambda関数で使用する命令セットアーキテクチャ。"

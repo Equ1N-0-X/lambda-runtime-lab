@@ -81,7 +81,7 @@ ECR を先に作成した理由は、Lambda を作成するには ECR 上のイ�
 2. `make publish-images` でローカルビルド・ECR プッシュを実行し、digest URI を `images.auto.tfvars.json` へ書き出す。
 3. Terraform plan を確認してから `make deploy` を実行する。
 
-現在の API URL は、Python が `https://clwf5l9sol.execute-api.ap-northeast-1.amazonaws.com`、Rust が `https://b3wszko32b.execute-api.ap-northeast-1.amazonaws.com` です。
+API の URL は公開文書へ書かず、`terraform -chdir=infrastructure/terraform output api_endpoints` で確認します。
 
 ## 未決事項
 

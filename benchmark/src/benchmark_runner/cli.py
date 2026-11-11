@@ -33,7 +33,7 @@ from benchmark_runner.implementations import (
     resolve_targets,
 )
 from benchmark_runner.report import generate_report
-from benchmark_runner.runner import RunConfig, file_content_id, run_benchmark
+from benchmark_runner.runner import RunConfig, file_content_id, run_benchmark, validate_run_id
 from benchmark_runner.sigv4 import SigningError
 from benchmark_runner.workloads import (
     WorkloadError,
@@ -369,6 +369,8 @@ def _run_exit_code(outcomes: dict[str, dict[str, int]]) -> int:
 
 def _collect_command(args: argparse.Namespace) -> int:
     """設定済み実装のロググループを収集対象にし、保存済み測定と相関する。"""
+    # 実行IDは結果ディレクトリの名前とログ検索の条件に使うため、読み書きの前に形式を確かめる。
+    validate_run_id(args.run_id)
     keys = tuple(implementation.key for implementation in load_implementations())
     deployed = {
         key: f"/aws/lambda/{name}"
@@ -404,6 +406,8 @@ def _collect_command(args: argparse.Namespace) -> int:
 
 def _report_command(args: argparse.Namespace) -> int:
     """指定実行IDの測定値からMarkdown・CSVレポートを生成し、保存先を表示する。"""
+    # 実行IDは読み込むディレクトリと書き出すファイルの名前に使うため、形式を先に確かめる。
+    validate_run_id(args.run_id)
     markdown, csv_path = generate_report(
         run_id=args.run_id,
         results_dir=args.results_dir,

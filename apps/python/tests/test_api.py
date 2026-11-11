@@ -313,3 +313,18 @@ def test_repository_failure_uses_the_dependency_error_schema() -> None:
             "details": [],
         }
     }
+
+
+def test_extremely_deep_nesting_is_invalid_json_not_an_internal_error(client: TestClient) -> None:
+    # 標準の解析器の再帰が尽きる深さでも、500ではなく本文のJSON不正として返す。
+    depth = 100_000
+    response = client.post("/compute", content=b"[" * depth + b"]" * depth)
+
+    assert response.status_code == 422
+    assert response.json()["error"]["details"] == [{"field": "$", "reason": "invalid_json"}]
+
+
+def test_interactive_documentation_routes_are_not_served(client: TestClient) -> None:
+    # 契約にないAPI文書とスキーマの経路は公開しない。
+    for path in ("/docs", "/redoc", "/openapi.json"):
+        assert client.get(path).status_code == 404

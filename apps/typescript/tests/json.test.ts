@@ -2,7 +2,7 @@
 
 import { describe, expect, test } from "vitest";
 
-import { JsonNumber, parseStrictJson } from "../src/json.js";
+import { JsonNumber, MAX_JSON_DEPTH, parseStrictJson } from "../src/json.js";
 
 const encode = (text: string) => new TextEncoder().encode(text);
 
@@ -19,6 +19,17 @@ describe("parseStrictJson", () => {
   test("rejects duplicate members at any depth", () => {
     expect(parseStrictJson(encode('{"items":1,"items":2}'))).toBeNull();
     expect(parseStrictJson(encode('{"records":[{"id":"a","id":"b"}]}'))).toBeNull();
+  });
+
+  test("accepts nesting up to the depth limit and rejects deeper documents", () => {
+    const nested = (depth: number) => encode("[".repeat(depth) + "]".repeat(depth));
+
+    expect(parseStrictJson(nested(MAX_JSON_DEPTH))).not.toBeNull();
+    expect(parseStrictJson(nested(MAX_JSON_DEPTH + 1))).toBeNull();
+    // 再帰が尽きる深さでも例外を漏らさず、解析失敗として返す。
+    expect(parseStrictJson(nested(200_000))).toBeNull();
+    // 閉じた後は深さを戻すため、横に並んだ値は深さに数えない。
+    expect(parseStrictJson(encode(`[${"[],".repeat(200)}{}]`))).not.toBeNull();
   });
 
   test("rejects malformed documents and invalid UTF-8", () => {

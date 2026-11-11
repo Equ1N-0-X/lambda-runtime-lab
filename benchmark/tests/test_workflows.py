@@ -95,3 +95,44 @@ def test_rust_toolchain_installer_is_pinned_and_verified():
     # 取得の都度変わりうるインストーラースクリプトを、そのまま実行しない。
     assert "sh.rustup.rs" not in dockerfile
     assert "sha256sum --check" in dockerfile
+
+
+def test_ci_audits_every_lock_file_with_a_pinned_scanner():
+    workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
+    command = "\n".join(
+        step.get("run", "") for step in workflow["jobs"]["dependency-audit"]["steps"]
+    )
+    # 照合の道具そのものが知らないうちに変わらないよう、digestで固定する。
+    assert "osv-scanner@sha256:" in command
+    # 言語を足したときにlockの照合を忘れないよう、依存を持つ全ての場所を対象にする。
+    for lock in (
+        "apps/python/uv.lock",
+        "apps/rust/Cargo.lock",
+        "apps/typescript/package-lock.json",
+        "apps/java/pom.xml",
+        "benchmark/uv.lock",
+        "tests/contract/uv.lock",
+    ):
+        assert f"--lockfile /src/{lock}" in command
+    # 変更がない間に公開された脆弱性にも気付けるよう、定期的にも動かす。
+    assert "schedule" in workflow[True]
+
+
+def test_third_party_build_and_test_images_are_pinned_by_digest():
+    import re
+
+    references = [
+        line.split()[1]
+        for path in sorted((ROOT / "apps").glob("*/Dockerfile"))
+        for line in path.read_text().splitlines()
+        if line.startswith("FROM ") and "public.ecr.aws/" not in line and "$" not in line
+    ]
+    # 前の段階を土台にする FROM（名前だけの参照）は外部のイメージではない。
+    external = [reference for reference in references if "/" in reference or ":" in reference]
+    # AWS以外が配布するイメージは、タグを差し替えられても中身が変わらないようにする。
+    assert external
+    assert all(re.search(r"@sha256:[0-9a-f]{64}$", reference) for reference in external), external
+
+    contract = (ROOT / "scripts/run-contract-test.sh").read_text()
+    assert "dynamodb-local:latest" not in contract
+    assert re.search(r"amazon/dynamodb-local:[0-9.]+@sha256:[0-9a-f]{64}", contract)
