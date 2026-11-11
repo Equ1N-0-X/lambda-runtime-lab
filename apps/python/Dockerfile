@@ -5,8 +5,11 @@ ARG PYTHON_VERSION=3.13
 ARG FINAL_BASE=public.ecr.aws/lambda/provided:al2023
 
 # AWS公式Pythonイメージからランタイムを、uv公式イメージから依存解決ツールだけを取得する。
+# AWS公式イメージはタグのままにして、ビルドのたびに修正済みのランタイムを取り込む
+# （実際に使ったdigestはビルド記録に残る）。AWS以外が配布するuvは、タグを差し替えられても
+# 中身が変わらないようdigestで固定し、更新はDependabotの提案で行う。
 FROM public.ecr.aws/lambda/python:${PYTHON_VERSION} AS python-runtime
-FROM ghcr.io/astral-sh/uv:0.8.13 AS uv-bin
+FROM ghcr.io/astral-sh/uv:0.8.13@sha256:4de5495181a281bc744845b9579acf7b221d6791f99bcc211b9ec13f417c2853 AS uv-bin
 
 # lockファイルに固定された本番依存だけを、最終イメージへコピー可能な仮想環境へ展開する。
 FROM python-runtime AS dependencies

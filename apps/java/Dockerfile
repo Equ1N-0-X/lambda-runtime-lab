@@ -9,7 +9,9 @@ ARG FINAL_BASE=public.ecr.aws/lambda/provided:al2023
 FROM public.ecr.aws/lambda/java:${JAVA_VERSION} AS java-runtime
 
 # Mavenで依存を解決してコンパイルし、クラスと依存JARを別々に書き出す。テストはCIで実行する。
-FROM maven:3.9-eclipse-temurin-${JAVA_VERSION} AS build
+# AWS以外が配布するビルド用イメージは、タグを差し替えられても中身が変わらないようdigestで固定し、
+# 更新はDependabotの提案で行う。JDKの版は JAVA_VERSION と同じ25にそろえる。
+FROM maven:3.9-eclipse-temurin-25@sha256:93b8a14ea2f412782e4e842651273b4d903e35cc496284f178fbbe2d67d00976 AS build
 WORKDIR /build
 COPY pom.xml ./
 RUN mvn -B -q dependency:go-offline

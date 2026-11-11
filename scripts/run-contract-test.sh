@@ -21,6 +21,8 @@ IMAGE_TAG="${IMAGE_TAG:-local}"
 # 言語ごとのRIEは、この番号から一覧の順に一つずつ割り当てたポートで待ち受ける。
 FIRST_PORT="${CONTRACT_FIRST_PORT:-9101}"
 DYNAMODB_CONTAINER="lambda-runtime-lab-contract-dynamodb"
+# テスト用のDynamoDB Localは、取得のたびに中身が変わりうる latest ではなく、版とdigestで固定する。
+DYNAMODB_LOCAL_IMAGE="amazon/dynamodb-local:3.3.2@sha256:6ada631ec7aa5fc83446855eb17233e3dad184fec47477e8140c6c569cfe0c86"
 # 自前で起動したDynamoDB Localと各言語のコンテナは同じネットワークに置き、コンテナ名で接続する。
 # LinuxのDockerでは、ホストの127.0.0.1だけで待ち受けるポートへコンテナから届かないため。
 CONTRACT_NETWORK="lambda-runtime-lab-contract"
@@ -153,7 +155,7 @@ start_dynamodb_if_needed() {
     STARTED_NETWORK=true
   fi
   docker run --detach --rm --name "${DYNAMODB_CONTAINER}" --network "${CONTRACT_NETWORK}" \
-    --publish 127.0.0.1:8000:8000 amazon/dynamodb-local:latest >/dev/null
+    --publish 127.0.0.1:8000:8000 "${DYNAMODB_LOCAL_IMAGE}" >/dev/null
   STARTED_DYNAMODB=true
   RUNTIME_DYNAMODB_URL="http://${DYNAMODB_CONTAINER}:8000"
   wait_for_dynamodb
