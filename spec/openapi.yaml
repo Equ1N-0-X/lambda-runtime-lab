@@ -19,6 +19,7 @@ x-canonical-contract:
     json-numbers: Integers are JSON integer tokens; strings, floats, and booleans are never coerced.
     unknown-properties: Rejected at every object boundary.
     duplicate-object-members: Invalid JSON; return VALIDATION_ERROR for field "$" with reason "invalid_json".
+    nesting-depth: Arrays and objects may be nested up to 64 levels; deeper nesting is invalid JSON with reason "invalid_json".
     strings: Unicode scalar values are preserved exactly; no Unicode normalization is performed.
   ordering:
     ids: Ascending lexicographic order of UTF-8 bytes. The allowed ID alphabet is ASCII, so this is also ASCII order.

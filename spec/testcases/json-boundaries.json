@@ -1,6 +1,6 @@
 {
   "contract_version": "1.0.0",
-  "description": "生の本文で送る、JSON・数値・profileの共通境界。request.raw_body はUTF-8の文字列のまま、raw_body_base64 はデコードしたバイト列のまま送る（JSONとして組み立て直さない）。raw_body_repeat は text を count 回つなげた本文を送る。",
+  "description": "生の本文で送る、JSON・数値・profileの共通境界。request.raw_body はUTF-8の文字列のまま、raw_body_base64 はデコードしたバイト列のまま送る（JSONとして組み立て直さない）。raw_body_repeat は text を count 回つなげた本文を送る。入れ子の深さの境界は、配列を64段・65段重ねた本文で確かめる。",
   "cases": [
     {
       "name": "long-unsupported-profile-is-unsupported-profile",
@@ -316,6 +316,52 @@
           "text": " ",
           "count": 4194304
         }
+      },
+      "expected": {
+        "status": 422,
+        "body": {
+          "error": {
+            "code": "VALIDATION_ERROR",
+            "message": "request validation failed",
+            "details": [
+              {
+                "field": "$",
+                "reason": "invalid_json"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "nesting-at-the-depth-limit-is-validated-normally",
+      "request": {
+        "method": "POST",
+        "path": "/compute",
+        "raw_body": "[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]"
+      },
+      "expected": {
+        "status": 422,
+        "body": {
+          "error": {
+            "code": "VALIDATION_ERROR",
+            "message": "request validation failed",
+            "details": [
+              {
+                "field": "$",
+                "reason": "type:object"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "nesting-over-the-depth-limit-is-invalid-json",
+      "request": {
+        "method": "POST",
+        "path": "/compute",
+        "raw_body": "[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]"
       },
       "expected": {
         "status": 422,
