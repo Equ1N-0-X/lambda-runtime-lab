@@ -1,6 +1,12 @@
 # 計測するワークロード（処理の種類）の定義。
 #
+# title: 画面の選択肢に出す、処理の内容が分かる短い表示名。
 # description: 画面で処理の内容を伝える一文。
+# purpose: この処理を計測すると何が分かるかを伝える一文。
+# flow: 1リクエストで Lambda が行う処理を、順番に並べた短い語句。画面で流れとして図示する。
+# details: 画面で「処理の詳細」を開いたときに見せる説明。steps は処理の手順、response は返す応答の例、
+#          notes は補足。送るリクエストは method・path・body から画面が組み立てる。
+#          title・purpose・flow・details は画面の説明だけに使い、計測の内容や実験の識別子には影響しない。
 # implementations: このワークロードを実装済みの言語（spec/implementations.yaml の実装キー）。
 #                  省略すると全言語が対応しているものとして扱う。新しいワークロードを一部の言語
 #                  だけで先に計測したい場合に指定する（docs/08_ワークロードと言語の追加手順.md）。
@@ -20,7 +26,20 @@ defaults:
 
 workloads:
   health:
+    title: 最小の応答
     description: 外部への通信をせずに応答する、最小の処理です（Lambdaとフレームワークの基本的な重さ）。
+    purpose: 言語とフレームワークそのものの基本的な速さが分かります。
+    flow:
+      - リクエストを受け取る
+      - 外部と通信せずに応答する
+    details:
+      steps:
+        - "API Gateway から届いたリクエストを、各言語のWebフレームワーク（Python: FastAPI、Rust: axum、TypeScript: Hono、Java: Spring Boot）が受け取り、/health の処理へ振り分けます。"
+        - 計測を識別するヘッダー（x-benchmark-run-id）が付いていれば、その形式を確かめます。
+        - DynamoDB などの外部とは通信せず、固定の応答を組み立てて返します。
+      response: '{"status": "ok"}'
+      notes:
+        - 処理らしい処理がないため、ここで出る差は、言語の実行環境とフレームワークそのものの重さです。
     method: GET
     path: /health
     warmup: 20
@@ -28,7 +47,22 @@ workloads:
     client_concurrency: 1
 
   transform-small:
+    title: JSON変換（小・1件）
     description: 1件のレコードを検証・正規化して返す、小さなJSON変換です。
+    purpose: 小さなデータを受け取って返すAPIでの速さが分かります。
+    flow:
+      - JSON 1件を受け取る
+      - 検証・正規化する
+      - JSONで応答する
+    details:
+      steps:
+        - 本文のJSONを読み取り、型と形式を検証します（未定義の項目は拒否。id は英数字と . _ - で128文字まで、name は256文字まで、tags は32個まで、value は±10億以内の整数）。
+        - 同じ id のレコードが重複していないことを確かめます。
+        - レコードを正規化します。name は前後の半角スペースを除いて小文字にし、tags は重複を除いて昇順に並べます。
+        - レコードを id の昇順に並べ、件数を添えたJSONにして返します。
+      response: '{"records": [{"id": "item-001", "name": "example name", "tags": ["a", "b"], "value": 123}], "count": 1}'
+      notes:
+        - 外部とは通信しません。JSONの読み書きと検証にかかる時間が中心です。
     method: POST
     path: /transform
     warmup: 20
@@ -42,7 +76,22 @@ workloads:
           value: 123
 
   transform-large:
+    title: JSON変換（大・20件）
     description: 20件のレコードを検証・正規化・並べ替えして返す、大きめのJSON変換です。
+    purpose: データ量が増えたときのJSON処理の速さが分かります。
+    flow:
+      - JSON 20件を受け取る
+      - 検証・正規化・並べ替えをする
+      - JSONで応答する
+    details:
+      steps:
+        - 本文のJSON（20件）を読み取り、1件ずつ型と形式を検証します（検証の内容は「JSON変換（小・1件）」と同じです）。
+        - 同じ id のレコードが重複していないことを確かめます。
+        - 20件それぞれを正規化します。name は前後の半角スペースを除いて小文字にし、tags は重複を除いて昇順に並べます（gamma, alpha, beta, alpha → alpha, beta, gamma）。
+        - レコードを id の昇順に並べ、件数を添えたJSONにして返します。
+      response: '{"records": [{"id": "item-001", "name": "benchmark record 001", "tags": ["alpha", "beta", "gamma"], "value": 1}, …（20件）], "count": 20}'
+      notes:
+        - 外部とは通信しません。「JSON変換（小・1件）」と比べると、データ量が増えたときの伸び方が分かります。
     method: POST
     path: /transform
     warmup: 10
@@ -72,7 +121,24 @@ workloads:
         - {id: item-020, name: "  Benchmark Record 020  ", tags: [gamma, alpha, beta, alpha], value: 20}
 
   compute-sequential:
+    title: CPU計算（SHA-256）
     description: SHA-256を10万回計算する、CPUを使う処理です。
+    purpose: 計算が重い処理での、言語そのものの速さが分かります。
+    flow:
+      - リクエストを受け取る
+      - SHA-256を10万回計算する
+      - 結果を応答する
+    details:
+      steps:
+        - 本文のJSONを読み取り、計算量が上限（項目数 × 繰り返し回数が100万以下）に収まることを確かめます。
+        - "100個の項目それぞれについて、「benchmark-seed:項目の番号」という文字列から始めて、SHA-256を1,000回繰り返しかけます。前の回のハッシュ値が次の回の入力です（合計10万回）。"
+        - 100個の最終ハッシュ値をつなげ、もう一度SHA-256を計算してチェックサム（検算用の値）にします。
+        - 項目数、繰り返し回数、チェックサムをJSONにして返します。
+      response: '{"processed": 100, "iterations": 1000, "checksum": "（64桁の16進数）"}'
+      notes:
+        - 外部とは通信しません。項目は1個ずつ順に計算し、並列には計算しません。
+        - "SHA-256は各言語で一般的な実装を使います（Python: hashlib、Rust: sha2、TypeScript: node:crypto、Java: MessageDigest）。"
+        - どの言語でも同じチェックサムになる計算です。
     method: POST
     path: /compute
     warmup: 10
@@ -85,7 +151,22 @@ workloads:
       profile: sequential
 
   items:
+    title: DB読み取り（1件）
     description: DynamoDBから1件を読み取って返す処理です。
+    purpose: データベースを1回読むだけの、よくあるAPIでの速さが分かります。
+    flow:
+      - リクエストを受け取る
+      - DynamoDBから1件読む
+      - 応答する
+    details:
+      steps:
+        - パスから id（item-001）を取り出し、形式を確かめます。
+        - DynamoDB に GetItem（1件の読み取り）を1回送ります。直前の書き込みも必ず反映される「強い整合性」で読みます。
+        - 返ってきた項目（id、数値の value、256文字の payload）の形式を確かめます。項目がなければ 404 を返します。
+        - 項目をJSONにして返します。
+      response: '{"item": {"id": "item-001", "value": （0〜9999の整数）, "payload": "（256文字の文字列）"}}'
+      notes:
+        - 時間の大半は DynamoDB の応答待ちです。言語の差は、AWS SDK の呼び出しと応答の変換に表れます。
     method: GET
     path: /items/item-001
     warmup: 20
@@ -93,7 +174,24 @@ workloads:
     client_concurrency: 4
 
   aggregate-sequential:
+    title: DB集計（5件・順番）
     description: DynamoDBから5件を順番に読み取り、集計する処理です。
+    purpose: データベースを何度も順に読むAPIでの速さが分かります。
+    flow:
+      - リクエストを受け取る
+      - DynamoDBから5件を1件ずつ順に読む
+      - 集計する
+      - 応答する
+    details:
+      steps:
+        - 本文のJSONを読み取り、id の形式と、同じ id が重複していないことを確かめます。
+        - 5件の id について、DynamoDB に GetItem を1件ずつ送ります。前の1件の応答を待ってから次を読みます（強い整合性、合計5回）。
+        - 見つからない id があれば 404 を返します。
+        - 5件を id の昇順に並べ、value の合計と、payload をつなげた文字列のSHA-256（チェックサム）を計算します。
+        - 件数、合計、チェックサムをJSONにして返します。
+      response: '{"count": 5, "total_value": （value の合計）, "checksum": "（64桁の16進数）"}'
+      notes:
+        - 読み取りの回数は「DB集計（5件・同時）」と同じ5回です。違うのは読む順序だけです。
     method: POST
     path: /aggregate
     warmup: 20
@@ -109,7 +207,24 @@ workloads:
       profile: sequential
 
   aggregate-concurrent:
+    title: DB集計（5件・同時）
     description: DynamoDBから5件を同時に読み取り、集計する処理です。
+    purpose: データベースの読み取りを同時に行ったときの速さが分かります（順番との差）。
+    flow:
+      - リクエストを受け取る
+      - DynamoDBから5件を同時に読む
+      - 集計する
+      - 応答する
+    details:
+      steps:
+        - 本文のJSONを読み取り、id の形式と、同じ id が重複していないことを確かめます。
+        - 5件の id について、DynamoDB への GetItem を5回同時に送り、すべての応答がそろうのを待ちます（強い整合性）。
+        - 見つからない id があれば 404 を返します。
+        - 5件を id の昇順に並べ、value の合計と、payload をつなげた文字列のSHA-256（チェックサム）を計算します。
+        - 件数、合計、チェックサムをJSONにして返します。
+      response: '{"count": 5, "total_value": （value の合計）, "checksum": "（64桁の16進数）"}'
+      notes:
+        - 読み取りの回数は「DB集計（5件・順番）」と同じ5回です。同時に読む仕組みは言語ごとに異なり、その差が表れます。
     method: POST
     path: /aggregate
     warmup: 20
@@ -125,7 +240,24 @@ workloads:
       profile: concurrent
 
   cold-start:
+    title: コールドスタート
     description: 毎回新しい実行環境を起こし、起動から最初の応答まで（コールドスタート）の時間を比べます。
+    purpose: しばらく呼ばれなかった後の、最初の応答の遅さが分かります。
+    flow:
+      - 実行環境を新しく起動する
+      - リクエストを受け取る
+      - 外部と通信せずに応答する
+    details:
+      steps:
+        - 計測ツールが、Lambda 関数の計測専用の環境変数を書き換え、設定の更新が終わるのを待ちます。設定が変わると、次の呼び出しは必ず新しい実行環境で処理されます。
+        - GET /health を1回送ります。
+        - Lambda が新しい実行環境を起動します。コンテナイメージの読み込み、言語の実行環境の起動、フレームワークと DynamoDB クライアントの初期化までが起動時間です。
+        - 起動が終わると「最小の応答」と同じ処理をして、固定の応答を返します。
+        - ここまでを言語ごとに計測回数だけ繰り返し、終わったら環境変数を元に戻します。
+      response: '{"status": "ok"}'
+      notes:
+        - 起動時間は、Lambda が CloudWatch Logs に記録する値（Init Duration）を使います。
+        - 設定の更新を待つ時間は、計測値に含まれません。
     mode: cold-start
     method: GET
     path: /health

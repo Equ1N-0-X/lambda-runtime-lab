@@ -5,7 +5,7 @@ import json
 import pytest
 
 from benchmark_runner import cli
-from benchmark_runner.dashboard.settings import LaunchSettings
+from benchmark_runner.dashboard.settings import LaunchSettings, Problem
 from benchmark_runner.implementations import load_implementations
 
 IMPLEMENTATIONS = load_implementations()
@@ -20,7 +20,7 @@ def _settings(*, problems=(), architecture="arm64", memory_mb=512):
         architecture=architecture,
         memory_mb=memory_mb,
         region="ap-northeast-1",
-        problems=tuple(problems),
+        problems=tuple(Problem(summary=problem) for problem in problems),
         deployments={
             item.key: {"function_name": f"lab-{item.key}", "image_digest": f"sha256:{item.key}"}
             for item in IMPLEMENTATIONS

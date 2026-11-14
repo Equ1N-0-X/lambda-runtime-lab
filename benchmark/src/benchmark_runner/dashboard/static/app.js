@@ -97,6 +97,9 @@ const runListBody = document.getElementById("run-list-body");
 const detail = document.getElementById("run-detail");
 const tooltip = document.getElementById("tooltip");
 const jobBanner = document.getElementById("job-banner");
+const openLaunchButton = document.getElementById("open-launch");
+const openEstimateButton = document.getElementById("open-estimate");
+const fixedConditions = document.getElementById("fixed-conditions");
 
 // --- DOM補助 ---------------------------------------------------------------
 
@@ -203,14 +206,36 @@ function statusBadge(run) {
   return run.comparable ? null : el("span", { class: "badge badge-warning", text: "要確認" });
 }
 
+// 左の欄のうち、開いている画面によって変わる部分（選択中の操作と、計測する Lambda の設定）を更新する。
+function renderSideState() {
+  openLaunchButton.setAttribute("aria-current", String(state.view === "launch"));
+  openEstimateButton.setAttribute("aria-current", String(state.view === "estimate"));
+  // Lambda の設定は、これから計測する条件として意味を持つ計測開始画面でだけ示す。
+  // 計測結果の画面では、その結果自身の実験条件と混同させないよう出さない。
+  const settings = state.view === "launch" ? state.launch?.settings : null;
+  if (!settings) {
+    fixedConditions.hidden = true;
+    return;
+  }
+  const entries = [
+    ["アーキテクチャ", settings.architecture ?? "未取得"],
+    ["メモリ", settings.memory_mb ? `${settings.memory_mb} MB` : "未取得"],
+    ["リージョン", settings.region],
+  ];
+  fixedConditions.replaceChildren(
+    el("h2", { id: "fixed-conditions-title", text: "計測する Lambda の設定" }),
+    el("dl", { class: "conditions" }, entries.flatMap(([term, value]) => [el("dt", { text: term }), el("dd", { text: value })])),
+    el("p", { class: "side-note", text: "AWS 上の今の設定です。画面からは変えられません。" }),
+  );
+  fixedConditions.hidden = false;
+}
+
 function renderRunList() {
+  renderSideState();
   runListBody.replaceChildren();
+  // 計測を始める操作は欄の上に常にあるため、空のときは結果がないことだけを伝える。
   if (state.runs.length === 0) {
-    runListBody.append(
-      el("p", { class: "muted", text: "計測結果はまだありません。" }),
-      el("p", { class: "muted", text: "下の「新しく計測する」から計測すると、ここに表示されます。" }),
-      el("button", { type: "button", class: "ghost-button", text: "新しく計測する", onclick: openLaunch }),
-    );
+    runListBody.append(el("p", { class: "muted", text: "まだ計測結果がありません。" }));
     return;
   }
   const list = el("ul");
@@ -294,15 +319,15 @@ const QUALITY_LABELS = {
 const SUMMARY_COLUMNS = [
   {
     key: "cost",
-    label: "料金（総額）",
-    hint: "100万リクエストあたりの Lambda 料金。リクエスト料金 $0.20 を含みます。",
+    label: "料金（100万回あたり）",
+    hint: "この処理を100万回呼んだときの Lambda 料金。リクエスト料金 $0.20 を含みます。この計測でかかった金額ではありません。",
     read: (values) => values?.cost?.estimated_cost_per_1m,
     format: formatCost,
   },
   {
     key: "compute_cost",
     label: "うち実行時間分",
-    hint: "総額からリクエスト料金を除いた部分。言語による差はここに表れます。",
+    hint: "100万回あたりの料金からリクエスト料金を除いた部分。言語による差はここに表れます。",
     read: (values) => values?.cost?.estimated_compute_cost_per_1m,
     format: formatCost,
   },
@@ -353,7 +378,7 @@ function formatRatio(value, best) {
 // 結論のカード。最も有利な言語と、最も不利な言語との差を示す。
 function renderVerdict(run) {
   const cards = [
-    { column: "cost", title: "最も安い" },
+    { column: "cost", title: "最も安い（100万回あたりの Lambda 料金）" },
     { column: "duration", title: "普段の処理が最も速い" },
     { column: "init", title: "コールドスタートが最も短い" },
   ].map(({ column: key, title }) => {
@@ -528,8 +553,8 @@ function renderChart(container, run) {
   ).filter(isNumber);
 
   const width = Math.max(container.clientWidth, 280);
-  const margin = { top: 8, right: 72, bottom: 28, left: 44 };
-  const barHeight = 18;
+  const margin = { top: 8, right: 84, bottom: 32, left: 52 };
+  const barHeight = 22;
   const barGap = 2;
   const groupGap = 20;
   const groupHeight = list.length * barHeight + (list.length - 1) * barGap;
@@ -776,7 +801,7 @@ function renderConditions(run) {
     el("div", { class: "section-head" }, el("h3", { text: "実験条件" })),
     el("p", {
       class: "section-note",
-      text: "条件が異なる計測同士の数値は、そのまま比べられません。料金は Free Tier・API Gateway・DynamoDB を含まない概算です。",
+      text: "条件が異なる計測同士の数値は、そのまま比べられません。比較に使う100万回あたりの料金は、Lambda だけの概算です（Free Tier・API Gateway・DynamoDB を含みません）。",
     }),
     el(
       "dl",
@@ -828,6 +853,14 @@ function renderDetail() {
         el("h2", { text: `${workload.name ?? "ワークロード不明"} の比較結果` }),
         el("p", { text: conditions.join(" · ") }),
       ]),
+      // 何を計測した結果かを確かめられるよう、処理の詳細を見出しのすぐ下で開けるようにする。
+      // 送った内容は、今の定義ではなく、この計測の記録にあるものを見せる。
+      run.workload_guide
+        ? renderProcessDetails(
+            { ...run.workload_guide, method: workload.method, path: workload.path, body: workload.body },
+            `計測した処理の詳細を見る（${run.workload_guide.title ?? workload.name}）`,
+          )
+        : null,
       renderFailureNotice(run),
       renderNotice(run),
       run.unsupported?.length
@@ -861,9 +894,9 @@ function renderError(target, message, retry) {
 // --- 計測の開始 ------------------------------------------------------------
 
 const COUNT_FIELDS = [
-  { key: "iterations", label: "反復回数（各実装）", unit: "回", help: "各言語にそれぞれ送る計測用のリクエスト数です。" },
-  { key: "client_concurrency", label: "同時実行数", unit: "", help: "同時に送るリクエスト数です。" },
-  { key: "warmup", label: "ウォームアップ（各実装）", unit: "回", help: "計測前に送る、結果に含めないリクエスト数です。" },
+  { key: "iterations", label: "反復回数（各実装）", unit: "回", help: "各言語に送る、計測するリクエストの数" },
+  { key: "client_concurrency", label: "同時実行数", unit: "", help: "同時に送るリクエストの数" },
+  { key: "warmup", label: "ウォームアップ（各実装）", unit: "回", help: "計測前に送る、結果に含めないリクエストの数" },
 ];
 
 function formatElapsed(seconds) {
@@ -883,7 +916,7 @@ function validateCount(value, limit) {
   return null;
 }
 
-// この計測そのものにかかる Lambda 料金の見込み。作りたいAPIの月額の見込みとは別のもの。
+// この計測そのものにかかる Lambda 料金の目安を、金額と根拠の注記に分けて返す。月額の試算とは別のもの。
 // 根拠の実測は、サーバーが計測予定のLambdaの条件（方式・メモリ・地域）と処理内容で選ぶ。
 function costEstimate(workload, iterations, warmup, concurrency, targets, implementations) {
   const basis = workload.cost_basis;
@@ -891,38 +924,148 @@ function costEstimate(workload, iterations, warmup, concurrency, targets, implem
   // 選んだ言語のいずれかに同じ条件の実測がなければ、一部だけの合計で過小に見せないよう算出しない。
   if (!basis || missing.length > 0) {
     const labels = implementations.filter(({ key }) => missing.includes(key)).map(({ label }) => label);
-    return `この計測にかかる料金: ${labels.join("・")} は、今の Lambda の条件（アーキテクチャ・メモリ・リージョン）でこのワークロードを比較に使える形で計測したことがないため、見込みを出せません（計測は開始できます）。`;
+    return {
+      value: "まだ出せません",
+      note: `${labels.join("・")} は、今の Lambda の設定でこの処理を計測した実績がないためです。計測は開始できます。`,
+    };
   }
   const perImplementation = iterations + warmup;
   const total = targets.reduce((sum, key) => sum + basis.cost_per_request[key] * perImplementation, 0);
   // 同時実行数が根拠と違えば料金も変わりうるため、根拠の条件を併記する。
   const concurrencyNote =
     basis.client_concurrency === concurrency ? "" : `根拠の同時実行数は ${basis.client_concurrency} で、今の入力と異なります。`;
-  return `この計測にかかる Lambda 料金: 約 ${formatCost(total)}（${formatDate(basis.started_at)} の同じ条件の実測から算出。${concurrencyNote}ウォームアップで起きるコールドスタートの初期化料金と、API Gateway・DynamoDB・CloudWatch は含みません）`;
+  return {
+    value: `約 ${formatCost(total)}`,
+    note: `${formatDate(basis.started_at)} の同じ条件の実測から算出。${concurrencyNote}API Gateway・DynamoDB・CloudWatch と、コールドスタートの初期化分は含みません。`,
+  };
+}
+
+// 実行するコマンドを、そのまま貼り付けられるようコピーのボタンと並べて示す。
+function renderCommand(command) {
+  const button = el("button", { type: "button", class: "ghost-button", text: "コピー" });
+  button.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(command);
+      button.textContent = "✓ コピーしました";
+    } catch {
+      // クリップボードを使えない環境では、表示中のコマンドを選択して写してもらう。
+      button.textContent = "コピーできません（選択して写してください）";
+    }
+  });
+  return el("div", { class: "command" }, [el("code", { text: command }), button]);
+}
+
+// 計測できない理由の一件。何が悪いか、対象、対処、対処するとどうなるかを分けて示す。
+function renderProblem(problem) {
+  const remedy = [];
+  // 対処の案内かコマンドがある理由だけ、対処の欄を出す。
+  if (problem.action || problem.command) {
+    remedy.push(
+      el("dt", { text: "対処" }),
+      el("dd", {}, [
+        problem.action ? el("p", { text: problem.action }) : null,
+        problem.command ? renderCommand(problem.command) : null,
+      ]),
+    );
+  }
+  // 対処の結果が分かっている理由だけ、実行後の状態を添える。
+  if (problem.effect) remedy.push(el("dt", { text: "実行すると" }), el("dd", {}, el("p", { text: problem.effect })));
+  return el("li", { class: "problem" }, [
+    el("p", { class: "problem-summary", text: problem.summary }),
+    problem.items.length ? el("ul", { class: "problem-items" }, problem.items.map((item) => el("li", {}, el("code", { text: item })))) : null,
+    remedy.length ? el("dl", { class: "problem-remedy" }, remedy) : null,
+  ]);
+}
+
+// 計測できない間は入力欄を出さず、原因と対処だけを大きく示す。
+function renderLaunchBlocker(settings) {
+  return el("div", { class: "blocker", role: "alert" }, [
+    el("h3", { text: "計測の準備ができていません" }),
+    el("ul", { class: "problems" }, settings.problems.map(renderProblem)),
+    el("div", { class: "form-actions" }, [
+      el("button", { type: "button", class: "primary-button", text: "設定を再確認", onclick: openLaunch }),
+      el("p", { class: "field-help", text: "対処が済んだら押してください。" }),
+    ]),
+  ]);
+}
+
+// 処理の詳細（送るリクエスト・処理の手順・返す応答・補足）。
+// 概要の表示を増やさないよう、開いたときだけ見せる。
+function renderProcessDetails(workload, summaryText) {
+  const details = workload.details;
+  // 詳細が定義されていない処理では、開いても見せるものがないため、部品ごと出さない。
+  if (!details) return null;
+  const section = (title, children) => el("section", { class: "process-section" }, [el("h5", { text: title }), ...children]);
+  const hasBody = workload.body !== null && workload.body !== undefined;
+  const steps = details.steps ?? [];
+  const notes = details.notes ?? [];
+  return el("details", { class: "process-details" }, [
+    el("summary", { text: summaryText }),
+    el("div", { class: "process-body" }, [
+      section("送るリクエスト", [
+        el("p", {}, [el("code", { text: `${workload.method} ${workload.path}` })]),
+        // 本文がある処理では送る内容をそのまま見せ、ない処理では「ない」と明示する。
+        hasBody
+          ? el("pre", { class: "process-json", tabindex: "0", "aria-label": "送る本文", text: JSON.stringify(workload.body, null, 2) })
+          : el("p", { class: "field-help", text: "本文はありません。" }),
+      ]),
+      steps.length ? section("処理の手順", [el("ol", { class: "process-steps" }, steps.map((step) => el("li", { text: step })))]) : null,
+      details.response
+        ? section("返す応答（例）", [el("pre", { class: "process-json", tabindex: "0", "aria-label": "返す応答の例", text: details.response })])
+        : null,
+      notes.length ? section("補足", [el("ul", { class: "process-notes" }, notes.map((note) => el("li", { text: note })))]) : null,
+    ]),
+  ]);
+}
+
+// 選んだ処理が1回のリクエストで何をするかを、流れと「分かること」で示す。
+function renderWorkloadDetail(workload) {
+  const flow = workload.flow ?? [];
+  return [
+    el("div", { class: "workload-detail-head" }, [
+      el("h4", { text: workload.title ?? workload.name }),
+      el("code", { text: `${workload.method} ${workload.path}` }),
+    ]),
+    // 処理の流れが定義されていればそれを図示し、なければ説明の一文で代える。
+    flow.length
+      ? el("ol", { class: "flow", "aria-label": "1回のリクエストで行う処理" }, flow.map((step) => el("li", { text: step })))
+      : el("p", { class: "field-help", text: workload.description ?? "" }),
+    workload.purpose
+      ? el("p", { class: "workload-purpose" }, [
+          el("span", { class: "workload-purpose-label", text: "分かること" }),
+          el("span", { text: workload.purpose }),
+        ])
+      : null,
+    // コールドスタートの計測は進み方と入力の制約が通常と違うため、選んだ時点で伝える。
+    workload.cold_start
+      ? el("p", {
+          class: "field-help",
+          text: "1回ごとに新しい実行環境を起こすため、1回あたり数秒かかります。ウォームアップ 0 回・同時実行数 1 に固定です。",
+        })
+      : null,
+    renderProcessDetails(workload, "処理の詳細を見る"),
+  ].filter(Boolean);
 }
 
 function renderLaunchForm(options) {
   const { settings, workloads, limits } = options;
-  const running = state.job?.state === "running";
   const form = el("form", { class: "launch-form", novalidate: "" });
 
-  // 固定条件。Lambda の実設定と食い違うと比較が無効になるため、画面では変更させない。
-  const fixed = el("dl", { class: "conditions" }, [
-    el("dt", { text: "アーキテクチャ" }),
-    el("dd", { text: formatOptional(settings.architecture) }),
-    el("dt", { text: "Lambda メモリ" }),
-    el("dd", { text: formatOptional(settings.memory_mb, " MB") }),
-    el("dt", { text: "リージョン" }),
-    el("dd", { text: settings.region }),
-  ]);
-
-  const workloadSelect = el(
-    "select",
-    { id: "launch-workload", name: "workload" },
-    workloads.map((workload) =>
-      el("option", { value: workload.name, text: `${workload.name}（${workload.method} ${workload.path}）` }),
-    ),
-  );
+  // 計測する処理。名前だけでは内容が分からないため、表示名の付いた選択肢として並べる。
+  const workloadInputs = workloads.map((workload, index) => {
+    const input = el("input", { type: "radio", name: "workload", value: workload.name });
+    input.checked = index === 0;
+    return el("label", { class: "choice" }, [
+      input,
+      el("span", { class: "choice-title", text: workload.title ?? workload.name }),
+      el("span", { class: "choice-name", text: workload.name }),
+    ]);
+  });
+  const selectedWorkload = () => {
+    const name = workloadInputs.map((label) => label.querySelector("input")).find((input) => input.checked).value;
+    return workloads.find((item) => item.name === name);
+  };
+  const workloadDetail = el("div", { class: "workload-detail", "aria-live": "polite" });
 
   const inputs = {};
   const errors = {};
@@ -949,7 +1092,7 @@ function renderLaunchForm(options) {
 
   // 計測する言語。既定は全言語で、比較のため二つ以上を選ぶ。
   const languageInputs = settings.implementations.map(({ key, label }, index) =>
-    el("label", { class: "check" }, [
+    el("label", { class: "choice check" }, [
       el("input", { type: "checkbox", name: "targets", value: key, checked: "" }),
       el("span", { class: `series-key series-${(index % 6) + 1}`, text: label }),
       el("span", { class: "check-note muted" }),
@@ -959,27 +1102,24 @@ function renderLaunchForm(options) {
   const selectedTargets = () =>
     languageInputs.map((label) => label.querySelector("input")).filter((input) => input.checked).map((input) => input.value);
 
-  const summary = el("p", { class: "launch-summary" });
-  const estimate = el("p", { class: "field-help" });
+  const stats = el("div", { class: "launch-stats", "aria-live": "polite" });
+  const stat = (label, value, note) =>
+    el("div", { class: "stat" }, [
+      el("p", { class: "stat-label", text: label }),
+      el("p", { class: "stat-value", text: value }),
+      el("p", { class: "stat-note", text: note }),
+    ]);
   const submitError = el("p", { class: "field-error", role: "alert" });
-  const submit = el("button", { type: "submit", class: "primary-button", text: "計測を開始" });
+  const submit = el("button", { type: "submit", class: "primary-button large-button", text: "計測を開始する" });
 
-  const workloadDescription = el("p", { class: "field-help" });
   const applyDefaults = () => {
-    const workload = workloads.find((item) => item.name === workloadSelect.value);
+    const workload = selectedWorkload();
     for (const field of COUNT_FIELDS) inputs[field.key].value = String(workload[field.key] ?? "");
     // コールドスタートの計測では、計測前に実行環境を使わないよう、ウォームアップ0・同時実行1に固定する。
     inputs.warmup.disabled = Boolean(workload.cold_start);
     inputs.client_concurrency.disabled = Boolean(workload.cold_start);
-    workloadDescription.textContent = [
-      workload.description,
-      workload.cold_start
-        ? "1回ごとに Lambda の設定を更新して新しい実行環境を起こすため、1回あたり数秒かかります。終了後に設定は元に戻ります。"
-        : null,
-    ]
-      .filter(Boolean)
-      .join(" ");
-    // ワークロードが対応していない言語は選べないようにし、「未対応」と添える。
+    workloadDetail.replaceChildren(...renderWorkloadDetail(workload));
+    // 処理が対応していない言語は選べないようにし、「未対応」と添える。
     for (const label of languageInputs) {
       const input = label.querySelector("input");
       const supported = !workload.implementations || workload.implementations.includes(input.value);
@@ -990,9 +1130,9 @@ function renderLaunchForm(options) {
     update();
   };
 
-  // 入力のたびに検証と見込みを更新し、開始前に送信内容を確認できるようにする。
+  // 入力のたびに検証と目安を更新し、開始前に送信量と料金を確認できるようにする。
   const update = () => {
-    let valid = settings.ready && !running;
+    let valid = true;
     const targets = selectedTargets();
     languageError.textContent = targets.length < 2 ? "比べる言語を二つ以上選んでください。" : "";
     if (targets.length < 2) valid = false;
@@ -1003,22 +1143,27 @@ function renderLaunchForm(options) {
       if (message) valid = false;
     }
     submit.disabled = !valid;
-    if (!valid && settings.ready && !running) {
-      summary.textContent = "入力を確認してください。";
-      estimate.textContent = "";
+    // 入力に誤りがある間は、誤った値から求めた送信量や料金を見せない。
+    if (!valid) {
+      stats.replaceChildren(el("p", { class: "muted", text: "入力の誤りを直すと、送るリクエスト数と料金の目安が出ます。" }));
       return;
     }
     const iterations = Number(inputs.iterations.value);
     const warmup = Number(inputs.warmup.value);
     const perImplementation = iterations + warmup;
-    const languages = settings.implementations.filter(({ key }) => targets.includes(key));
-    summary.textContent = `${languages.map(({ label }) => label).join("・")} にそれぞれ ${perImplementation.toLocaleString("ja-JP")} 回（ウォームアップ ${warmup.toLocaleString("ja-JP")} 回を含む）、合計 ${(perImplementation * languages.length).toLocaleString("ja-JP")} リクエストを送ります。`;
-    const workload = workloads.find((item) => item.name === workloadSelect.value);
     const concurrency = Number(inputs.client_concurrency.value);
-    estimate.textContent = costEstimate(workload, iterations, warmup, concurrency, targets, settings.implementations);
+    const cost = costEstimate(selectedWorkload(), iterations, warmup, concurrency, targets, settings.implementations);
+    stats.replaceChildren(
+      stat(
+        "送るリクエスト（合計）",
+        `${(perImplementation * targets.length).toLocaleString("ja-JP")} 件`,
+        `${targets.length} 言語 × ${perImplementation.toLocaleString("ja-JP")} 回（うちウォームアップ ${warmup.toLocaleString("ja-JP")} 回）`,
+      ),
+      stat("この計測の Lambda 料金（目安）", cost.value, cost.note),
+    );
   };
 
-  workloadSelect.addEventListener("change", applyDefaults);
+  for (const label of workloadInputs) label.querySelector("input").addEventListener("change", applyDefaults);
   for (const label of languageInputs) label.querySelector("input").addEventListener("change", update);
   for (const field of COUNT_FIELDS) inputs[field.key].addEventListener("input", update);
 
@@ -1031,7 +1176,7 @@ function renderLaunchForm(options) {
     submitError.textContent = "";
     try {
       const { job } = await fetchJson("/api/jobs", {
-        workload: workloadSelect.value,
+        workload: selectedWorkload().name,
         iterations: Number(inputs.iterations.value),
         client_concurrency: Number(inputs.client_concurrency.value),
         warmup: Number(inputs.warmup.value),
@@ -1040,71 +1185,48 @@ function renderLaunchForm(options) {
       setJob(job);
     } catch (error) {
       submitError.textContent = error.message;
-      submit.textContent = "計測を開始";
+      submit.textContent = "計測を開始する";
       update();
     }
   });
 
+  // 上から順に決めれば開始できるよう、番号付きの区画に分ける。
+  const step = (number, title, children) =>
+    el("section", { class: "card step" }, [
+      el("h3", { class: "step-title" }, [
+        el("span", { class: "step-number", "aria-hidden": "true", text: String(number) }),
+        el("span", { text: title }),
+      ]),
+      ...children,
+    ]);
   form.append(
-    el("div", { class: "field" }, [
-      el("label", { for: "launch-workload", text: "ワークロード" }),
-      workloadSelect,
-      workloadDescription,
-      el("p", { class: "field-help", text: "選ぶと回数の既定値が入ります。" }),
+    step(1, "計測するワークロードを選ぶ", [
+      el("div", { class: "choices", role: "radiogroup", "aria-label": "計測するワークロード" }, workloadInputs),
+      workloadDetail,
     ]),
-    el("fieldset", { class: "field" }, [
-      el("legend", { text: "計測する言語" }),
-      el("div", { class: "checks", "aria-describedby": "launch-targets-error" }, languageInputs),
+    step(2, "比べる言語を選ぶ", [
+      el("div", { class: "choices choices-compact", role: "group", "aria-label": "比べる言語", "aria-describedby": "launch-targets-error" }, languageInputs),
       languageError,
     ]),
-    el("div", { class: "field-grid" }, fields),
-    el("div", { class: "launch-confirm" }, [summary, estimate]),
-    submitError,
-    el("div", { class: "form-actions" }, [
-      submit,
-      el("p", {
-        class: "field-help",
-        text: `開始後は、ログが反映されるのを最大 ${options.log_wait_seconds} 秒待ちながら収集し、レポート作成まで自動で行います（ログがそろえば早く終わります）。`,
-      }),
+    step(3, "回数を決める", [
+      el("p", { class: "section-note", text: "ワークロードを選ぶと、おすすめの回数が入ります。" }),
+      el("div", { class: "field-grid" }, fields),
     ]),
-  );
-
-  const cards = [];
-  if (!settings.ready) {
-    cards.push(
-      el("div", { class: "card notice" }, [
-        el("h3", { class: "badge badge-warning", text: "計測の準備ができていません" }),
-        el("ul", {}, settings.missing.map((item) => el("li", { text: item }))),
+    step(4, "確認して開始する", [
+      stats,
+      submitError,
+      el("div", { class: "form-actions" }, [
+        submit,
         el("p", {
-          class: "section-note",
-          text: "接続先と条件は、デプロイ済みの環境から自動で読み取ります。上の原因を解消したら、画面を起動し直さずに再確認できます。",
+          class: "field-help",
+          text: `ログ収集とレポート作成まで自動で行います（ログの反映待ちは最大 ${options.log_wait_seconds} 秒）。`,
         }),
-        el("div", { class: "form-actions" }, [
-          el("button", { type: "button", class: "ghost-button", text: "設定を再確認", onclick: openLaunch }),
-        ]),
       ]),
-    );
-  }
-  cards.push(
-    el("div", { class: "card" }, [
-      el("div", { class: "section-head" }, el("h3", { text: "固定の条件" })),
-      el("p", {
-        class: "section-note",
-        text: "今の Lambda の設定です。この条件で計測し、結果に記録します（画面からは変えられません）。",
-      }),
-      fixed,
-    ]),
-    el("div", { class: "card" }, [
-      el("div", { class: "section-head" }, el("h3", { text: "計測の内容" })),
-      running
-        ? el("p", { class: "section-note", text: "計測の実行中は、新しい計測を開始できません。" })
-        : null,
-      form,
     ]),
   );
   // 既定値の反映は要素の生成後に行う。
   queueMicrotask(applyDefaults);
-  return cards;
+  return form;
 }
 
 function renderJobPanel(job) {
@@ -1175,15 +1297,21 @@ function isJobRelevant(job) {
 
 function renderLaunch() {
   hideTooltip();
+  renderSideState();
   const children = [
     el("div", { class: "detail-head" }, [
       el("h2", { text: "新しく計測する" }),
-      el("p", { text: "AWS 上の各言語の Lambda に同じリクエストを送り、結果を比較できる形で保存します。" }),
+      el("p", { text: "各言語の Lambda に同じリクエストを送り、結果を保存します。" }),
     ]),
   ];
+  const running = state.job?.state === "running";
   if (state.job && isJobRelevant(state.job)) children.push(renderJobPanel(state.job));
-  if (state.launch) children.push(...renderLaunchForm(state.launch));
-  else children.push(el("p", { class: "muted", text: "AWS 上の設定を確認しています…" }));
+  // 設定の確認中は確認中であることだけを示す。
+  if (!state.launch) children.push(el("p", { class: "muted", text: "AWS 上の設定を確認しています…" }));
+  // 準備ができていなければ計測できないため、入力欄を出さずに原因と対処だけを示す。
+  else if (!state.launch.settings.ready) children.push(renderLaunchBlocker(state.launch.settings));
+  // 計測は同時に一件だけのため、実行中は進み具合だけを示し、終わったら入力欄を戻す。
+  else if (!running) children.push(renderLaunchForm(state.launch));
   detail.replaceChildren(...children);
 }
 
@@ -1263,7 +1391,7 @@ async function openLaunch() {
   }
 }
 
-// --- 作りたいAPIの見込み ------------------------------------------------------
+// --- 月額料金の試算 ------------------------------------------------------
 
 // 入力が止まってから計算する待ち時間。入力のたびに計算を送らないようにする。
 const ESTIMATE_DEBOUNCE_MS = 300;
@@ -1362,8 +1490,8 @@ function renderEstimateForm(options) {
   const { workloads, conditions } = options;
   if (conditions.length === 0) {
     return el("div", { class: "card" }, [
-      el("h3", { text: "見込みに使える計測がありません" }),
-      el("p", { class: "section-note", text: "「新しく計測する」で、見込みたい処理に近いワークロードを計測してください。" }),
+      el("h3", { text: "試算に使える計測がありません" }),
+      el("p", { class: "section-note", text: "先に「＋ 新しく計測する」で、作りたいAPIに近い処理を計測してください。" }),
     ]);
   }
 
@@ -1488,8 +1616,8 @@ async function openEstimate() {
   renderJobBanner();
   hideTooltip();
   const head = el("div", { class: "detail-head" }, [
-    el("h2", { text: "作りたいAPIの月額料金を見込む" }),
-    el("p", { text: "これから作るAPIを、計測済みの処理（ワークロード）の組み合わせとして表し、言語ごとの月額の Lambda 料金と処理時間を見込みます。実績ではなく見込みです。" }),
+    el("h2", { text: "月額料金を試算する" }),
+    el("p", { text: "これから作るAPIの月間リクエスト数と処理の内訳を入れると、計測結果をもとに言語ごとの Lambda 月額料金を計算します（実績ではなく見込み）。" }),
   ]);
   detail.replaceChildren(head, el("p", { class: "muted", text: "読み込み中…" }));
   try {
@@ -1548,7 +1676,7 @@ async function loadRuns(preferred = null, { keepView = false } = {}) {
         el("h3", { text: "表示できる計測結果がありません" }),
         el("p", {
           class: "section-note",
-          text: "「＋ 新しく計測する」から計測すると、結果がここに表示され、言語ごとに比較できるようになります。",
+          text: "左上の「＋ 新しく計測する」から計測すると、ここで言語ごとに比較できます。",
         }),
       ]),
     );
@@ -1561,8 +1689,8 @@ async function loadRuns(preferred = null, { keepView = false } = {}) {
 }
 
 document.getElementById("reload").addEventListener("click", () => loadRuns(state.selectedId, { keepView: true }));
-document.getElementById("open-launch").addEventListener("click", openLaunch);
-document.getElementById("open-estimate").addEventListener("click", openEstimate);
+openLaunchButton.addEventListener("click", openLaunch);
+openEstimateButton.addEventListener("click", openEstimate);
 
 let resizeTimer;
 window.addEventListener("resize", () => {

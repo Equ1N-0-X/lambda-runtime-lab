@@ -5,10 +5,17 @@ import json
 import sys
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
-from benchmark_runner.dashboard.jobs import JobConflict, JobManager, LaunchError
+from benchmark_runner.dashboard.jobs import (
+    JobConflict,
+    JobManager,
+    LaunchError,
+    load_workloads,
+    workload_guide,
+)
 from benchmark_runner.dashboard.server import create_server
 from benchmark_runner.dashboard.settings import LaunchSettings
 from benchmark_runner.implementations import Implementation
@@ -391,3 +398,20 @@ def test_cold_start_launch_keeps_warmup_zero_and_single_concurrency(tmp_path, ov
     # 計測前に実行環境を使う指定は、コールドスタートを測れないため開始しない。
     with pytest.raises(LaunchError, match="コールドスタート"):
         manager.start(_request(workload="cold", **{"iterations": 20, "warmup": 0, **overrides}))
+
+
+def test_every_workload_explains_its_processing_in_detail():
+    """画面で処理の詳細を開けるよう、定義済みの全ワークロードが手順と応答の例を持つことを確かめる。"""
+    workload_file = Path(__file__).resolve().parents[2] / "spec" / "workloads.yaml"
+    for workload in load_workloads(workload_file):
+        details = workload["details"]
+        assert details["steps"], workload["name"]
+        assert details["response"], workload["name"]
+
+
+def test_workload_guide_is_omitted_for_a_workload_no_longer_defined(tmp_path):
+    """結果に残る名前が今の定義にない場合は、誤った説明を出さないよう None を返す。"""
+    workload_file = tmp_path / "workloads.yaml"
+    workload_file.write_text(WORKLOADS, encoding="utf-8")
+    assert workload_guide(workload_file, "health") == {"title": None, "flow": [], "details": None}
+    assert workload_guide(workload_file, "removed") is None

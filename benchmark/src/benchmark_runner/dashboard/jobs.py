@@ -67,7 +67,15 @@ def load_workloads(workload_file: Path) -> list[dict[str, Any]]:
         workloads.append(
             {
                 "name": name,
+                # 表示名・分かること・処理の流れは、処理の内容を選ぶ前に把握するための説明。
+                # 定義にないワークロードでも選べるよう、欠けていれば空として返す。
+                "title": definition.get("title"),
                 "description": definition.get("description"),
+                "purpose": definition.get("purpose"),
+                "flow": definition.get("flow") or [],
+                # 「処理の詳細」を開いたときに見せる、手順・応答の例・補足と、送る本文。
+                "details": definition.get("details"),
+                "body": definition.get("body"),
                 "method": definition.get("method"),
                 "path": definition.get("path"),
                 "iterations": definition.get("iterations"),
@@ -80,6 +88,23 @@ def load_workloads(workload_file: Path) -> list[dict[str, Any]]:
             }
         )
     return workloads
+
+
+def workload_guide(workload_file: Path, name: str | None) -> dict[str, Any] | None:
+    """計測結果の画面で処理の内容を説明するための、ワークロードの表示名と説明を返す。
+
+    結果に残っている名前が今の定義にない場合と、定義を読めない場合は None を返す（説明を出さない）。
+    """
+    try:
+        definitions = load_workloads(workload_file)
+    # 定義を読めなくても、保存済みの計測結果は見られるようにするため、説明だけを省く。
+    except (OSError, yaml.YAMLError):
+        return None
+    for definition in definitions:
+        # 名前が一致する定義が、その計測で使ったワークロードの説明になる。
+        if definition["name"] == name:
+            return {key: definition[key] for key in ("title", "flow", "details")}
+    return None
 
 
 def workload_experiments(workload_file: Path, definitions: list[dict[str, Any]]) -> dict[str, str]:
