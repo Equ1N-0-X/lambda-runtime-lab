@@ -1177,6 +1177,14 @@ code {
   color: var(--ink-secondary);
 }
 
+.run-cost {
+  margin: 12px 0;
+}
+
+.run-cost td.text {
+  white-space: normal;
+}
+
 .large-button {
   padding: 12px 28px;
   font-size: 19px;

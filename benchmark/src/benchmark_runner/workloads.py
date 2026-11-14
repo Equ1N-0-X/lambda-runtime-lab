@@ -31,6 +31,8 @@ class Workload:
     implementations: tuple[str, ...] | None = None
     # 毎回の要求の前に新しい実行環境を起こし、すべての要求をコールドスタートとして計測するか。
     cold_start: bool = False
+    # 1リクエストでDynamoDBから読み取る項目の数。計測にかかった料金の概算に使う。
+    dynamodb_reads: int = 0
 
     def supported(self, available: tuple[str, ...]) -> tuple[str, ...]:
         """実装一覧の表示順のまま、このワークロードに対応する言語だけを返す。"""
@@ -230,6 +232,9 @@ def load_workload(config_path: Path, name: str) -> Workload:
         description=raw.get("description"),
         implementations=_implementations(raw.get("implementations"), name),
         cold_start=mode == "cold-start",
+        dynamodb_reads=_positive_int(
+            raw.get("dynamodb_reads", 0), "dynamodb_reads", allow_zero=True
+        ),
     )
     check_cold_start(workload)
     return workload

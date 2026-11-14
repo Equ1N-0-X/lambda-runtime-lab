@@ -10,6 +10,8 @@
 # implementations: このワークロードを実装済みの言語（spec/implementations.yaml の実装キー）。
 #                  省略すると全言語が対応しているものとして扱う。新しいワークロードを一部の言語
 #                  だけで先に計測したい場合に指定する（docs/08_ワークロードと言語の追加手順.md）。
+# dynamodb_reads: 1リクエストで DynamoDB から読み取る項目の数（省略時は 0）。計測にかかった料金の
+#                 概算に使う。実験の識別子には影響しない。
 # mode: 計測の方式。standard（既定）は通常の計測。cold-start は要求の前に毎回 Lambda の設定を
 #       更新して新しい実行環境を起こし、すべての要求をコールドスタートとして測る。
 #       cold-start では warmup は 0、client_concurrency は 1、iterations は 100 以下にする。
@@ -167,6 +169,7 @@ workloads:
       response: '{"item": {"id": "item-001", "value": （0〜9999の整数）, "payload": "（256文字の文字列）"}}'
       notes:
         - 時間の大半は DynamoDB の応答待ちです。言語の差は、AWS SDK の呼び出しと応答の変換に表れます。
+    dynamodb_reads: 1
     method: GET
     path: /items/item-001
     warmup: 20
@@ -192,6 +195,7 @@ workloads:
       response: '{"count": 5, "total_value": （value の合計）, "checksum": "（64桁の16進数）"}'
       notes:
         - 読み取りの回数は「DB集計（5件・同時）」と同じ5回です。違うのは読む順序だけです。
+    dynamodb_reads: 5
     method: POST
     path: /aggregate
     warmup: 20
@@ -225,6 +229,7 @@ workloads:
       response: '{"count": 5, "total_value": （value の合計）, "checksum": "（64桁の16進数）"}'
       notes:
         - 読み取りの回数は「DB集計（5件・順番）」と同じ5回です。同時に読む仕組みは言語ごとに異なり、その差が表れます。
+    dynamodb_reads: 5
     method: POST
     path: /aggregate
     warmup: 20
