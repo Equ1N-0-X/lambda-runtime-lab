@@ -9,8 +9,10 @@ from typing import Any
 
 from benchmark_runner.analyzer import METRICS, is_successful, read_records, summarize
 from benchmark_runner.cost import (
+    Pricing,
     PricingUnavailable,
     check_pricing_region,
+    estimate_run_cost,
     load_pricing,
     summarize_costs,
 )
@@ -62,6 +64,46 @@ def _ordered(implementations: dict[str, Any], registry_order: tuple[str, ...]) -
     return {key: implementations[key] for key in (*known, *others)}
 
 
+def _run_cost(
+    metadata: dict[str, Any],
+    records: list[dict[str, Any]],
+    costs: dict[str, Any],
+    run_dir: Path,
+    pricing: Pricing,
+) -> dict[str, Any]:
+    """計測の記録から、送ったリクエスト数・読み取り件数・ログの量を求めて料金を概算する。"""
+    workload = metadata.get("workload") or {}
+    # ウォームアップの結果は記録しないが課金されるため、記録した要求数へ回数を足す。
+    warmup = metadata.get("warmup_per_target") or workload.get("warmup") or 0
+    sent: dict[str, int] = {}
+    for record in records:
+        implementation = str(record["implementation"])
+        sent[implementation] = sent.get(implementation, 0) + 1
+    requests_sent = {implementation: count + warmup for implementation, count in sent.items()}
+
+    collection = _load_optional_json(run_dir / "collection.json")
+    statuses = collection.get("implementations", {}) if isinstance(collection, dict) else {}
+    log_bytes = [status.get("message_bytes") for status in statuses.values()]
+    return estimate_run_cost(
+        requests_sent=requests_sent,
+        lambda_cost_per_request={
+            implementation: (costs.get(implementation) or {}).get("estimated_cost_per_request")
+            for implementation in requests_sent
+        },
+        # 読み取り件数を記録する前の版で計測したrunでは、推測で補わず未算出にする。
+        dynamodb_reads_per_request=workload.get("dynamodb_reads"),
+        # ログの量は、計測した全言語について記録がある場合だけ使う。
+        log_bytes=(
+            sum(log_bytes)
+            if log_bytes
+            and len(log_bytes) == len(requests_sent)
+            and all(isinstance(value, int) for value in log_bytes)
+            else None
+        ),
+        pricing=pricing,
+    )
+
+
 def build_report(
     *,
     run_id: str,
@@ -109,8 +151,10 @@ def build_report(
             "region": pricing.region,
             "source": pricing.source,
         }
+        run_cost = _run_cost(metadata, records, costs, run_dir, pricing)
     except PricingUnavailable as exc:
         costs = {}
+        run_cost = None
         pricing_note = str(exc)
 
     implementations = _ordered(
@@ -153,6 +197,8 @@ def build_report(
         "differences": differences or None,
         "pricing": pricing_metadata,
         "pricing_note": pricing_note,
+        # この計測そのものにかかった料金の概算。料金表を使えない計測ではNone。
+        "run_cost": run_cost,
         "image_metrics": image_metrics,
     }
     report["quality"] = assess_run(report, run_dir=run_dir)

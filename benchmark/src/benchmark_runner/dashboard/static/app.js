@@ -774,6 +774,82 @@ function renderSampleTable(run) {
   ]);
 }
 
+// ログの量を、読みやすい単位（KB・MB）で示す。
+function formatBytes(bytes) {
+  return bytes >= 1024 * 1024 ? `${formatNumber(bytes / (1024 * 1024))} MB` : `${formatNumber(bytes / 1024)} KB`;
+}
+
+// この計測そのものにかかった料金の概算。100万回あたりの料金とは別の金額として、内訳と根拠を示す。
+function renderRunCost(run) {
+  const cost = run.run_cost;
+  // 料金表を使えない計測では、理由が「確認が必要な点」と実験条件に出るため、ここには出さない。
+  if (!cost) return null;
+  const count = (value) => value.toLocaleString("ja-JP");
+  const rows = [
+    {
+      key: "lambda",
+      label: "Lambda",
+      basis: `${count(cost.requests)} リクエスト × 言語ごとの1回あたりの料金（実測の平均）`,
+      missing: "料金を計算できない言語があります",
+    },
+    {
+      key: "api_gateway",
+      label: "API Gateway",
+      basis: `${count(cost.requests)} リクエスト × 単価`,
+      missing: "料金表に単価がありません",
+    },
+    {
+      key: "dynamodb",
+      label: "DynamoDB",
+      basis: cost.dynamodb_read_units === null ? "" : `読み取り ${count(cost.dynamodb_read_units)} 件 × 単価`,
+      missing: "読み取り件数の記録がない計測です（新しく計測すると出ます）",
+    },
+    {
+      key: "cloudwatch_logs",
+      label: "CloudWatch Logs",
+      basis: cost.log_bytes === null ? "" : `収集したログ ${formatBytes(cost.log_bytes)} × 取り込み単価`,
+      missing: "ログの量の記録がない計測です（新しく計測すると出ます）",
+    },
+  ].map(({ key, label, basis, missing }) => {
+    const value = cost.components[key];
+    // 算出できなかった項目は 0 と区別し、金額の代わりに理由を示す。
+    return el("tr", {}, [
+      el("th", { class: "text", scope: "row", text: label }),
+      isNumber(value) ? el("td", { text: formatCost(value) }) : el("td", { class: "muted", text: "未算出" }),
+      el("td", { class: "text muted", text: isNumber(value) ? basis : missing }),
+    ]);
+  });
+  return el("div", { class: "card" }, [
+    el("div", { class: "section-head" }, el("h3", { text: "この計測でかかった料金（概算）" })),
+    el("p", {
+      class: "section-note",
+      text: `ウォームアップを含めて送った ${count(cost.requests)} リクエスト分の、実際の請求額ではない概算です。`,
+    }),
+    el("div", { class: "launch-stats" }, [
+      el("div", { class: "stat" }, [
+        el("p", { class: "stat-label", text: cost.complete ? "合計" : "合計（算出できた項目だけ）" }),
+        el("p", { class: "stat-value", text: `約 ${formatCost(cost.total)}` }),
+      ]),
+    ]),
+    el(
+      "div",
+      { class: "table-scroll" },
+      el("table", { class: "run-cost" }, [
+        el("thead", {}, el("tr", {}, [
+          el("th", { class: "text", scope: "col", text: "サービス" }),
+          el("th", { scope: "col", text: "料金" }),
+          el("th", { class: "text", scope: "col", text: "求め方" }),
+        ])),
+        el("tbody", {}, rows),
+      ]),
+    ),
+    el("p", {
+      class: "section-note",
+      text: "Free Tier、コールドスタートの初期化分、API Gateway のアクセスログなど収集していないログ、データ転送は含みません。",
+    }),
+  ]);
+}
+
 function renderConditions(run) {
   const metadata = run.metadata;
   const workload = metadata.workload ?? {};
@@ -874,6 +950,7 @@ function renderDetail() {
       renderComparison(run),
       renderPercentileTable(run),
       renderSampleTable(run),
+      renderRunCost(run),
       renderConditions(run),
       renderImageMetrics(run),
     ].filter(Boolean),
