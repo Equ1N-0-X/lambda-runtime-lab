@@ -86,6 +86,33 @@ def test_endpoint_override_not_managed_by_terraform_blocks_launch(name):
     assert f"unset {name}" in settings.missing()[0]
 
 
+def test_endpoint_overrides_of_several_languages_are_reported_as_one_problem():
+    environ = {
+        "PYTHON_API_URL": "https://other-env.example",
+        "RUST_API_URL": "https://other-env.example",
+    }
+
+    missing = _resolver(environ=environ).resolve().missing()
+
+    # 原因と対処が同じため、言語の数だけ並べずに一件で示し、一度の unset で解消できるようにする。
+    assert len(missing) == 1
+    assert "unset PYTHON_API_URL RUST_API_URL" in missing[0]
+
+
+def test_problem_is_published_in_parts_so_the_screen_can_show_cause_and_remedy_separately():
+    settings = _resolver(environ={"PYTHON_API_URL": "https://other-env.example"}).resolve()
+
+    (problem,) = settings.public()["problems"]
+
+    # 何が悪いか、対象、実行するコマンド、実行後にどうなるかを、画面が別々に示せる形で返す。
+    assert problem["items"] == ("PYTHON_API_URL",)
+    assert problem["command"] == "unset PYTHON_API_URL"
+    assert "起動し直して" in problem["action"]
+    assert "デプロイ済みの API を計測できる" in problem["effect"]
+    # 接続先のURLそのものは画面に返さない。
+    assert "other-env.example" not in str(problem)
+
+
 def test_api_endpoint_takes_precedence_over_api_url_like_the_cli():
     environ = {
         "PYTHON_API_ENDPOINT": "https://python.example",
