@@ -16,6 +16,15 @@ class PricingUnavailable(ValueError):
 
 
 @dataclass(frozen=True)
+class OtherServicePricing:
+    """計測1回の概算に使う、Lambda以外のサービスの単価。"""
+
+    api_gateway_http_request_price_per_million: Decimal
+    dynamodb_read_request_unit_price_per_million: Decimal
+    cloudwatch_logs_ingestion_price_per_gb: Decimal
+
+
+@dataclass(frozen=True)
 class Pricing:
     updated_at: str
     region: str
@@ -24,6 +33,8 @@ class Pricing:
     compute_price_per_gb_second: dict[str, Decimal]
     # 実行時間単価を適用できる月間使用量（GB秒）の上限。未設定の方式は上限を確かめられない。
     tier1_max_gb_seconds_per_month: dict[str, Decimal] = dataclass_field(default_factory=dict)
+    # Lambda以外のサービスの単価。未設定の料金表では、それらの料金を概算しない。
+    other_services: OtherServicePricing | None = None
 
 
 def _positive_decimal(value: object, field: str) -> Decimal:
@@ -72,6 +83,18 @@ def load_pricing(path: Path) -> Pricing:
     # 有効なアーキテクチャ料金が一件もなければ、推定値を作らず未設定として停止する。
     if not compute:
         raise PricingUnavailable("アーキテクチャ別の計算料金が設定されていません")
+    raw_other = document.get("other_services")
+    other_services = None
+    # Lambda以外の単価は任意の項目とし、書かれている場合だけ全項目を確認済みの正の料金として読む。
+    if raw_other is not None:
+        if not isinstance(raw_other, dict):
+            raise PricingUnavailable("other_services はマッピング形式で指定してください")
+        other_services = OtherServicePricing(
+            **{
+                name: _positive_decimal(raw_other.get(name), f"other_services.{name}")
+                for name in OtherServicePricing.__dataclass_fields__
+            }
+        )
     return Pricing(
         updated_at=required_text["updated_at"],
         region=required_text["region"],
@@ -86,6 +109,7 @@ def load_pricing(path: Path) -> Pricing:
                 document.get("tier1_max_gb_seconds_per_month") or {}
             ).items()
         },
+        other_services=other_services,
     )
 
 
@@ -181,3 +205,70 @@ def summarize_costs(
             * 1_000_000,
         }
     return result
+
+
+# CloudWatch Logs が取り込み量として課金する、ログ1行あたりの付加情報の大きさ（バイト）。
+LOG_EVENT_OVERHEAD_BYTES = 26
+BYTES_PER_GB = Decimal(1024**3)
+
+
+def estimate_run_cost(
+    *,
+    requests_sent: dict[str, int],
+    lambda_cost_per_request: dict[str, float | None],
+    dynamodb_reads_per_request: int | None,
+    log_bytes: int | None,
+    pricing: Pricing,
+) -> dict[str, Any]:
+    """計測1回で送った全リクエスト（ウォームアップを含む）にかかった料金の概算を、内訳付きで返す。
+
+    100万リクエストあたりの料金とは別に、その計測そのものの費用を示すために使う。
+    根拠がそろわない項目は0ではなくNoneとし、合計には算出できた項目だけを含める。
+    """
+    total_requests = sum(requests_sent.values())
+    million = Decimal(1_000_000)
+
+    lambda_cost: Decimal | None = Decimal(0)
+    for implementation, count in requests_sent.items():
+        per_request = lambda_cost_per_request.get(implementation)
+        # 料金を計算できなかった言語が一つでもあれば、一部だけの合計で過小に見せないよう算出しない。
+        if per_request is None:
+            lambda_cost = None
+            break
+        lambda_cost += Decimal(str(per_request)) * count
+
+    other = pricing.other_services
+    api_gateway = dynamodb = cloudwatch_logs = None
+    read_units = None
+    # Lambda以外の単価が料金表にある場合だけ、それらのサービスの料金を概算する。
+    if other is not None:
+        api_gateway = other.api_gateway_http_request_price_per_million * total_requests / million
+        # 1リクエストの読み取り件数が記録されている計測だけ、DynamoDBの料金を求める。
+        # 強整合の読み取りで4KB以下の項目を読むため、1件を1読み取り要求ユニットとして数える。
+        if dynamodb_reads_per_request is not None:
+            read_units = dynamodb_reads_per_request * total_requests
+            dynamodb = other.dynamodb_read_request_unit_price_per_million * read_units / million
+        # 収集したログの量が記録されている計測だけ、CloudWatch Logsの取り込み料金を求める。
+        if log_bytes is not None:
+            cloudwatch_logs = (
+                other.cloudwatch_logs_ingestion_price_per_gb * log_bytes / BYTES_PER_GB
+            )
+
+    components = {
+        "lambda": lambda_cost,
+        "api_gateway": api_gateway,
+        "dynamodb": dynamodb,
+        "cloudwatch_logs": cloudwatch_logs,
+    }
+    known = [value for value in components.values() if value is not None]
+    return {
+        "requests": total_requests,
+        "components": {
+            name: None if value is None else float(value) for name, value in components.items()
+        },
+        "dynamodb_read_units": read_units,
+        "log_bytes": log_bytes,
+        "total": float(sum(known, Decimal(0))),
+        # すべての項目を算出できたか。できていなければ合計は一部の項目だけの金額である。
+        "complete": len(known) == len(components),
+    }

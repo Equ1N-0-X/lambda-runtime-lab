@@ -26,6 +26,7 @@ from benchmark_runner.dashboard.jobs import (
     LaunchError,
     load_workloads,
     workload_experiments,
+    workload_guide,
 )
 
 logger = logging.getLogger(__name__)
@@ -127,9 +128,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # 詳細APIはパス末尾のrun IDに対応する比較結果を返す。
         elif path.startswith(RUNS_PREFIX):
             run_id = unquote(path.removeprefix(RUNS_PREFIX))
-            self._send_json(
-                load_run(run_id, results_dir=self.results_dir, pricing_path=self.pricing_path)
-            )
+            run = load_run(run_id, results_dir=self.results_dir, pricing_path=self.pricing_path)
+            # 結果の画面でも処理の内容を確かめられるよう、ワークロードの説明を添える。
+            workload_name = (run["metadata"].get("workload") or {}).get("name")
+            run["workload_guide"] = workload_guide(self.jobs.workload_file, workload_name)
+            self._send_json(run)
         # 計測開始フォームに必要な設定状況、選択肢、料金の目安、実行中の計測を返す。
         elif path == "/api/launch":
             self._send_json(self._launch_options())

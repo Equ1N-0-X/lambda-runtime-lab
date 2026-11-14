@@ -10,6 +10,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from benchmark_runner.cost import LOG_EVENT_OVERHEAD_BYTES
+
 REPORT_PATTERN = re.compile(
     r"REPORT RequestId:\s*(?P<request_id>\S+)"
     r"\s+Duration:\s*(?P<duration>[\d.]+)\s*ms"
@@ -379,6 +381,10 @@ def _collect_once(
             "source": source,
             "fallback_reason": fallback_reason,
             "message_count": len(messages),
+            # 取得したログの量。計測にかかったCloudWatch Logsの取り込み料金の概算に使う。
+            "message_bytes": sum(
+                len(message.encode("utf-8")) + LOG_EVENT_OVERHEAD_BYTES for message in messages
+            ),
             "expected_reports": len(expected),
             "matched_reports": sum(1 for row in expected if row["report_matched"]),
         }
