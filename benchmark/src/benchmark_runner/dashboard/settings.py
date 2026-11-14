@@ -10,7 +10,7 @@ import json
 import os
 import subprocess
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -36,8 +36,38 @@ DEFAULT_REGION = "ap-northeast-1"
 TERRAFORM_TIMEOUT_SECONDS = 30
 
 
+@dataclass(frozen=True)
+class Problem:
+    """計測を開始できない理由を、何が悪いか・対象・対処・対処の結果に分けて表す。
+
+    画面が、原因を一目で読める見出しと、実行するコマンド、実行後にどうなるかを
+    別々に示せるよう、一つの文章にまとめずに持つ。
+    """
+
+    # 何が悪いかを一行で表す見出し。
+    summary: str
+    # 問題の対象（環境変数名、言語名など）。見出しの下に箇条書きで示す。
+    items: tuple[str, ...] = ()
+    # 利用者が行う対処。
+    action: str | None = None
+    # 対処として実行するコマンド。そのまま貼り付けて実行できる形で持つ。
+    command: str | None = None
+    # 対処するとどうなるか。
+    effect: str | None = None
+
+    def text(self) -> str:
+        """画面以外（CLIの出力や例外の文言）で使う、一続きの文章を返す。"""
+        parts = [self.summary, "・".join(self.items), self.action, self.command, self.effect]
+        return " ".join(part for part in parts if part)
+
+
 class SettingsUnavailable(Exception):
-    """設定の取得元を読めない理由を、利用者が対処できる文言で表す。"""
+    """設定の取得元を読めない理由を、利用者が対処できる形で表す。"""
+
+    def __init__(self, problem: Problem | str) -> None:
+        # 文言だけを渡された場合は、対処の案内を持たない理由として扱う。
+        self.problem = problem if isinstance(problem, Problem) else Problem(summary=problem)
+        super().__init__(self.problem.text())
 
 
 @dataclass(frozen=True)
@@ -62,11 +92,15 @@ class LaunchSettings:
     memory_mb: int | None
     region: str
     # 取得元を読めなかった理由や条件の不一致など、値の欠落だけでは表せない問題。
-    problems: tuple[str, ...] = ()
+    problems: tuple[Problem, ...] = ()
     # 実装ごとに、計測先として確かめたLambda関数・実設定・イメージ。runの証跡として保存する。
     deployments: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def missing(self) -> list[str]:
+        """計測を開始できない理由を、一続きの文章として列挙する。"""
+        return [problem.text() for problem in self.blockers()]
+
+    def blockers(self) -> list[Problem]:
         """計測を開始できない理由を列挙する。問題の説明があればそれを優先する。"""
         # 取得元の問題で値が欠けている場合、欠落項目の羅列より問題の説明の方が対処に役立つ。
         if self.problems:
@@ -83,14 +117,23 @@ class LaunchSettings:
             absent.append("Lambda のアーキテクチャ")
         if not self.memory_mb:
             absent.append("Lambda のメモリ")
-        return [f"{label}を取得できませんでした。" for label in absent]
+        # 欠けた項目がなければ、計測を妨げる理由はない。
+        if not absent:
+            return []
+        return [
+            Problem(
+                summary="計測に必要な設定を取得できませんでした",
+                items=tuple(absent),
+                action="AWS へのデプロイ状況を確認してから「設定を再確認」を押してください。",
+            )
+        ]
 
     def public(self) -> dict[str, Any]:
         """画面に返してよい項目だけを返す。URLやロググループ名は含めない。"""
-        missing = self.missing()
+        blockers = self.blockers()
         return {
-            "ready": not missing,
-            "missing": missing,
+            "ready": not blockers,
+            "problems": [asdict(problem) for problem in blockers],
             "implementations": [
                 {"key": implementation.key, "label": implementation.label}
                 for implementation in self.implementations
@@ -117,13 +160,20 @@ def read_terraform_outputs(terraform_dir: Path) -> dict[str, Any]:
         )
     except FileNotFoundError as exc:
         raise SettingsUnavailable(
-            "terraform コマンドが見つかりません。Terraform をインストールしてください。"
+            Problem(
+                summary="terraform コマンドが見つかりません",
+                action="Terraform をインストールしてから「設定を再確認」を押してください。",
+                effect="デプロイ済みの環境から、計測の接続先を読み取れるようになります。",
+            )
         ) from exc
     # 出力がない、stateがないなどでTerraformが失敗した場合は、デプロイ前の可能性が高い。
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         raise SettingsUnavailable(
-            "Terraform の出力を読めません。"
-            "AWS へのデプロイ（make deploy）が済んでいるか確認してください。"
+            Problem(
+                summary="Terraform の出力を読めません",
+                action="AWS へのデプロイ（make deploy）が済んでいるか確認してください。",
+                effect="デプロイが済んでいれば、計測の接続先を読み取れるようになります。",
+            )
         ) from exc
     outputs = json.loads(result.stdout or "{}")
     return {name: entry.get("value") for name, entry in outputs.items()}
@@ -137,22 +187,29 @@ def read_lambda_conditions(function_name: str, region: str) -> FunctionCondition
     # 認証情報がない、またはSSOのセッションが切れている場合は、ログインし直せば解消する。
     except (NoCredentialsError, PartialCredentialsError, TokenRetrievalError, SSOError) as exc:
         raise SettingsUnavailable(
-            "AWS の認証情報が見つからないか、期限が切れています。"
-            "ターミナルで AWS にログインしてから「設定を再確認」を押してください。"
+            Problem(
+                summary="AWS の認証情報が見つからないか、期限が切れています",
+                action="ターミナルで AWS にログインしてから「設定を再確認」を押してください。",
+                effect="Lambda の設定を読み取れるようになり、計測を開始できます。",
+            )
         ) from exc
     except ClientError as exc:
         code = exc.response.get("Error", {}).get("Code")
         # 関数が存在しなければ、未デプロイか別のリージョン・環境名を参照している。
         if code == "ResourceNotFoundException":
             raise SettingsUnavailable(
-                f"Lambda 関数 {function_name} が {region} に見つかりません。"
-                "デプロイ済みか、リージョンが正しいか確認してください。"
+                Problem(
+                    summary=f"Lambda 関数 {function_name} が {region} に見つかりません",
+                    action="デプロイ済みか、リージョン（AWS_REGION）が正しいか確認してください。",
+                )
             ) from exc
         # 読み取り権限がなければ、利用中のAWSプロファイルの権限を見直す必要がある。
         if code in ("AccessDeniedException", "UnrecognizedClientException"):
             raise SettingsUnavailable(
-                "利用中の AWS 認証情報では Lambda の設定を読めません"
-                "（lambda:GetFunctionConfiguration の権限が必要です）。"
+                Problem(
+                    summary="利用中の AWS 認証情報では Lambda の設定を読めません",
+                    action="lambda:GetFunctionConfiguration の権限がある認証情報を使ってください。",
+                )
             ) from exc
         raise SettingsUnavailable(f"Lambda の設定を読めませんでした（{code}）。") from exc
     except BotoCoreError as exc:
@@ -192,17 +249,18 @@ class SettingsResolver:
     def resolve(self) -> LaunchSettings:
         implementations = load_implementations(self.registry_path)
         region = self.environ.get("AWS_REGION") or DEFAULT_REGION
-        problems: list[str] = []
+        problems: list[Problem] = []
 
         outputs: dict[str, Any] = {}
         try:
             outputs = self.read_outputs(self.terraform_dir)
         except SettingsUnavailable as exc:
-            problems.append(str(exc))
+            problems.append(exc.problem)
 
         api_endpoints = outputs.get("api_endpoints") or {}
         lambda_names = outputs.get("lambda_names") or {}
         endpoints = {}
+        mismatched_overrides: list[str] = []
         for item in implementations:
             name, override = self._endpoint_override(item)
             deployed = api_endpoints.get(item.key)
@@ -210,19 +268,36 @@ class SettingsResolver:
             # 上書きした接続先がTerraformで管理するAPIと違えば、呼び出す先と、設定・ログを読む
             # Lambdaが別の環境になり、記録が実体と食い違うため計測させない。
             if override and deployed and override != deployed:
-                problems.append(
-                    f"環境変数 {name} の接続先が、Terraform で管理する {item.label} の API と"
-                    "異なります。呼び出す API と、設定・ログを読む Lambda の対応を"
-                    "確かめられないため計測できません。"
-                    f"意図した上書きでなければ unset {name} を実行してください。"
+                mismatched_overrides.append(name)
+        # 原因と対処が同じ問題を言語の数だけ並べないよう、該当する環境変数を一件にまとめて示す。
+        if mismatched_overrides:
+            problems.append(
+                Problem(
+                    summary="次の環境変数が、デプロイ済みの API とは別の接続先を指しています",
+                    items=tuple(mismatched_overrides),
+                    # 環境変数は画面の起動時に読むため、再確認だけでは反映されず起動し直しが要る。
+                    action=(
+                        "make ui を止め（Ctrl+C）、同じターミナルで次のコマンドを実行してから、"
+                        "make ui を起動し直してください。"
+                    ),
+                    command=f"unset {' '.join(mismatched_overrides)}",
+                    effect=(
+                        "この環境変数による接続先の上書きがなくなり、"
+                        "デプロイ済みの API を計測できるようになります。"
+                    ),
                 )
+            )
         function_names = {item.key: lambda_names.get(item.key) for item in implementations}
         not_deployed = [item.label for item in implementations if not function_names[item.key]]
         # Terraformは読めたが一覧の実装がデプロイされていなければ、追加後のデプロイ漏れである。
         if outputs and not_deployed:
             problems.append(
-                f"{'・'.join(not_deployed)} の Lambda がデプロイされていません。"
-                "make bootstrap-ecr、make publish-images、make deploy を実行してください。"
+                Problem(
+                    summary=f"{'・'.join(not_deployed)} の Lambda がデプロイされていません",
+                    action="次のコマンドを実行してから「設定を再確認」を押してください。",
+                    command="make bootstrap-ecr && make publish-images && make deploy",
+                    effect="この言語の Lambda が AWS 上に作られ、計測できるようになります。",
+                )
             )
 
         conditions: dict[str, FunctionConditions] = {}
@@ -235,7 +310,7 @@ class SettingsResolver:
                 conditions[item.key] = self.read_conditions(function_name, region)
             # 認証切れなどは全関数に共通するため、同じ説明を重ねて表示しないよう一度で止める。
             except SettingsUnavailable as exc:
-                problems.append(str(exc))
+                problems.append(exc.problem)
                 break
 
         architecture, memory_mb = self._shared_conditions(implementations, conditions, problems)
@@ -251,8 +326,9 @@ class SettingsResolver:
         if not problems and self.check_revision is not None:
             for item in implementations:
                 problem = self._check_image(item, function_names[item.key], region, deployments)
+                # 版の確認は対処を含む文章で理由を返すため、そのまま見出しとして示す。
                 if problem:
-                    problems.append(problem)
+                    problems.append(Problem(summary=problem))
 
         return LaunchSettings(
             implementations=implementations,
@@ -307,7 +383,7 @@ class SettingsResolver:
         self,
         implementations: tuple[Implementation, ...],
         conditions: dict[str, FunctionConditions],
-        problems: list[str],
+        problems: list[Problem],
     ) -> tuple[str | None, int | None]:
         """全関数の実設定が一致する場合だけ、比較条件として採用する。"""
         # いずれかの実設定を読めていなければ、条件を確定できない。
@@ -316,14 +392,20 @@ class SettingsResolver:
         distinct = set(conditions.values())
         # 条件が異なる関数同士の計測は比較に使えないため、計測を開始させない。
         if len(distinct) > 1:
-            detail = "、".join(
-                f"{item.label}: {condition.architecture}・{condition.memory_mb} MB"
-                for item in implementations
-                if (condition := conditions[item.key])
-            )
             problems.append(
-                f"言語ごとの Lambda で設定が異なります（{detail}）。"
-                "同じ設定にそろえてから計測してください。"
+                Problem(
+                    summary="言語ごとの Lambda で設定が異なります",
+                    items=tuple(
+                        f"{item.label}: {condition.architecture}・{condition.memory_mb} MB"
+                        for item in implementations
+                        if (condition := conditions[item.key])
+                    ),
+                    action=(
+                        "Terraform で全言語を同じ設定にそろえてデプロイし、"
+                        "「設定を再確認」を押してください。"
+                    ),
+                    effect="全言語を同じ条件で比べられるようになり、計測を開始できます。",
+                )
             )
             return None, None
         shared = distinct.pop()
@@ -335,10 +417,23 @@ class SettingsResolver:
             expected_memory and expected_memory != str(shared.memory_mb)
         ):
             problems.append(
-                f"環境変数の条件（ARCHITECTURE={expected_architecture or '未設定'}、"
-                f"LAMBDA_MEMORY_MB={expected_memory or '未設定'}）が、"
-                f"Lambda の実設定（{shared.architecture}・{shared.memory_mb} MB）と異なります。"
-                ".env を実設定に合わせてください。"
+                Problem(
+                    summary=(
+                        "次の環境変数の条件が、"
+                        f"Lambda の実設定（{shared.architecture}・{shared.memory_mb} MB）"
+                        "と異なります"
+                    ),
+                    items=(
+                        f"ARCHITECTURE={expected_architecture or '未設定'}",
+                        f"LAMBDA_MEMORY_MB={expected_memory or '未設定'}",
+                    ),
+                    # 環境変数は画面の起動時に読むため、直した後に起動し直しが要る。
+                    action=(
+                        ".env の値を実設定に合わせるか、これらの環境変数を外してから、"
+                        "make ui を起動し直してください。"
+                    ),
+                    effect="記録する条件が実際の Lambda と一致し、計測を開始できます。",
+                )
             )
             return None, None
         return shared.architecture, shared.memory_mb
