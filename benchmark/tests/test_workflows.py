@@ -29,16 +29,23 @@ def test_ci_checks_lock_consistency_instead_of_only_freezing():
     assert contract.count("uv run --locked") == 2
 
 
-def test_ci_runs_once_per_pull_request_update_and_keeps_main_checks():
+def test_ci_runs_once_per_pull_request_update_and_keeps_integration_branch_checks():
     workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
     # PyYAMLはキー on を真偽値 True として読む。
     triggers = workflow[True]
 
-    # 作業ブランチへの push とプルリクエストの二重実行を避け、main への push は検証する。
-    assert triggers["push"] == {"branches": ["main"]}
+    # 作業ブランチへの push とプルリクエストの二重実行を避ける。
+    # 統合先（main・develop）への push は検証する。
+    assert triggers["push"] == {"branches": ["main", "develop"]}
     assert "pull_request" in triggers
     # PRを作らない作業ブランチは手動で検証できる。
     assert "workflow_dispatch" in triggers
+
+
+def test_dependency_updates_are_proposed_to_develop():
+    """作業は develop へ統合してから main へ反映するため、依存の更新の提案も develop へ出す。"""
+    config = yaml.safe_load((ROOT / ".github/dependabot.yml").read_text())
+    assert {update["target-branch"] for update in config["updates"]} == {"develop"}
 
 
 def test_locked_mode_fails_without_rewriting_a_stale_lock(tmp_path):
