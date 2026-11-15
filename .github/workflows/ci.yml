@@ -1,12 +1,12 @@
 name: CI
 
-# 統合先（main）への push と、プルリクエストの更新で検証する。作業ブランチへの push だけでは
+# 統合先（main・develop）への push と、プルリクエストの更新で検証する。作業ブランチへの push だけでは
 # 動かさず、同じコミットを push と pull_request の二重で検証しない。PRを作らない作業ブランチは
 # 手動実行（workflow_dispatch）で検証できる。
 # 変更がない間に見つかった依存の脆弱性にも気付けるよう、週に一度（月曜 09:00 JST）も動かす。
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
   workflow_dispatch:
   schedule:
