@@ -1,0 +1,13 @@
+# 依存の検査（CI の Dependency audit、OSV-Scanner）で、対象外にする脆弱性。
+# 同じフォルダの package-lock.json の検査にだけ適用される。
+# 期限を過ぎると再び検査で失敗するため、その時点で修正版の有無を確かめ、更新するか延長するかを決める。
+
+# picomatch 4.0.7 の ReDoS（WORK-103、2026-11-18 に対象外とした）。
+# - 修正版がない（4.0.7 が最新）
+# - 開発用の依存（vitest・vite の内部）で、Lambda のイメージには入らない（Dockerfile の最終段は
+#   ビルド済みの index.mjs だけを複製する）
+# - 照合するのはリポジトリ内のファイル名で、外部からの入力ではない
+[[IgnoredVulns]]
+id = "GHSA-fc5q-39xc-vjpf"
+effectiveUntil = 2026-12-18
+reason = "picomatch is a dev-only dependency of vitest/vite with no fixed release; it is not shipped in the Lambda image and only matches repository file names."
