@@ -51,6 +51,8 @@ results/builds/*
 .vscode/
 .cursor/
 *.swp
+# 個人環境の絶対パスを含むため、ワークスペース設定は各自のローカルで管理する。
+*.code-workspace
 
 # Local build metadata
 *.log
