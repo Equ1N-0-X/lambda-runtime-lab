@@ -5,8 +5,8 @@ description = "Python AWS Lambda Lambdalith benchmark implementation"
 requires-python = "==3.13.*"
 dependencies = [
     "awslambdaric==4.2.3",
-    "boto3==1.43.127",
-    "fastapi==0.162.3",
+    "boto3==1.44.0",
+    "fastapi==0.162.4",
     "mangum==0.22.0",
     "pydantic==2.14.3",
 ]
