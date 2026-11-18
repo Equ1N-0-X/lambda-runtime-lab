@@ -16,7 +16,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@aws-sdk/client-dynamodb": "^3.1165.0",
+    "@aws-sdk/client-dynamodb": "^3.1166.0",
     "hono": "^4.13.17"
   },
   "devDependencies": {
