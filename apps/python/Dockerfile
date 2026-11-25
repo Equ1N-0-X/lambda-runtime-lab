@@ -9,7 +9,7 @@ ARG FINAL_BASE=public.ecr.aws/lambda/provided:al2023
 # （実際に使ったdigestはビルド記録に残る）。AWS以外が配布するuvは、タグを差し替えられても
 # 中身が変わらないようdigestで固定し、更新はDependabotの提案で行う。
 FROM public.ecr.aws/lambda/python:${PYTHON_VERSION} AS python-runtime
-FROM ghcr.io/astral-sh/uv:0.13.9@sha256:d3b601f0c7b118bc1753febf7c41cc80981df678445e0254284eecf84db79a7d AS uv-bin
+FROM ghcr.io/astral-sh/uv:0.13.10@sha256:a3ea1357342c1a4bf9a0c53a3deb1b55379aefa037338d8113d5771efa01774f AS uv-bin
 
 # lockファイルに固定された本番依存だけを、最終イメージへコピー可能な仮想環境へ展開する。
 FROM python-runtime AS dependencies
