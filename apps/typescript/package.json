@@ -16,14 +16,14 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@aws-sdk/client-dynamodb": "^3.1166.0",
-    "hono": "^4.13.17"
+    "@aws-sdk/client-dynamodb": "^3.1171.0",
+    "hono": "^4.13.19"
   },
   "devDependencies": {
     "@types/aws-lambda": "^8.10.164",
     "@types/node": "^26.6.6",
     "esbuild": "^0.28.2",
-    "prettier": "^3.9.10",
+    "prettier": "^3.10.1",
     "typescript": "^7.0.2",
     "vitest": "^5.1.0"
   }
